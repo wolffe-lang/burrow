@@ -176,14 +176,18 @@ Commits, in order:
 - `33c6129` `6f2e70e` `8a893c4` the rekey bounds (row, then module).
 - `b04e5be` `3df870d` the gate and the cost measurement.
 - `f1b7fbb` `e6b6b9d` `e5f5f9e` `38219fd` SOURCES, MAP, README, CHANGELOG.
-- `5f92197` the image's clang and lld (the release tier links with them); this note.
+- `5f92197` the image's clang and lld (the release tier links with them); `c9e57f7` this note.
+- The labelled full run 42103617333 was green in every row and red at its artifact upload (a row's 0700 run directory); the evidence copy and the upload path follow, with this line.
 
 ## Evidence index
 
 **The rows.** Seven unit rows (`src/*_test.lu`: wire, version, packet,
 kex, hostkey, messages, rekey) pass on the checked machine, natively and on
 lupin; none falls back to native. Twenty-one transport rows
-(`tools/check-transport`) pass against the pinned `sshd` on both tiers. The
+(`tools/check-transport`) pass against the pinned `sshd` on both tiers. CI
+uploads each row's `sshd.log` and `frames.txt` from a readable copy
+(`target/evidence/`), checked to hold no key file or private key text; the
+run directories with the per-run keys stay 0700 and are never uploaded. The
 final head's gauntlet record and its `END` lines are in the PR body.
 
 **The vectors.** `tools/vectorgen.py` implements X25519, Ed25519, ChaCha20
