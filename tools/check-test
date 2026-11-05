@@ -1,0 +1,86 @@
+#!/bin/sh
+# Adapted from wolffe-lang/scent eb888dfc tools/check-test (aspen 476edee3's); own code.
+# check-test — the unit tests (src/*_test.lu), on all three of wolf's lanes.
+#
+#   tools/check-test
+#
+# 1. `wolf test --deny-warnings --json src`: each file's `main` on the
+#    CHECKED machine (every allocation modelled, every UB row detected).
+#    wolf 0.2.33 falls back to the native tier when a test runs past the
+#    checked machine's step budget and still reports it as passing; the
+#    only trace is `"detail":"exit(0) [native]"` (G29, wolf-lang#817). A
+#    file that fell back is run again on the checked machine alone
+#    (`wolf conform-run FILE --checked --json`) and must exit 0 there;
+#    a refusal there is printed and counted, never passed over.
+# 2. Each test file built on the native tier and run from the root.
+# 3. Each test file on lupin, the reference interpreter.
+# Every row is printed; exit 1 when any is not a pass.
+set -u
+BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export BURROW_ROOT
+cd "$BURROW_ROOT"
+. tools/lib-toolchain.sh
+fail=0
+mkdir -p target/tests
+"$WOLF" test --deny-warnings --json src >target/tests/wolf-test.jsonl 2>target/tests/wolf-test.err
+wrc=$?
+cat target/tests/wolf-test.err
+python3 -I - target/tests/wolf-test.jsonl <<'PY' >target/tests/rows.tsv
+import json, sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    r = json.loads(line)
+    if r.get("event") == "test":
+        print("%s\t%s\t%s" % (r.get("file"), r.get("status"), r.get("detail", "")))
+    elif r.get("event") == "summary":
+        print("summary\t%s\t%s" % (r.get("passed"), r.get("failed", 0) + r.get("rejected", 0) + r.get("unsupported", 0)))
+PY
+fallbacks=""
+n=0
+while IFS='	' read -r file status detail; do
+    if [ "$file" = summary ]; then
+        echo "check-test: wolf test: $status passed, $detail not passed (exit $wrc)"
+        [ "$detail" = 0 ] || fail=1
+        continue
+    fi
+    n=$((n + 1))
+    case "$detail" in
+    *"[native]"*)
+        echo "check-test: $file [checked] fell back to native ($detail): rerun on the checked machine"
+        fallbacks="$fallbacks $file"
+        ;;
+    *) echo "check-test: $file [checked] $status ($detail)" ;;
+    esac
+    [ "$status" = pass ] || fail=1
+done <target/tests/rows.tsv
+[ "$wrc" = 0 ] || fail=1
+[ "$n" -gt 0 ] || { echo "check-test: wolf test ran no test file" >&2; fail=1; }
+for f in $fallbacks; do
+    "$WOLF" conform-run "$f" --checked --json >target/tests/conform.json 2>&1
+    crc=$?
+    echo "check-test: $f [conform-run --checked] exit $crc: $(head -c 300 target/tests/conform.json)"
+    [ "$crc" = 0 ] || fail=1
+done
+for f in src/*_test.lu; do
+    name=$(basename "$f" .lu)
+    if "$WOLF" build --deny-warnings "$f" -o "target/tests/$name"; then
+        if "target/tests/$name"; then
+            echo "check-test: $f [native] ok"
+        else
+            echo "check-test: $f [native] FAILED exit $?"
+            fail=1
+        fi
+    else
+        echo "check-test: $f [native] does not build"
+        fail=1
+    fi
+    if LUPIN_STD="$WOLF_STD" "$LUPIN" run "$f" >"target/tests/$name.lupin" 2>&1; then
+        echo "check-test: $f [lupin] ok"
+    else
+        echo "check-test: $f [lupin] FAILED: $(head -c 300 "target/tests/$name.lupin")"
+        fail=1
+    fi
+done
+exit $fail

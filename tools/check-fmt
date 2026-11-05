@@ -1,0 +1,9 @@
+#!/bin/sh
+# Adapted from wolffe-lang/scent eb888dfc tools/check-fmt (aspen 476edee3's); own code.
+# check-fmt — `wolf fmt --check` over every .lu in src/.
+set -eu
+BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export BURROW_ROOT
+cd "$BURROW_ROOT"
+. tools/lib-toolchain.sh
+"$WOLF" fmt --check src
