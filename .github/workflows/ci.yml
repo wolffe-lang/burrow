@@ -1,0 +1,145 @@
+# Local PR evidence is cheap unless the ci or full-matrix label opts in.
+# Shape: scent eb888dfc .github/workflows/ci.yml; one behavioral oracle.
+name: ci
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+  push:
+    branches: [trunk]
+    paths:
+      - '.github/**'
+      - 'ci/**'
+      - '!ci/*.md'
+      - '!ci/**/*.md'
+      - 'tools/**'
+      - '**/wolf-toolchain.toml'
+      - 'burrow-oracle.toml'
+  schedule:
+    - cron: '17 5 * * *'
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: 'job ids, space-separated; empty selects all'
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.event_name == 'pull_request' && format('ci-pr-{0}-{1}', github.head_ref, contains(github.event.pull_request.labels.*.name, 'full-matrix') && 'full' || 'pr') || format('ci-{0}-{1}', github.event_name, github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      tier: ${{ steps.plan.outputs.tier }}
+      jobs: ${{ steps.plan.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+        if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix') }}
+        with:
+          fetch-depth: 2
+      - id: plan
+        if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix') }}
+        env:
+          EVENT: ${{ github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'release-matrix') && 'push' || github.event_name }}
+          ACTION: ${{ github.event.action }}
+          LABEL: ${{ github.event.label.name }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          IN_JOBS: ${{ inputs.jobs }}
+        run: python3 -I ci/tiers.py plan --merge --github-output "$GITHUB_OUTPUT"
+      - name: local gate wiring proof
+        if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix') }}
+        run: python3 -I ci/local-gate-test.py
+      - name: local evidence gate
+        if: ${{ !(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) }}
+        run: echo 'Local gauntlet evidence is the gate; request ci or full-matrix for CI.'
+  plan-test:
+    needs: plan
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (contains(fromJSON(needs.plan.outputs.jobs || '[]'), 'plan-test')) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -I ci/tiers-test.py
+      - run: python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu
+  linux:
+    needs: plan
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (contains(fromJSON(needs.plan.outputs.jobs || '[]'), 'linux')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BURROW_ENGINE: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache digest-pinned oracle and toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            .wolf-bin
+            .oracle
+          key: burrow-linux-${{ hashFiles('wolf-toolchain.toml', 'burrow-oracle.toml', 'ci/oracle.Containerfile', 'tools/fetch-oracle') }}
+      - name: Build own pinned Ubuntu container
+        run: tools/in-container true
+      - name: Stage digest-pinned toolchain and the OpenSSH oracle
+        run: tools/in-container sh -c 'tools/fetch-toolchain && tools/fetch-oracle'
+      - name: Vectors regenerate byte for byte
+        run: python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu
+      - name: Format and both compiler tiers
+        run: tools/in-container sh -c 'tools/check-fmt && tools/build --all'
+      - name: Unit rows on the checked machine, native and lupin
+        if: ${{ !cancelled() }}
+        run: tools/in-container tools/check-test
+      - name: Transport rows against the pinned sshd, native
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-transport --bin target/native/burrow
+      - name: Transport rows against the pinned sshd, release
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-transport --bin target/release/burrow
+      - name: Retain row evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-evidence
+          path: |
+            target/tests
+            target/transport/*/frames.txt
+            target/transport/*/sshd/sshd.log
+  macos:
+    needs: plan
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (contains(fromJSON(needs.plan.outputs.jobs || '[]'), 'macos')) }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/fetch-toolchain
+      - run: tools/build --all
+      - run: tools/check-test
+  tier:
+    name: tier ${{ needs.plan.outputs.tier || 'unplanned' }}
+    if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (!cancelled()) }}
+    needs:
+      - plan
+      - plan-test
+      - linux
+      - macos
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: python3 -I ci/tiers.py verdict
+  nightly-red:
+    needs: tier
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: ci/nightly-red.sh
