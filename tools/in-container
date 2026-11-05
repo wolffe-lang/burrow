@@ -3,14 +3,20 @@
 # (scent's tools/in-container shape.) The build path is part of the oracle's
 # binary digests, so it is always /work/burrow.
 #   BURROW_ENGINE          podman (default) or docker, or a path to either
-#   BURROW_IMAGE           the image tag (default localhost/burrow-oracle)
+#   BURROW_IMAGE           the image name (default localhost/burrow-oracle); its tag
+#                          is the recipe's digest, so a changed recipe is a new image
 #   BURROW_CPUS            a CPU list: CMD runs under taskset inside the container
 #   BURROW_CONTAINER_ARGS  more engine arguments (--memory 12g, extra mounts)
 set -eu
 BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 engine=${BURROW_ENGINE:-podman}
-image=${BURROW_IMAGE:-localhost/burrow-oracle}
 snapshot=$(awk -F'"' '/^apt_snapshot/ {print $2}' "$BURROW_ROOT/burrow-oracle.toml")
+if command -v sha256sum >/dev/null 2>&1; then
+    tag=$(sha256sum "$BURROW_ROOT/ci/oracle.Containerfile" | cut -c1-12)
+else
+    tag=$(shasum -a 256 "$BURROW_ROOT/ci/oracle.Containerfile" | cut -c1-12)
+fi
+image=${BURROW_IMAGE:-localhost/burrow-oracle}:$tag
 "$engine" image inspect "$image" >/dev/null 2>&1 ||
     "$engine" build --build-arg "SNAPSHOT=$snapshot" -t "$image" -f "$BURROW_ROOT/ci/oracle.Containerfile" "$BURROW_ROOT/ci"
 mkdir -p "$BURROW_ROOT/target/tmp"

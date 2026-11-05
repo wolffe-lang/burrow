@@ -12,5 +12,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
  && dpkg-query -W -f '${Package} ${Version}\n' > /oracle-packages.txt
 # sshd's privilege separation wants its user and an empty root-owned dir.
 RUN useradd -r -d /var/empty -s /usr/sbin/nologin sshd && mkdir -p -m 755 /var/empty
+# The rows' login: an account with an empty password, which the rows' sshd
+# admits through RFC 4252's `none` method only where a row allows it.
+RUN useradd -m -s /bin/sh burrowtest && passwd -d burrowtest
 ENV LC_ALL=C
 WORKDIR /work/burrow
