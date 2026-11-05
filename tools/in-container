@@ -1,0 +1,21 @@
+#!/bin/sh
+# in-container CMD... — run CMD in the oracle image, this checkout at /work/burrow.
+# (scent's tools/in-container shape.) The build path is part of the oracle's
+# binary digests, so it is always /work/burrow.
+#   BURROW_ENGINE          podman (default) or docker, or a path to either
+#   BURROW_IMAGE           the image tag (default localhost/burrow-oracle)
+#   BURROW_CPUS            a CPU list: CMD runs under taskset inside the container
+#   BURROW_CONTAINER_ARGS  more engine arguments (--memory 12g, extra mounts)
+set -eu
+BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+engine=${BURROW_ENGINE:-podman}
+image=${BURROW_IMAGE:-localhost/burrow-oracle}
+snapshot=$(awk -F'"' '/^apt_snapshot/ {print $2}' "$BURROW_ROOT/burrow-oracle.toml")
+"$engine" image inspect "$image" >/dev/null 2>&1 ||
+    "$engine" build --build-arg "SNAPSHOT=$snapshot" -t "$image" -f "$BURROW_ROOT/ci/oracle.Containerfile" "$BURROW_ROOT/ci"
+mkdir -p "$BURROW_ROOT/target/tmp"
+pin=""
+[ -z "${BURROW_CPUS:-}" ] || pin="taskset -c $BURROW_CPUS"
+# shellcheck disable=SC2086
+exec "$engine" run --rm ${BURROW_CONTAINER_ARGS:-} -e BURROW_IN_CONTAINER=1 -e BURROW_JOBS -e LC_ALL=C \
+    -e TMPDIR=/work/burrow/target/tmp -v "$BURROW_ROOT:/work/burrow:Z" -w /work/burrow "$image" $pin "$@"

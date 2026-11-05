@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""fetch-oracle — build the pinned OpenSSH into .oracle/, by digest.
+
+    tools/in-container tools/fetch-oracle [--rebuild]
+
+The tarball, its detached signature and the release key are each fetched
+(or taken from $BURROW_ORACLE_DIR), held to burrow-oracle.toml's digests
+twice, and the signature must be a VALIDSIG by the pinned fingerprint. The
+tarball is then built by its own `configure` (only --prefix is set) and
+`make install-nokeys`. This script never opens a source file of the
+tarball: only the build reads them. The built ssh, sshd and ssh-keygen are
+held to their pinned digests; a pin that still reads PENDING prints the
+digests to record and fails.
+
+Must run in the pinned container (tools/in-container), whose image and
+build path (/work/burrow) the binary digests depend on.
+"""
+import hashlib
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tomllib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+PIN = tomllib.loads((ROOT / "burrow-oracle.toml").read_text())["oracle"]
+PREFIX = pathlib.Path(PIN["prefix"])
+BINARIES = (("ssh", "bin/ssh"), ("sshd", "sbin/sshd"), ("ssh_keygen", "bin/ssh-keygen"))
+
+
+def run(*args, **kw):
+    return subprocess.run([str(a) for a in args], check=True, **kw)
+
+
+def sha(p):
+    return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+
+
+def stamp():
+    keys = sorted(k for k in PIN if not k.endswith("_sha256") or k in ("sha256", "sig_sha256", "key_sha256"))
+    return hashlib.sha256(repr([(k, PIN[k]) for k in keys]).encode()).hexdigest()
+
+
+def held(name, path):
+    want = PIN[name + "_sha256"]
+    have = sha(path)
+    print(f"fetch-oracle: {path.name} sha256 {have}", flush=True)
+    return want == have, want, have
+
+
+def check_built():
+    bad = 0
+    for name, rel in BINARIES:
+        ok, want, have = held(name, PREFIX / rel)
+        if not ok:
+            print(f"fetch-oracle: REFUSED — {rel} is {have}, the pin wants {want}", file=sys.stderr)
+            bad += 1
+    line = subprocess.run([str(PREFIX / "bin/ssh"), "-V"], capture_output=True, text=True).stderr.strip()
+    print(f"fetch-oracle: ssh -V: {line}")
+    if line != PIN["version_line"]:
+        print(f"fetch-oracle: REFUSED — ssh -V says {line!r}, the pin wants {PIN['version_line']!r}", file=sys.stderr)
+        bad += 1
+    return bad
+
+
+def main():
+    if PREFIX != ROOT / ".oracle" / PREFIX.name:
+        sys.exit(f"fetch-oracle: the pinned prefix {PREFIX} is not this checkout's .oracle/ (run in tools/in-container)")
+    marker = ROOT / ".oracle" / "STAMP"
+    if marker.exists() and marker.read_text().strip() == stamp() and "--rebuild" not in sys.argv:
+        print("fetch-oracle: .oracle/ already holds the pin")
+        sys.exit(1 if check_built() else 0)
+    if os.environ.get("BURROW_IN_CONTAINER") != "1":
+        sys.exit("fetch-oracle: a build needs the pinned container (tools/in-container)")
+    work = ROOT / ".oracle" / "build"
+    if work.exists():
+        shutil.rmtree(work)
+    if PREFIX.exists():
+        shutil.rmtree(PREFIX)
+    marker.unlink(missing_ok=True)
+    dl = work / "download"
+    dl.mkdir(parents=True)
+    local = os.environ.get("BURROW_ORACLE_DIR")
+    for key in ("url", "sig_url", "key_url"):
+        url = PIN[key]
+        p = dl / url.rsplit("/", 1)[1]
+        if local and (pathlib.Path(local) / p.name).is_file():
+            shutil.copyfile(pathlib.Path(local) / p.name, p)
+            print(f"fetch-oracle: {p.name} from {local}")
+        else:
+            print(f"fetch-oracle: {url}", flush=True)
+            run("curl", "-fsSL", "--retry", "3", "--retry-delay", "5", url, "-o", p)
+        digest = PIN[{"url": "sha256", "sig_url": "sig_sha256", "key_url": "key_sha256"}[key]]
+        for read in (1, 2):
+            have = sha(p)
+            print(f"fetch-oracle: {p.name} read {read}: {have}", flush=True)
+            if have != digest:
+                sys.exit(f"fetch-oracle: REFUSED — {p.name} is {have}, the pin wants {digest}")
+    tarball = dl / PIN["url"].rsplit("/", 1)[1]
+    keys = work / "gnupg"
+    keys.mkdir(mode=0o700)
+    run("gpg", "--homedir", keys, "--batch", "--quiet", "--import", dl / "RELEASE_KEY.asc")
+    r = subprocess.run(["gpg", "--homedir", str(keys), "--batch", "--status-fd=1", "--verify",
+                        str(dl / (tarball.name + ".asc")), str(tarball)], capture_output=True, text=True)
+    print(r.stdout, end="")
+    if r.returncode != 0 or f"[GNUPG:] VALIDSIG {PIN['signing_fingerprint']} " not in r.stdout:
+        sys.exit("fetch-oracle: REFUSED — no valid signature by " + PIN["signing_fingerprint"])
+    print("fetch-oracle: signature VALIDSIG " + PIN["signing_fingerprint"])
+    src = work / "source"
+    src.mkdir()
+    run("tar", "-xzf", tarball, "-C", src)
+    tree = src / PIN["top"]
+    jobs = os.environ.get("BURROW_JOBS", "4")
+    run("./configure", f"--prefix={PREFIX}", cwd=tree, stdout=subprocess.DEVNULL)
+    run("make", f"-j{jobs}", cwd=tree, stdout=subprocess.DEVNULL)
+    run("make", "install-nokeys", cwd=tree, stdout=subprocess.DEVNULL)
+    shutil.rmtree(src)
+    pending = [n for n, _ in BINARIES if PIN[n + "_sha256"] == "PENDING"] or PIN["version_line"] == "PENDING"
+    if pending:
+        for name, rel in BINARIES:
+            held(name, PREFIX / rel)
+        line = subprocess.run([str(PREFIX / "bin/ssh"), "-V"], capture_output=True, text=True).stderr.strip()
+        print(f"fetch-oracle: ssh -V: {line}")
+        sys.exit("fetch-oracle: the pin still reads PENDING: record the digests above")
+    if check_built():
+        sys.exit(1)
+    marker.write_text(stamp() + "\n")
+    print(f"fetch-oracle: {PREFIX} holds the pinned OpenSSH")
+
+
+if __name__ == "__main__":
+    main()
