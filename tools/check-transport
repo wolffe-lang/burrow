@@ -86,6 +86,20 @@ def transport_up(r):
     check("not yet implemented: user authentication" in r.stderr, "no not-yet line")
 
 
+def authed_up(r):
+    check(r.returncode == 2, f"exit {r.returncode}, wanted 2 (authenticated, channels not yet); stderr: {tail(r.stderr)}")
+    check("debug1: Authentication succeeded (none)." in r.stderr, "no none-success debug line")
+    check("not yet implemented: channels" in r.stderr, "no not-yet line")
+
+
+# The pinned sshd re-exchanges keys only after user authentication (its log
+# names a client KEXINIT before then a protocol error). The rekey rows
+# therefore log in with RFC 4252's `none` method as the image's
+# empty-password user `burrowtest` (ci/oracle.Containerfile).
+NONE_OK = ["PermitEmptyPasswords yes", "PasswordAuthentication yes"]
+NONE_USER = ["-l", "burrowtest", "--test-auth-none"]
+
+
 def tail(s, n=600):
     s = s.strip()
     return s[-n:].replace("\n", " | ")
@@ -301,28 +315,50 @@ def mac_mismatch():
 
 
 @row
-def rekey_by_burrow():
-    d = run_dir("rekey-by-burrow")
+def rekey_refused_preauth():
+    """Before user authentication the pinned sshd answers a client KEXINIT
+    with UNIMPLEMENTED: burrow refuses by name instead of waiting."""
+    d = run_dir("rekey-refused-preauth")
     with oraclelib.Sshd(d / "sshd") as s:
         r = burrow(s.port, known(d, s), "-o", "RekeyLimit=32K", "--test-traffic=256K")
-        transport_up(r)
+        refused(r, "kex_failed")
+        check("with SSH2_MSG_UNIMPLEMENTED" in r.stderr, "the refusal does not name the UNIMPLEMENTED")
+        check("dispatch_protocol_error: type 20" in s.log_text(), "sshd did not log the KEXINIT as a protocol error")
+
+
+@row
+def auth_none():
+    d = run_dir("auth-none")
+    with oraclelib.Sshd(d / "sshd", NONE_OK) as s:
+        r = burrow(s.port, known(d, s), *NONE_USER)
+        authed_up(r)
+        check(wait_log(s, r"Accepted none for burrowtest from 127\.0\.0\.1"), "sshd did not log the none login")
+
+
+@row
+def rekey_by_burrow():
+    d = run_dir("rekey-by-burrow")
+    with oraclelib.Sshd(d / "sshd", NONE_OK) as s:
+        r = burrow(s.port, known(d, s), *NONE_USER, "-o", "RekeyLimit=32K", "--test-traffic=256K")
+        authed_up(r)
         m = re.search(r"rekeys: (\d+) by burrow, (\d+) by the server; PONG received", r.stderr)
         check(m, f"no traffic line; stderr: {tail(r.stderr)}")
         check(int(m[1]) >= 4, f"only {m[1]} rekeys by burrow")
         n = len(re.findall(r"SSH2_MSG_NEWKEYS received", s.log_text()))
         check(n >= 1 + int(m[1]), f"sshd logged {n} NEWKEYS received")
-    return f"{m[1]} by burrow"
+    return f"{m[1]} by burrow, sshd logged {n} NEWKEYS received"
 
 
 @row
 def rekey_by_server():
     d = run_dir("rekey-by-server")
-    with oraclelib.Sshd(d / "sshd", ["RekeyLimit 32K"]) as s:
-        r = burrow(s.port, known(d, s), "--test-traffic=256K")
-        transport_up(r)
+    with oraclelib.Sshd(d / "sshd", NONE_OK + ["RekeyLimit 32K"]) as s:
+        r = burrow(s.port, known(d, s), *NONE_USER, "--test-traffic=256K")
+        authed_up(r)
         m = re.search(r"rekeys: (\d+) by burrow, (\d+) by the server; PONG received", r.stderr)
         check(m, f"no traffic line; stderr: {tail(r.stderr)}")
         check(int(m[2]) >= 1, f"{m[2]} rekeys by the server")
+        check(int(m[1]) == 0, f"{m[1]} rekeys by burrow at the default limits")
     return f"{m[2]} by the server"
 
 
@@ -357,13 +393,24 @@ def transcript():
     check([p[2][0] for p in bp] == [20, 30, 21], f"burrow's plaintext packets {[p[2][0] for p in bp]}")
     check([p[2][0] for p in op] == [20, 30, 21], f"ssh's plaintext packets {[p[2][0] for p in op]}")
     bk, ok = bp[0][2], op[0][2]
-    check(bk[0] == ok[0] == 20 and bk[17:] == ok[17:],
-          f"KEXINIT after the cookie differs: burrow {bk[17:].hex()} ssh {ok[17:].hex()}")
+    # The pinned ssh offers zlib@openssh.com after none even with
+    # Compression=no; burrow offers none alone. Every other byte after the
+    # cookie must match: the eight algorithm lists before compression, and
+    # the languages, the guess flag and the reserved word after it.
+    bs, os_ = mitm.read_namelists(bk), mitm.read_namelists(ok)
+    check(bk[0] == ok[0] == 20, "a first packet that is not KEXINIT")
+    check(bk[17:bs[6][0] - 4] == ok[17:os_[6][0] - 4],
+          f"KEXINIT lists before compression differ: burrow {bk[17:bs[6][0] - 4].hex()} ssh {ok[17:os_[6][0] - 4].hex()}")
+    check(bk[bs[8][0] - 4:] == ok[os_[8][0] - 4:], "KEXINIT tails (languages, guess, reserved) differ")
+    bcomp = bk[bs[6][0]:bs[6][1]].decode() + " / " + bk[bs[7][0]:bs[7][1]].decode()
+    ocomp = ok[os_[6][0]:os_[6][1]].decode() + " / " + ok[os_[7][0]:os_[7][1]].decode()
+    check(bcomp == "none / none", f"burrow's compression lists {bcomp}")
     check(len(bp[1][2]) == len(op[1][2]) == 37 and bp[1][2][:5] == op[1][2][:5], "KEX_ECDH_INIT differs in shape")
     check(bp[2][2] == op[2][2] == b"\x15", "NEWKEYS payloads differ")
     pads = " ".join(f"{p[2][0]}:{p[0]}/{p[1]} vs {q[0]}/{q[1]}" for p, q in zip(bp, op))
     (d / "frames.txt").write_text(pads + "\n")
-    return f"KEXINIT equal after the cookie ({len(bk)} bytes); packet_length/padding burrow vs ssh: {pads}"
+    return (f"KEXINIT equal after the cookie but compression (burrow {bcomp}, ssh {ocomp}); "
+            f"packet_length/padding burrow vs ssh: {pads}")
 
 
 def main():
