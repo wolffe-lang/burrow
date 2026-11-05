@@ -346,3 +346,36 @@ pub fn derive(
     }
     key[0..n]
 }
+
+/// The server's SSH_MSG_EXT_INFO (RFC 8308 §2.3): every extension name,
+/// in order, and the value of `server-sig-algs` ("" when absent). Every
+/// other extension's value is skipped unread, whatever bytes it holds
+/// (§2.5: unknown extensions are ignored).
+pub struct ExtInfo {
+    names: List[str],
+    sig_algs: str,
+}
+
+/// Parses SSH_MSG_EXT_INFO; `malformed` when the count, a name or a value
+/// runs past the message, or bytes follow the last value.
+pub fn decode_ext_info(p: List[byte]) -> ExtInfo ! refuse.Refusal {
+    var r = wire.reader(p[1..p.len])
+    let n = wire.read_u32(mut r) else { return malformed }
+    var names = List[str]()
+    var sig_algs = ""
+    var i = 0
+    while i < n {
+        let name = wire.read_string(mut r) else { return malformed }
+        let value = wire.read_string(mut r) else { return malformed }
+        let nm = str_from_utf8(name) else "<not UTF-8>"
+        if nm == "server-sig-algs" {
+            sig_algs = str_from_utf8(value) else ""
+        }
+        (mut names).push(nm)
+        i += 1
+    }
+    if !wire.at_end(r) {
+        return malformed
+    }
+    ExtInfo { names: names, sig_algs: sig_algs }
+}

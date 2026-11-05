@@ -8,6 +8,8 @@
 //! (`burrow: host_key_changed: …`), the name a test row asserts, and,
 //! through `reason_of`, the reason code its SSH_MSG_DISCONNECT carries.
 
+use wire
+
 /// Every refusal. `closed` and `timeout` and `io` are the socket's;
 /// `disconnected` is the peer's own SSH_MSG_DISCONNECT; the rest are
 /// burrow's verdicts on what the peer sent, named in docs/MAP.md.
@@ -125,6 +127,16 @@ pub fn msg_userauth_banner() -> int {
     53
 }
 
+/// SSH_MSG_GLOBAL_REQUEST (RFC 4254 §4).
+pub fn msg_global_request() -> int {
+    80
+}
+
+/// SSH_MSG_REQUEST_FAILURE (RFC 4254 §4).
+pub fn msg_request_failure() -> int {
+    82
+}
+
 /// SSH2_MSG_PING (OpenSSH `PROTOCOL` §1.9, advertised by ext-info).
 pub fn msg_ping() -> int {
     192
@@ -183,4 +195,24 @@ pub fn reason_name(code: int) -> str {
         15 => "SSH_DISCONNECT_ILLEGAL_USER_NAME",
         _ => "unknown reason",
     }
+}
+
+/// The SSH_MSG_DISCONNECT payload (RFC 4253 §11.1): the reason code, the
+/// description, and an empty language tag.
+pub fn disconnect_payload(code: int, text: str) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, msg_disconnect())
+    wire.put_u32(mut p, code)
+    wire.put_text(mut p, text)
+    wire.put_text(mut p, "")
+    p
+}
+
+/// A peer's SSH_MSG_DISCONNECT, described as `SYMBOL (code): text`. A
+/// description that does not parse is said so; the reason still shows.
+pub fn describe_disconnect(p: List[byte]) -> str {
+    var r = wire.reader(p[1..p.len])
+    let code = wire.read_u32(mut r) else 0
+    let text = wire.read_utf8(mut r) else "<no description>"
+    "{reason_name(code)} ({code}): {text}"
 }

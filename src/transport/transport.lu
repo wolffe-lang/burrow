@@ -224,10 +224,7 @@ pub fn kind(p: List[byte]) -> int {
 
 // The detail of the server's SSH_MSG_DISCONNECT: its reason and text.
 fn note_disconnect(mut c: Conn, p: List[byte]) {
-    var r = wire.reader(p[1..p.len])
-    let code = wire.read_u32(mut r) else 0
-    let text = wire.read_utf8(mut r) else "<no description>"
-    c.detail = "{refuse.reason_name(code)} ({code}): {text}"
+    c.detail = refuse.describe_disconnect(p)
 }
 
 fn on_debug(c: Conn, p: List[byte]) {
@@ -462,26 +459,11 @@ fn exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
 }
 
 fn on_ext_info(mut c: Conn, p: List[byte]) -> () ! refuse.Refusal {
-    var r = wire.reader(p[1..p.len])
     c.detail = "the server's SSH2_MSG_EXT_INFO"
-    let n = wire.read_u32(mut r) else { return malformed }
-    var names = List[str]()
-    var i = 0
-    while i < n {
-        let name = wire.read_string(mut r) else { return malformed }
-        let value = wire.read_string(mut r) else { return malformed }
-        let nm = str_from_utf8(name) else "<not UTF-8>"
-        if nm == "server-sig-algs" {
-            c.sig_algs = str_from_utf8(value) else ""
-        }
-        (mut names).push(nm)
-        i += 1
-    }
-    if !wire.at_end(r) {
-        return malformed
-    }
-    c.extensions = copy names
-    say(c, 1, "SSH2_MSG_EXT_INFO received: {join(names)}")
+    let info = kex.decode_ext_info(p)?
+    c.sig_algs = info.sig_algs
+    say(c, 1, "SSH2_MSG_EXT_INFO received: {join(info.names)}")
+    c.extensions = info.names
 }
 
 fn pong(mut c: Conn, p: List[byte]) -> () ! refuse.Refusal {
@@ -608,12 +590,7 @@ pub fn service(mut c: Conn, name: str) -> () ! refuse.Refusal {
 /// Sends SSH_MSG_DISCONNECT with `code` and `text` (RFC 4253 §11.1),
 /// ignoring a failure to send it: the connection is ending either way.
 pub fn disconnect(mut c: Conn, code: int, text: str) {
-    var p = List[byte]()
-    wire.put_u8(mut p, refuse.msg_disconnect())
-    wire.put_u32(mut p, code)
-    wire.put_text(mut p, text)
-    wire.put_text(mut p, "")
-    send_packet(mut c, p) else {}
+    send_packet(mut c, refuse.disconnect_payload(code, text)) else {}
 }
 
 /// Closes the socket.
