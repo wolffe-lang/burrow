@@ -1,0 +1,191 @@
+//! member: true
+//!
+//! burrow.hostkey — the server's `ssh-ed25519` host key (RFC 8709 §4,
+//! §6), its signature on the exchange hash (RFC 8032 §5.1.7 through
+//! std's Ed25519), its fingerprint, and the known_hosts check.
+//!
+//! **Strict by default.** A host key is accepted only when a known_hosts
+//! file names this host with exactly this `ssh-ed25519` key. No entry
+//! for the host is `host_key_unknown`; an `ssh-ed25519` entry for the
+//! host with another key, or a `@revoked` line naming this key, is
+//! `host_key_changed`. Both disconnect with
+//! SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE.
+//!
+//! **The known_hosts lines read here** are the plain form: optional
+//! marker (`@revoked`; `@cert-authority` lines are skipped, as burrow
+//! accepts no certificates), a comma-separated host pattern list, the
+//! key type, the base64 key blob, an optional comment. A host is looked
+//! up as `host` on port 22 and `[host]:port` otherwise. Patterns take
+//! `*` and `?` wildcards and a leading `!` negation. Hashed `|1|` names
+//! need HMAC-SHA1, which wolf-std does not carry: they are skipped here
+//! and arrive with milestone B2.
+//!
+//! ct: everything here is public data (a host key, a signature, an
+//! exchange hash the server signed); `curve25519.verify` is std's.
+
+use std.base64
+use std.x.crypto.curve25519
+use std.x.crypto.sha2
+use refuse
+use wire
+
+/// The 32-byte Ed25519 key inside an `ssh-ed25519` key blob K_S.
+/// Another key type is `host_key_unsupported`; a bad layout `malformed`.
+pub fn ed25519_key(k_s: List[byte]) -> List[byte] ! refuse.Refusal {
+    var r = wire.reader(k_s)
+    let kind = wire.read_string(mut r) else { return malformed }
+    if wire.hex(kind) != wire.hex(wire.bytes_of("ssh-ed25519")) {
+        return host_key_unsupported
+    }
+    let key = wire.read_string(mut r) else { return malformed }
+    if key.len != 32 || !wire.at_end(r) {
+        return malformed
+    }
+    key
+}
+
+/// Verifies the server's signature blob on the exchange hash `h` with
+/// the Ed25519 key `key` (RFC 8709 §6, §7). A signature of another type
+/// is `host_key_unsupported`; one that does not verify,
+/// `host_key_bad_signature`.
+pub fn verify(key: List[byte], sig_blob: List[byte], h: List[byte]) -> () ! refuse.Refusal {
+    var r = wire.reader(sig_blob)
+    let kind = wire.read_string(mut r) else { return malformed }
+    if wire.hex(kind) != wire.hex(wire.bytes_of("ssh-ed25519")) {
+        return host_key_unsupported
+    }
+    let sig = wire.read_string(mut r) else { return malformed }
+    if sig.len != 64 || !wire.at_end(r) {
+        return malformed
+    }
+    if !curve25519.verify(key, h, sig) {
+        return host_key_bad_signature
+    }
+}
+
+/// The SHA256 fingerprint of a key blob, as `ssh-keygen -l` prints it:
+/// `SHA256:` then the unpadded base64 of the digest.
+pub fn fingerprint(k_s: List[byte]) -> str {
+    let b = base64.encode(sha2.sum256(k_s))
+    var end = b.len
+    while end > 0 && b[end - 1..end] == "=" {
+        end -= 1
+    }
+    "SHA256:" + b[0..end]
+}
+
+/// The name a known_hosts line is matched against.
+pub fn lookup_name(host: str, port: int) -> str {
+    if port == 22 then host else "[{host}]:{port}"
+}
+
+/// Whether `name` matches the glob `pat` (`*` any run, `?` one byte).
+pub fn glob(pat: str, name: str) -> bool {
+    glob_at(pat.bytes(), 0, name.bytes(), 0)
+}
+
+fn lower(c: int) -> int {
+    if c >= 65 && c <= 90 then c + 32 else c
+}
+
+fn glob_at(p: List[byte], pi: int, n: List[byte], ni: int) -> bool {
+    var i = pi
+    var j = ni
+    while i < p.len {
+        let c = p[i] as int
+        if c == 42 {
+            var k = j
+            while k <= n.len {
+                if glob_at(p, i + 1, n, k) {
+                    return true
+                }
+                k += 1
+            }
+            return false
+        }
+        if j >= n.len {
+            return false
+        }
+        if c != 63 && lower(c) != lower(n[j] as int) {
+            return false
+        }
+        i += 1
+        j += 1
+    }
+    j == n.len
+}
+
+/// Whether the comma-separated pattern list names `name`: some positive
+/// pattern matches and no negated one does.
+pub fn hosts_match(patterns: str, name: str) -> bool {
+    var hit = false
+    for p in patterns.split(",") {
+        if p.starts_with("!") {
+            if glob(p[1..p.len], name) {
+                return false
+            }
+        } else if p.len > 0 && glob(p, name) {
+            hit = true
+        }
+    }
+    hit
+}
+
+/// What known_hosts text says of `name` and the blob `k_s`.
+pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal {
+    let want = base64.encode(k_s)
+    var known = false
+    var other = false
+    for raw_line in text.lines() {
+        let line = raw_line.trim()
+        if line.len == 0 || line.starts_with("#") {
+            continue
+        }
+        var fields = List[str]()
+        for w in line.words() {
+            (mut fields).push(w)
+        }
+        var at = 0
+        var revoked = false
+        if fields[0].starts_with("@") {
+            if fields[0] == "@revoked" {
+                revoked = true
+            } else {
+                continue
+            }
+            at = 1
+        }
+        if fields.len < at + 3 {
+            continue
+        }
+        let hosts = fields[at]
+        if hosts.starts_with("|") {
+            continue
+        }
+        if fields[at + 1] != "ssh-ed25519" {
+            continue
+        }
+        let same = fields[at + 2] == want
+        if revoked {
+            if same {
+                return host_key_changed
+            }
+            continue
+        }
+        if !hosts_match(hosts, name) {
+            continue
+        }
+        if same {
+            known = true
+        } else {
+            other = true
+        }
+    }
+    if known {
+        return
+    }
+    if other {
+        return host_key_changed
+    }
+    host_key_unknown
+}
