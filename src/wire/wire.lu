@@ -1,0 +1,343 @@
+//! member: true
+//!
+//! burrow.wire — the SSH data types of RFC 4251 §5: byte, boolean,
+//! uint32, uint64, string, mpint and name-list, read from a byte
+//! buffer and appended to one.
+//!
+//! A `Reader` walks one message's bytes. Every read either consumes
+//! exactly its encoding or raises a row: `short` when the bytes end
+//! inside a value, `malformed` when the bytes are there and break the
+//! type's rule (a boolean that is neither 0 nor 1 is read as true, as
+//! §5 says, and is no error). Nothing here traps on peer data.
+//!
+//! Writers append to a caller's `List[byte]`, so a message is built in
+//! one buffer with no intermediate copies.
+
+/// The two ways a read fails: the bytes end inside a value (`short`),
+/// or they break the type's rule (`malformed`).
+pub error Wire = {short, malformed}
+
+/// A cursor over one message's bytes.
+pub struct Reader {
+    data: List[byte],
+    pos: int,
+}
+
+/// A reader at the start of `data` (a copy: the reader owns its bytes).
+pub fn reader(data: List[byte]) -> Reader {
+    Reader { data: copy data, pos: 0 }
+}
+
+/// The bytes not yet read.
+pub fn remaining(r: Reader) -> int {
+    r.data.len - r.pos
+}
+
+/// Whether every byte has been read.
+pub fn at_end(r: Reader) -> bool {
+    r.pos == r.data.len
+}
+
+/// One byte, as an int 0..255.
+pub fn read_u8(mut r: Reader) -> int ! {short} {
+    if r.pos + 1 > r.data.len {
+        return short
+    }
+    let v = r.data[r.pos] as int
+    r.pos += 1
+    v
+}
+
+/// A boolean (RFC 4251 §5): 0 is false, every other value true.
+pub fn read_bool(mut r: Reader) -> bool ! {short} {
+    let v = read_u8(mut r)?
+    v != 0
+}
+
+/// A uint32, big-endian.
+pub fn read_u32(mut r: Reader) -> int ! {short} {
+    if r.pos + 4 > r.data.len {
+        return short
+    }
+    let p = r.pos
+    let v = r.data[p] as int * 16777216 +
+        r.data[p + 1] as int * 65536 +
+        r.data[p + 2] as int * 256 +
+        r.data[p + 3] as int
+    r.pos += 4
+    v
+}
+
+/// A uint64, big-endian. Values at or above 2^63 do not fit `int` and
+/// are `malformed` (no SSH field burrow reads carries one).
+pub fn read_u64(mut r: Reader) -> int ! Wire {
+    if r.pos + 8 > r.data.len {
+        return short
+    }
+    if r.data[r.pos] as int >= 128 {
+        return malformed
+    }
+    let hi = read_u32(mut r) else { return short }
+    let lo = read_u32(mut r) else { return short }
+    hi * 4294967296 + lo
+}
+
+/// `n` raw bytes.
+pub fn read_raw(mut r: Reader, n: int) -> List[byte] ! {short} {
+    if n < 0 || r.pos + n > r.data.len {
+        return short
+    }
+    let out = r.data[r.pos..r.pos + n]
+    r.pos += n
+    out
+}
+
+/// A string: a uint32 length and that many bytes.
+pub fn read_string(mut r: Reader) -> List[byte] ! {short} {
+    let n = read_u32(mut r)?
+    read_raw(mut r, n)?
+}
+
+/// A string that must be valid UTF-8 text (service names, messages).
+pub fn read_utf8(mut r: Reader) -> str ! Wire {
+    let b = read_string(mut r) else { return short }
+    str_from_utf8(b) else { return malformed }
+}
+
+/// Whether `name` is a valid algorithm or extension name (RFC 4251 §6):
+/// 1 to 64 printable US-ASCII characters, no comma.
+pub fn valid_name(name: List[byte]) -> bool {
+    if name.len == 0 || name.len > 64 {
+        return false
+    }
+    for b in name {
+        let v = b as int
+        if v < 33 || v > 126 || v == 44 {
+            return false
+        }
+    }
+    true
+}
+
+/// A name-list (RFC 4251 §5): a string of comma-separated names. The
+/// empty string is the empty list; an empty name, or a name that is
+/// not printable US-ASCII, is `malformed`.
+pub fn read_name_list(mut r: Reader) -> List[str] ! Wire {
+    let b = read_string(mut r) else { return short }
+    split_names(b)?
+}
+
+/// The names of a name-list's bytes, by RFC 4251 §5's rules.
+pub fn split_names(b: List[byte]) -> List[str] ! {malformed} {
+    var out = List[str]()
+    if b.len == 0 {
+        return out
+    }
+    var start: int = 0
+    var i: int = 0
+    while i <= b.len {
+        if i == b.len || b[i] as int == 44 {
+            let name = b[start..i]
+            if !valid_name(name) {
+                return malformed
+            }
+            (mut out).push(str_from_utf8(name) else { return malformed })
+            start = i + 1
+        }
+        i += 1
+    }
+    out
+}
+
+/// An mpint (RFC 4251 §5), returned as its minimal two's-complement
+/// bytes. burrow only reads non-negative mpints; a negative one, or one
+/// with a superfluous leading 0x00 or 0xff, is `malformed`.
+pub fn read_mpint(mut r: Reader) -> List[byte] ! Wire {
+    let b = read_string(mut r) else { return short }
+    if b.len > 0 {
+        let first = b[0] as int
+        if first >= 128 {
+            return malformed
+        }
+        if first == 0 && (b.len == 1 || b[1] as int < 128) {
+            return malformed
+        }
+    }
+    b
+}
+
+/// Appends one byte.
+pub fn put_u8(mut out: List[byte], v: int) {
+    (mut out).push(v as byte)
+}
+
+/// Appends a boolean as 0 or 1.
+pub fn put_bool(mut out: List[byte], v: bool) {
+    (mut out).push(if v then 1 as byte else 0 as byte)
+}
+
+/// Appends a uint32, big-endian. Traps on a value outside 0..2^32-1:
+/// that is a caller's broken contract, never peer data.
+pub fn put_u32(mut out: List[byte], v: int) {
+    assert(v >= 0 && v <= 4294967295, "wire: a uint32 out of range")
+    (mut out).push((v / 16777216) as byte)
+    (mut out).push((v / 65536 % 256) as byte)
+    (mut out).push((v / 256 % 256) as byte)
+    (mut out).push((v % 256) as byte)
+}
+
+/// Appends a uint64, big-endian (non-negative `int` values).
+pub fn put_u64(mut out: List[byte], v: int) {
+    assert(v >= 0, "wire: a uint64 out of range")
+    put_u32(mut out, v / 4294967296)
+    put_u32(mut out, v % 4294967296)
+}
+
+/// Appends raw bytes.
+pub fn put_raw(mut out: List[byte], b: List[byte]) {
+    for x in b {
+        (mut out).push(x)
+    }
+}
+
+/// Appends a string: its length, then its bytes.
+pub fn put_string(mut out: List[byte], b: List[byte]) {
+    put_u32(mut out, b.len)
+    put_raw(mut out, b)
+}
+
+/// Appends a text string.
+pub fn put_text(mut out: List[byte], s: str) {
+    put_u32(mut out, s.len)
+    for x in s.bytes() {
+        (mut out).push(x)
+    }
+}
+
+/// Appends a name-list.
+pub fn put_name_list(mut out: List[byte], names: List[str]) {
+    var n: int = 0
+    var i: int = 0
+    for name in names {
+        n += name.len
+        if i > 0 {
+            n += 1
+        }
+        i += 1
+    }
+    put_u32(mut out, n)
+    i = 0
+    for name in names {
+        if i > 0 {
+            (mut out).push(44 as byte)
+        }
+        for x in name.bytes() {
+            (mut out).push(x)
+        }
+        i += 1
+    }
+}
+
+/// Appends the mpint of an unsigned big-endian magnitude (RFC 4251 §5):
+/// leading zero bytes dropped, and one 0x00 put back when the top bit
+/// of what remains is set. Zero is the empty string.
+pub fn put_mpint_unsigned(mut out: List[byte], magnitude: List[byte]) {
+    var start: int = 0
+    while start < magnitude.len && magnitude[start] as int == 0 {
+        start += 1
+    }
+    let n = magnitude.len - start
+    if n == 0 {
+        put_u32(mut out, 0)
+        return
+    }
+    let pad = magnitude[start] as int >= 128
+    put_u32(mut out, if pad then n + 1 else n)
+    if pad {
+        (mut out).push(0 as byte)
+    }
+    var i = start
+    while i < magnitude.len {
+        (mut out).push(magnitude[i])
+        i += 1
+    }
+}
+
+/// The bytes of `s`.
+pub fn bytes_of(s: str) -> List[byte] {
+    var out = List[byte]()
+    for x in s.bytes() {
+        (mut out).push(x)
+    }
+    out
+}
+
+/// Lowercase hexadecimal of `b` (public values only: not constant time).
+pub fn hex(b: List[byte]) -> str {
+    let digits = "0123456789abcdef"
+    var out = List[byte]()
+    for x in b {
+        let v = x as int
+        (mut out).push(digits.bytes()[v / 16])
+        (mut out).push(digits.bytes()[v % 16])
+    }
+    str_from_utf8(out) else ""
+}
+
+/// The bytes of a hexadecimal string; `malformed` on an odd length or a
+/// character that is not a hex digit.
+pub fn unhex(s: str) -> List[byte] ! {malformed} {
+    var out = List[byte]()
+    let b = s.bytes()
+    if b.len % 2 != 0 {
+        return malformed
+    }
+    var i: int = 0
+    while i < b.len {
+        let hi = nibble(b[i] as int)
+        let lo = nibble(b[i + 1] as int)
+        if hi < 0 || lo < 0 {
+            return malformed
+        }
+        (mut out).push((hi * 16 + lo) as byte)
+        i += 2
+    }
+    out
+}
+
+fn nibble(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    -1
+}
+
+/// Whether `a` and `b` hold the same bytes, in time that depends only
+/// on their lengths: every byte pair is folded into one accumulator and
+/// only the accumulator is tested. burrow's tag comparison.
+pub fn ct_eq(a: List[byte], b: List[byte]) -> bool {
+    if a.len != b.len {
+        return false
+    }
+    var acc: wrapping[u64] = 0
+    var i: int = 0
+    while i < a.len {
+        acc = acc | a[i] as int as wrapping[u64] ^ b[i] as int as wrapping[u64]
+        i += 1
+    }
+    acc == 0
+}
+
+/// `a` followed by `b`, as a fresh list.
+pub fn concat(a: List[byte], b: List[byte]) -> List[byte] {
+    var out = List[byte]()
+    put_raw(mut out, a)
+    put_raw(mut out, b)
+    out
+}

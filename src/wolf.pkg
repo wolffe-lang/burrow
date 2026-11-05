@@ -1,0 +1,8 @@
+// No dependency but wolf-std. A TCP connection, the environment, files
+// (known_hosts, /dev/urandom); no subprocesses.
+pkg {
+    name: "burrow",
+    version: "0.0.0",
+    edition: "1",
+    capabilities: [env, fs, net],
+}
