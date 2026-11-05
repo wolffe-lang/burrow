@@ -1,0 +1,163 @@
+//! member: true
+//!
+//! burrow.refuse — every way the transport refuses a connection, by
+//! name, and the SSH message numbers and disconnect reason codes those
+//! names travel with (RFC 4250 §4.1 and §4.2.2, RFC 4253 §12).
+//!
+//! A refusal is a row tag. The tag IS the name burrow prints
+//! (`burrow: host_key_changed: …`), the name a test row asserts, and,
+//! through `reason_of`, the reason code its SSH_MSG_DISCONNECT carries.
+
+/// Every refusal. `closed` and `timeout` and `io` are the socket's;
+/// `disconnected` is the peer's own SSH_MSG_DISCONNECT; the rest are
+/// burrow's verdicts on what the peer sent, named in docs/MAP.md.
+pub error Refusal = {
+    banner_too_long,
+    banner_too_many,
+    version_too_long,
+    version_malformed,
+    version_unsupported,
+    packet_too_long,
+    packet_too_short,
+    padding_short,
+    padding_overrun,
+    unaligned,
+    mac_mismatch,
+    malformed,
+    message_unexpected,
+    no_common_kex,
+    no_common_hostkey,
+    no_common_cipher,
+    no_common_mac,
+    no_common_compression,
+    strict_kex_missing,
+    strict_kex_violation,
+    kex_failed,
+    host_key_unsupported,
+    host_key_bad_signature,
+    host_key_unknown,
+    host_key_changed,
+    known_hosts_unreadable,
+    service_refused,
+    entropy_unavailable,
+    sequence_wrapped,
+    disconnected,
+    closed,
+    timeout,
+    io,
+}
+
+/// SSH_MSG_DISCONNECT (RFC 4253 §11.1).
+pub fn msg_disconnect() -> int {
+    1
+}
+
+/// SSH_MSG_IGNORE (§11.2).
+pub fn msg_ignore() -> int {
+    2
+}
+
+/// SSH_MSG_UNIMPLEMENTED (§11.4).
+pub fn msg_unimplemented() -> int {
+    3
+}
+
+/// SSH_MSG_DEBUG (§11.3).
+pub fn msg_debug() -> int {
+    4
+}
+
+/// SSH_MSG_SERVICE_REQUEST (§10).
+pub fn msg_service_request() -> int {
+    5
+}
+
+/// SSH_MSG_SERVICE_ACCEPT (§10).
+pub fn msg_service_accept() -> int {
+    6
+}
+
+/// SSH_MSG_EXT_INFO (RFC 8308 §2.3).
+pub fn msg_ext_info() -> int {
+    7
+}
+
+/// SSH_MSG_KEXINIT (RFC 4253 §7.1).
+pub fn msg_kexinit() -> int {
+    20
+}
+
+/// SSH_MSG_NEWKEYS (§7.3).
+pub fn msg_newkeys() -> int {
+    21
+}
+
+/// SSH_MSG_KEX_ECDH_INIT: the first key-exchange-method message, number
+/// 30 (RFC 4253 §8's KEXDH_INIT, the number RFC 8731 keeps).
+pub fn msg_kex_ecdh_init() -> int {
+    30
+}
+
+/// SSH_MSG_KEX_ECDH_REPLY, number 31.
+pub fn msg_kex_ecdh_reply() -> int {
+    31
+}
+
+/// SSH2_MSG_PING (OpenSSH `PROTOCOL` §1.9, advertised by ext-info).
+pub fn msg_ping() -> int {
+    192
+}
+
+/// SSH2_MSG_PONG.
+pub fn msg_pong() -> int {
+    193
+}
+
+/// The disconnect reason code (RFC 4250 §4.2.2) a refusal carries.
+pub fn reason_of(code_name: str) -> int {
+    match code_name {
+        "banner_too_long" => 8,
+        "banner_too_many" => 8,
+        "version_too_long" => 8,
+        "version_malformed" => 8,
+        "version_unsupported" => 8,
+        "mac_mismatch" => 5,
+        "no_common_kex" => 3,
+        "no_common_hostkey" => 3,
+        "no_common_cipher" => 3,
+        "no_common_mac" => 3,
+        "no_common_compression" => 3,
+        "strict_kex_missing" => 3,
+        "kex_failed" => 3,
+        "host_key_unsupported" => 3,
+        "host_key_bad_signature" => 3,
+        "host_key_unknown" => 9,
+        "host_key_changed" => 9,
+        "known_hosts_unreadable" => 9,
+        "service_refused" => 7,
+        "entropy_unavailable" => 11,
+        _ => 2,
+    }
+}
+
+/// The RFC 4250 §4.2.2 symbol of a reason code, for messages.
+pub fn reason_name(code: int) -> str {
+    match code {
+        1 => "SSH_DISCONNECT_HOST_NOT_ALLOWED_TO_CONNECT",
+        2 => "SSH_DISCONNECT_PROTOCOL_ERROR",
+        3 => "SSH_DISCONNECT_KEY_EXCHANGE_FAILED",
+        4 => "SSH_DISCONNECT_RESERVED",
+        5 => "SSH_DISCONNECT_MAC_ERROR",
+        6 => "SSH_DISCONNECT_COMPRESSION_ERROR",
+        7 => "SSH_DISCONNECT_SERVICE_NOT_AVAILABLE",
+        8 => "SSH_DISCONNECT_PROTOCOL_VERSION_NOT_SUPPORTED",
+        9 => "SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE",
+        10 => "SSH_DISCONNECT_CONNECTION_LOST",
+        11 => "SSH_DISCONNECT_BY_APPLICATION",
+        12 => "SSH_DISCONNECT_TOO_MANY_CONNECTIONS",
+        13 => "SSH_DISCONNECT_AUTH_CANCELLED_BY_USER",
+        14 => "SSH_DISCONNECT_NO_MORE_AUTH_METHODS_AVAILABLE",
+        15 => "SSH_DISCONNECT_ILLEGAL_USER_NAME",
+        _ => "unknown reason",
+    }
+}
