@@ -1,45 +1,241 @@
 //! member: true
 //!
-//! burrow.keyfile — OpenSSH's private key format for Ed25519. A stub until
-//! its implementation lands.
+//! burrow.keyfile — OpenSSH's private key format (`PROTOCOL.key`,
+//! `openssh-key-v1`) for unencrypted Ed25519 keys, read and written, and
+//! the public line `ssh-keygen` writes beside it (`PROTOCOL` §5.1).
+//!
+//! **The layout.** `"openssh-key-v1\0"`, `string` cipher, `string` KDF,
+//! `string` KDF options, `uint32` N, N `string` public blobs, then one
+//! `string` holding the private section: two `uint32` check words that must
+//! be equal, and per key `string "ssh-ed25519"`, `string` A (32 bytes),
+//! `string` seed || A (64 bytes), `string` comment; then the bytes 1, 2, 3, …
+//! until the section is a multiple of 8. `PROTOCOL.key` gives the frame; the
+//! private key's own fields follow "the rules used for SSH agent", whose
+//! draft is not on burrow's reading list, so they were measured from the
+//! pinned `ssh-keygen`'s files and are held to RFC 8032: A must be the
+//! public key of the seed. The armour is `-----BEGIN OPENSSH PRIVATE
+//! KEY-----`, base64 in lines of 70 characters, `-----END OPENSSH PRIVATE
+//! KEY-----`, as measured.
+//!
+//! **Refused by name:** `key_encrypted` (a cipher or KDF other than `none`:
+//! `ssh-keygen -N` writes `aes256-ctr` and `bcrypt`), `key_count` (N is not
+//! 1), `key_checkint`, `key_unsupported` (another key type, or another PEM
+//! armour), `key_mismatch` (the header's blob, A and the seed disagree),
+//! `key_malformed` (anything else), and for a file `key_unreadable` and
+//! `key_permissions` (group or other may read it).
+//!
+//! **Key material.** Nothing here prints or formats a seed: refusals are
+//! tags, and their sentences are the caller's, naming the file and never
+//! its bytes.
+//!
+//! ct: the seed is copied and handed to `curve25519.public` and `.sign`,
+//! never branched on; the comparisons here (`wire.ct_eq`) are of public keys
+//! and check words, which guard no secret.
 
+use std.base64
+use std.fs
+use std.x.crypto.curve25519
+use hostkey
 use refuse
+use wire
 
-/// An Ed25519 user key: its 32-byte seed, public key and comment.
+/// An Ed25519 user key: its 32-byte seed, its public key A, its comment.
 pub struct Key {
     seed: List[byte],
     public: List[byte],
     comment: str,
 }
 
+/// The key whose seed is `seed` (RFC 8032 §5.1.5's public key).
 pub fn from_seed(seed: List[byte], comment: str) -> Key {
-    Key { seed: copy seed, public: List[byte](), comment: comment }
+    let a = if seed.len == 32 then curve25519.public(seed) else List[byte]()
+    Key { seed: copy seed, public: a, comment: comment }
 }
 
+/// The `ssh-ed25519` public key blob (RFC 8709 §4).
 pub fn blob(public: List[byte]) -> List[byte] {
-    copy public
+    var b = List[byte]()
+    wire.put_text(mut b, "ssh-ed25519")
+    wire.put_string(mut b, public)
+    b
 }
 
+/// `ssh-ed25519 <base64 blob> <comment>` and a newline, as `ssh-keygen`
+/// writes a `.pub` file (no space when the comment is empty).
 pub fn public_line(public: List[byte], comment: str) -> str {
-    let _ = public.len
-    comment
+    let head = "ssh-ed25519 " + base64.encode(blob(public))
+    if comment.len == 0 then head + "\n" else head + " " + comment + "\n"
 }
 
+/// `ssh-keygen -l`'s line: `256 SHA256:<fp> <comment> (ED25519)`.
 pub fn fingerprint_line(k: Key) -> str {
-    k.comment
+    let c = if k.comment.len == 0 then "no comment" else k.comment
+    "256 {hostkey.fingerprint(blob(k.public))} {c} (ED25519)"
 }
 
+fn magic() -> List[byte] {
+    var m = wire.bytes_of("openssh-key-v1")
+    (mut m).push(0 as byte)
+    m
+}
+
+/// The armoured text of a raw key file.
 pub fn armor(raw: List[byte]) -> str {
-    let _ = raw.len
-    ""
+    let b = base64.encode(raw)
+    var out = "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+    var i = 0
+    while i < b.len {
+        let end = if i + 70 < b.len then i + 70 else b.len
+        out += b[i..end]
+        out += "\n"
+        i = end
+    }
+    out + "-----END OPENSSH PRIVATE KEY-----\n"
 }
 
+/// The private key file for `k`, its two check words `checkint` (4 bytes).
 pub fn encode(k: Key, checkint: List[byte]) -> str {
-    let _ = checkint.len
-    k.comment
+    var sect = List[byte]()
+    wire.put_raw(mut sect, checkint)
+    wire.put_raw(mut sect, checkint)
+    wire.put_text(mut sect, "ssh-ed25519")
+    wire.put_string(mut sect, k.public)
+    var sk = copy k.seed
+    wire.put_raw(mut sk, k.public)
+    wire.put_string(mut sect, sk)
+    wire.put_text(mut sect, k.comment)
+    var p = 1
+    while sect.len % 8 != 0 {
+        (mut sect).push(p as byte)
+        p += 1
+    }
+    var raw = magic()
+    wire.put_text(mut raw, "none")
+    wire.put_text(mut raw, "none")
+    wire.put_text(mut raw, "")
+    wire.put_u32(mut raw, 1)
+    wire.put_string(mut raw, blob(k.public))
+    wire.put_string(mut raw, sect)
+    armor(raw)
 }
 
+fn unarmor(text: str) -> List[byte] ! refuse.Refusal {
+    var inside = false
+    var seen_begin = false
+    var b64 = ""
+    for raw_line in text.lines() {
+        let line = raw_line.trim()
+        if !inside {
+            if line.len == 0 {
+                continue
+            }
+            if line == "-----BEGIN OPENSSH PRIVATE KEY-----" {
+                inside = true
+                seen_begin = true
+                continue
+            }
+            if line.starts_with("-----BEGIN ") {
+                return key_unsupported
+            }
+            return key_malformed
+        }
+        if line == "-----END OPENSSH PRIVATE KEY-----" {
+            inside = false
+            break
+        }
+        b64 += line
+    }
+    if !seen_begin || inside {
+        return key_malformed
+    }
+    base64.decode(b64) else { return key_malformed }
+}
+
+fn is(b: List[byte], s: str) -> bool {
+    wire.hex(b) == wire.hex(wire.bytes_of(s))
+}
+
+/// The key a private key file holds, or why it is refused.
 pub fn decode(text: str) -> Key ! refuse.Refusal {
-    let _ = text.len
-    key_malformed
+    let raw = unarmor(text)?
+    let m = magic()
+    if raw.len < m.len || wire.hex(raw[0..m.len]) != wire.hex(m) {
+        return key_malformed
+    }
+    var r = wire.reader(raw[m.len..raw.len])
+    let cipher = wire.read_string(mut r) else { return key_malformed }
+    let kdf = wire.read_string(mut r) else { return key_malformed }
+    let _ = wire.read_string(mut r) else { return key_malformed }
+    if !is(cipher, "none") || !is(kdf, "none") {
+        return key_encrypted
+    }
+    let n = wire.read_u32(mut r) else { return key_malformed }
+    if n != 1 {
+        return key_count
+    }
+    let pubblob = wire.read_string(mut r) else { return key_malformed }
+    let sect = wire.read_string(mut r) else { return key_malformed }
+    if !wire.at_end(r) {
+        return key_malformed
+    }
+    var pr = wire.reader(pubblob)
+    let ptype = wire.read_string(mut pr) else { return key_malformed }
+    if !is(ptype, "ssh-ed25519") {
+        return key_unsupported
+    }
+    let pa = wire.read_string(mut pr) else { return key_malformed }
+    if pa.len != 32 || !wire.at_end(pr) {
+        return key_malformed
+    }
+    var s = wire.reader(sect)
+    let c1 = wire.read_raw(mut s, 4) else { return key_malformed }
+    let c2 = wire.read_raw(mut s, 4) else { return key_malformed }
+    if !wire.ct_eq(c1, c2) {
+        return key_checkint
+    }
+    let stype = wire.read_string(mut s) else { return key_malformed }
+    if !is(stype, "ssh-ed25519") {
+        return key_unsupported
+    }
+    let a = wire.read_string(mut s) else { return key_malformed }
+    let sk = wire.read_string(mut s) else { return key_malformed }
+    let comment = wire.read_string(mut s) else { return key_malformed }
+    if a.len != 32 || sk.len != 64 {
+        return key_malformed
+    }
+    var expect = 1
+    while !wire.at_end(s) {
+        let p = wire.read_u8(mut s) else { return key_malformed }
+        if p != expect {
+            return key_malformed
+        }
+        expect += 1
+    }
+    if sect.len % 8 != 0 {
+        return key_malformed
+    }
+    let seed = sk[0..32]
+    if !wire.ct_eq(a, pa) || !wire.ct_eq(sk[32..64], a) || !wire.ct_eq(curve25519.public(seed), a) {
+        return key_mismatch
+    }
+    Key { seed: seed, public: a, comment: str_from_utf8(comment) else "" }
+}
+
+/// Reads and decodes the private key file at `path`. A file that group or
+/// other may read is `key_permissions` (the pinned `ssh` will not use one
+/// either).
+pub fn load(path: str) -> Key ! refuse.Refusal {
+    let info = fs.stat(path) else { return key_unreadable }
+    if fs.answered(info, 4) && info.mode % 64 != 0 {
+        return key_permissions
+    }
+    let text = fs.read_text(path) else |e| match e {
+        utf8 => {
+            return key_malformed
+        },
+        _ => {
+            return key_unreadable
+        },
+    }
+    decode(text)?
 }
