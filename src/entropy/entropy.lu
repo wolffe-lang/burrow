@@ -1,0 +1,69 @@
+//! member: true
+//!
+//! burrow.entropy — the random bytes the transport needs: the KEXINIT
+//! cookie (RFC 4253 §7.1), the X25519 secret scalar (RFC 7748 §6.1) and
+//! packet padding (§6).
+//!
+//! wolf-std has no entropy source at the pinned release (`std.rand` is a
+//! seeded PCG32 and says it is not cryptographic), so burrow reads the
+//! host's `/dev/urandom`, in 4 KiB refills. A host without it, or a read
+//! that fails, is refused as `entropy_unavailable`: burrow never falls
+//! back to a predictable stream. A fixed pool (tests only) hands out the
+//! bytes it was given and then refuses the same way.
+//!
+//! ct: the bytes are never branched on or indexed by.
+
+use std.fs
+use refuse
+
+/// A buffer of random bytes and where its refills come from.
+pub struct Source {
+    buf: List[byte],
+    pos: int,
+    path: str,
+}
+
+/// The system pool: `/dev/urandom`.
+pub fn system() -> Source {
+    Source { buf: List[byte](), pos: 0, path: "/dev/urandom" }
+}
+
+/// A pool holding exactly `bytes` and no source (for tests).
+pub fn fixed(bytes: List[byte]) -> Source {
+    Source { buf: copy bytes, pos: 0, path: "" }
+}
+
+fn refill(mut p: Source, want: int) -> () ! refuse.Refusal {
+    if p.path == "" {
+        return entropy_unavailable
+    }
+    var f = fs.open(p.path) else { return entropy_unavailable }
+    var fresh = List[byte]()
+    var i = p.pos
+    while i < p.buf.len {
+        (mut fresh).push(p.buf[i])
+        i += 1
+    }
+    while fresh.len < want + 4096 {
+        let chunk = fs.read_chunk(mut f, 4096) else {
+            fs.close(take f) else {}
+            return entropy_unavailable
+        }
+        for b in chunk {
+            (mut fresh).push(b)
+        }
+    }
+    fs.close(take f) else {}
+    p.buf = fresh
+    p.pos = 0
+}
+
+/// `n` random bytes.
+pub fn draw(mut p: Source, n: int) -> List[byte] ! refuse.Refusal {
+    if p.buf.len - p.pos < n {
+        refill(mut p, n)?
+    }
+    let out = p.buf[p.pos..p.pos + n]
+    p.pos += n
+    out
+}
