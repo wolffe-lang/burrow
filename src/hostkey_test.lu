@@ -1,0 +1,119 @@
+//! member: false
+
+// RFC 8709 §4/§6 blobs, Ed25519 verification of H, the fingerprint, and
+// the known_hosts verdicts, held to vectorgen's vectors.
+use hostkey
+use kexvec
+use std.base64
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn verdict(text: str, name: str, k_s: List[byte]) -> str {
+    hostkey.check_text(text, name, k_s) else |e| {
+        return "{e}"
+    }
+    "ok"
+}
+
+fn main() {
+    let k_s = x(kexvec.k_s())
+    let key = hostkey.ed25519_key(k_s) else List[byte]()
+    assert(wire.hex(key) == kexvec.host_pub())
+    // The server's signature on H verifies; any flipped bit does not.
+    let h = x(kexvec.h())
+    var ok = true
+    hostkey.verify(key, x(kexvec.sig_blob()), h) else {
+        ok = false
+    }
+    assert(ok)
+    var bad_sig = x(kexvec.sig_blob())
+    bad_sig[30] = (bad_sig[30] as int ^ 4) as byte
+    var why = "none"
+    hostkey.verify(key, bad_sig, h) else |e| {
+        why = "{e}"
+    }
+    assert(why == "host_key_bad_signature")
+    var bad_h = copy h
+    bad_h[0] = (bad_h[0] as int ^ 1) as byte
+    why = "none"
+    hostkey.verify(key, x(kexvec.sig_blob()), bad_h) else |e| {
+        why = "{e}"
+    }
+    assert(why == "host_key_bad_signature")
+    // Another key type is refused by name; a broken blob is malformed.
+    var rsa = List[byte]()
+    wire.put_text(mut rsa, "ssh-rsa")
+    wire.put_string(mut rsa, x("010001"))
+    why = "none"
+    let _ = hostkey.ed25519_key(rsa) else |e| {
+        why = "{e}"
+        List[byte]()
+    }
+    assert(why == "host_key_unsupported")
+    why = "none"
+    let _ = hostkey.ed25519_key(k_s[0..k_s.len - 1]) else |e| {
+        why = "{e}"
+        List[byte]()
+    }
+    assert(why == "malformed")
+    var rsa_sig = List[byte]()
+    wire.put_text(mut rsa_sig, "rsa-sha2-512")
+    wire.put_string(mut rsa_sig, x("00"))
+    why = "none"
+    hostkey.verify(key, rsa_sig, h) else |e| {
+        why = "{e}"
+    }
+    assert(why == "host_key_unsupported")
+    // The fingerprint: SHA256 of the blob, unpadded base64.
+    let fp = hostkey.fingerprint(k_s)
+    var want = base64.encode(x(kexvec.fingerprint()))
+    assert(want.ends_with("="))
+    assert(fp == "SHA256:" + want[0..want.len - 1])
+    // known_hosts: the lookup name, globs, and the three verdicts.
+    assert(hostkey.lookup_name("example.test", 22) == "example.test")
+    assert(hostkey.lookup_name("127.0.0.1", 2222) == "[127.0.0.1]:2222")
+    assert(hostkey.glob("*.test", "a.example.test") && hostkey.glob("h?st", "HOST"))
+    assert(
+        !hostkey.glob("*.test", "a.example.org") &&
+            hostkey.glob("[127.0.0.1]:*", "[127.0.0.1]:2222"),
+    )
+    assert(hostkey.hosts_match("a,*.test,!bad.test", "good.test"))
+    assert(!hostkey.hosts_match("a,*.test,!bad.test", "bad.test"))
+    let blob = base64.encode(k_s)
+    let other = base64.encode(
+        x("0000000b7373682d6564323535313900000020" + "11" + kexvec.host_pub()[2..64]),
+    )
+    let name = "[127.0.0.1]:2222"
+    assert(verdict("", name, k_s) == "host_key_unknown")
+    assert(verdict("# a comment\n\n", name, k_s) == "host_key_unknown")
+    assert(verdict("[127.0.0.1]:2222 ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(verdict("other,[127.0.0.1]:2222 ssh-ed25519 {blob} comment here\n", name, k_s) == "ok")
+    assert(verdict("[127.0.0.1]:2223 ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    assert(verdict("127.0.0.1 ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    assert(verdict("[127.0.0.1]:2222 ssh-ed25519 {other}\n", name, k_s) == "host_key_changed")
+    assert(
+        verdict("[127.0.0.1]:2222 ecdsa-sha2-nistp256 AAAAE2VjZHNh\n", name, k_s) ==
+            "host_key_unknown",
+    )
+    assert(
+        verdict(
+            "[127.0.0.1]:2222 ssh-ed25519 {blob}\n@revoked * ssh-ed25519 {blob}\n",
+            name,
+            k_s,
+        ) ==
+            "host_key_changed",
+    )
+    assert(
+        verdict(
+            "@cert-authority * ssh-ed25519 {other}\n[127.0.0.1]:2222 ssh-ed25519 {blob}\n",
+            name,
+            k_s,
+        ) ==
+            "ok",
+    )
+    assert(verdict("|1|c2FsdA==|aGFzaA== ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    print("hostkey: 6 groups, 0 SKIP")
+}
