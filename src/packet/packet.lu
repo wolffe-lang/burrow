@@ -15,8 +15,9 @@
 //! counts the length field even for stream ciphers. burrow sends and
 //! holds received frames to these rules, each refused by name:
 //!
-//! - `packet_too_short`: `packet_length` under 12 (the 16-byte minimum
-//!   frame, §6);
+//! - `packet_too_short`: `packet_length` under 12 for a plaintext frame
+//!   (the 16-byte minimum frame, §6), under 8 for a sealed one (the
+//!   smallest aligned `packet_length`, which the pinned sshd sends);
 //! - `packet_too_long`: `packet_length` over 262144 (§6.1 requires
 //!   35000 and lets an implementation take more; burrow bounds it before
 //!   it reads the rest);
@@ -136,7 +137,7 @@ pub fn seal(
 }
 
 fn check_length(len: int, sealed: bool) -> () ! refuse.Refusal {
-    if len < 12 {
+    if len < (if sealed then 8 else 12) {
         return packet_too_short
     }
     if len > max_packet_length() {
