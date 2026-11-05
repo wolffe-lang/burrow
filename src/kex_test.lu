@@ -1,0 +1,164 @@
+//! member: false
+
+// RFC 4253 §7.1/§7.2/§8 and RFC 8731, held to vectorgen's independent
+// vectors: the KEXINIT bytes, negotiation, X25519, H and every derived key.
+use kex
+use kexvec
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn list(csv: str) -> List[str] {
+    wire.split_names(wire.bytes_of(csv)) else List[str]()
+}
+
+fn server() -> kex.Proposal {
+    kex.decode(x(kexvec.i_s())) else {
+        assert(false, "the server vector does not decode")
+        return kex.our_proposal(x("00000000000000000000000000000000"))
+    }
+}
+
+fn verdict(theirs: kex.Proposal) -> str {
+    let c = kex.negotiate(
+        kex.our_proposal(x("000102030405060708090a0b0c0d0e0f")),
+        theirs,
+        true,
+    ) else |e| {
+        return "{e}"
+    }
+    "{c.kex} {c.hostkey} {c.cipher_c2s} {c.cipher_s2c} {c.mac_c2s} {c.comp_c2s} strict={c.strict} ext={c.ext_info} ignore={c.ignore_guess}"
+}
+
+fn main() {
+    // burrow's KEXINIT is byte-identical to vectorgen's (cookie 00..0f).
+    let ours = kex.our_proposal(x("000102030405060708090a0b0c0d0e0f"))
+    assert(wire.hex(kex.encode(ours)) == kexvec.i_c())
+    // Decode and re-encode the server's KEXINIT unchanged.
+    let s = server()
+    assert(wire.hex(kex.encode(s)) == kexvec.i_s())
+    assert(s.kex.len == 10 && s.hostkey[0] == "ssh-ed25519" && !s.follows)
+    // Negotiation against the measured server lists.
+    assert(
+        verdict(s) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com hmac-sha2-256 none strict=true ext=true ignore=false",
+    )
+    // Refusals by name, one list at a time.
+    var t = server()
+    t.kex = list("mlkem768x25519-sha256,diffie-hellman-group14-sha256,ext-info-s")
+    assert(verdict(t) == "no_common_kex")
+    t = server()
+    t.kex = list("ext-info-c,kex-strict-c-v00@openssh.com")
+    assert(verdict(t) == "no_common_kex")
+    t = server()
+    t.hostkey = list("rsa-sha2-512,rsa-sha2-256,ssh-rsa")
+    assert(verdict(t) == "no_common_hostkey")
+    t = server()
+    t.cipher_s2c = list("aes128-ctr,aes256-gcm@openssh.com")
+    assert(verdict(t) == "no_common_cipher")
+    t = server()
+    t.comp_c2s = list("zlib@openssh.com")
+    assert(verdict(t) == "no_common_compression")
+    // No common MAC is no refusal under the AEAD.
+    t = server()
+    t.mac_c2s = list("umac-64-etm@openssh.com")
+    assert(
+        verdict(t) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com  none strict=true ext=true ignore=false",
+    )
+    // The older kex name is the same method; strict kex needs the server's indicator.
+    t = server()
+    t.kex = list("curve25519-sha256@libssh.org")
+    assert(
+        verdict(t) ==
+            "curve25519-sha256@libssh.org ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com hmac-sha2-256 none strict=false ext=false ignore=false",
+    )
+    // first_kex_packet_follows: a wrong server guess means ignore its next packet.
+    t = server()
+    t.follows = true
+    assert(
+        verdict(t) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com hmac-sha2-256 none strict=true ext=true ignore=true",
+    )
+    t.kex = list("curve25519-sha256,kex-strict-s-v00@openssh.com")
+    assert(
+        verdict(t) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com hmac-sha2-256 none strict=true ext=false ignore=false",
+    )
+    // The indicators count only in the first exchange.
+    let later = kex.negotiate(ours, server(), false) else {
+        assert(false, "a re-exchange negotiation refused")
+        return
+    }
+    assert(!later.strict && !later.ext_info)
+    // A KEXINIT with bytes after the reserved word, or cut short, is malformed.
+    var long = x(kexvec.i_s())
+    (mut long).push(0 as byte)
+    var why = "none"
+    let _ = kex.decode(long) else |e| {
+        why = "{e}"
+        server()
+    }
+    assert(why == "malformed")
+    let cut = x(kexvec.i_s())
+    why = "none"
+    let _ = kex.decode(cut[0..cut.len - 2]) else |e| {
+        why = "{e}"
+        server()
+    }
+    assert(why == "malformed")
+    // X25519, the mpint of K (with and without a leading zero), H, the keys.
+    let q_c = kex.public_value(x(kexvec.client_secret()))
+    assert(wire.hex(q_c) == kexvec.q_c())
+    let xs = kex.agree(x(kexvec.client_secret()), x(kexvec.q_s())) else List[byte]()
+    assert(wire.hex(xs) == kexvec.x_secret())
+    assert(wire.hex(kex.k_mpint(xs)) == kexvec.k_mpint())
+    let top = kex.agree(x(kexvec.topbit_secret()), x(kexvec.q_s())) else List[byte]()
+    assert(wire.hex(top) == kexvec.topbit_x())
+    assert(wire.hex(kex.k_mpint(top)) == kexvec.topbit_mpint())
+    assert(x(kexvec.topbit_mpint())[4] as int == 0)
+    let h = kex.exchange_hash(
+        x(kexvec.v_c()),
+        x(kexvec.v_s()),
+        x(kexvec.i_c()),
+        x(kexvec.i_s()),
+        x(kexvec.k_s()),
+        q_c,
+        x(kexvec.q_s()),
+        xs,
+    )
+    assert(wire.hex(h) == kexvec.h())
+    let k = kex.k_mpint(xs)
+    assert(wire.hex(kex.derive(k, h, 65, h, 32)) == kexvec.iv_c2s_32())
+    assert(wire.hex(kex.derive(k, h, 66, h, 32)) == kexvec.iv_s2c_32())
+    assert(wire.hex(kex.derive(k, h, 67, h, 32)) == kexvec.key_c2s_32())
+    assert(wire.hex(kex.derive(k, h, 68, h, 32)) == kexvec.key_s2c_32())
+    assert(wire.hex(kex.derive(k, h, 69, h, 32)) == kexvec.mac_c2s_32())
+    assert(wire.hex(kex.derive(k, h, 70, h, 32)) == kexvec.mac_s2c_32())
+    assert(wire.hex(kex.derive(k, h, 67, h, 64)) == kexvec.key_c2s_64())
+    assert(wire.hex(kex.derive(k, h, 68, h, 64)) == kexvec.key_s2c_64())
+    // A rekey derives under the first session id.
+    assert(wire.hex(kex.derive(k, x(kexvec.h2()), 67, h, 64)) == kexvec.key_c2s_rekey_64())
+    // ECDH messages: the INIT's bytes, the REPLY parsed, a short Q_S refused.
+    let init = kex.ecdh_init(q_c)
+    assert(init.len == 37 && init[0] as int == 30)
+    let reply = kex.decode_reply(x(kexvec.ecdh_reply())) else {
+        assert(false, "the reply vector does not decode")
+        return
+    }
+    assert(wire.hex(reply.k_s) == kexvec.k_s() && wire.hex(reply.q_s) == kexvec.q_s())
+    assert(wire.hex(reply.sig) == kexvec.sig_blob())
+    // A small-order Q_S (the identity's u = 0) gives an all-zero X: refused.
+    why = "none"
+    let _ = kex.agree(
+        x(kexvec.client_secret()),
+        x("0000000000000000000000000000000000000000000000000000000000000000"),
+    ) else |e| {
+        why = "{e}"
+        List[byte]()
+    }
+    assert(why == "kex_failed")
+    print("kex: 12 groups, 0 SKIP")
+}
