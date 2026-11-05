@@ -1,0 +1,263 @@
+//! member: false
+
+// burrow — an ssh client. Milestone B1: the transport. It connects,
+// exchanges keys, verifies the host key against known_hosts, requests the
+// `ssh-userauth` service and stops there: user authentication is B2.
+//
+//   burrow [-v[v]] [-p port] [-l user] [-o Option=value]... [--no-strict-kex]
+//          [--test-traffic=BYTES] [[user@]host] [command...]
+//
+// Exit 255 on every refusal (OpenSSH's ssh does the same), after
+// `burrow: <name>: <detail>` on stderr; exit 2 once the transport is up,
+// with "not yet implemented: user authentication".
+//
+// Clean room: RFCs 4250-4254, 4344, 8308, 8709, 8731 and OpenSSH's
+// PROTOCOL notes (docs/SOURCES.md); no ssh implementation's source.
+use std.env
+use refuse
+use transport
+use wire
+
+struct Cli {
+    host: str,
+    user: str,
+    port: int,
+    verbose: int,
+    known_hosts: List[str],
+    allow_no_strict: bool,
+    rekey_bytes: int,
+    rekey_seconds: int,
+    traffic: int,
+    error: str,
+}
+
+fn usage() -> str {
+    "usage: burrow [-v] [-p port] [-l user] [-o option] [--no-strict-kex] [--test-traffic=BYTES] [user@]host [command ...]"
+}
+
+// A byte count with an optional K, M or G suffix (ssh_config's RekeyLimit).
+fn byte_count(s: str) -> int ! {bad_size} {
+    if s.len == 0 {
+        return bad_size
+    }
+    let last = s[s.len - 1..s.len]
+    var mult = 1
+    var digits = s
+    if last == "K" || last == "k" {
+        mult = 1024
+        digits = s[0..s.len - 1]
+    } else if last == "M" || last == "m" {
+        mult = 1048576
+        digits = s[0..s.len - 1]
+    } else if last == "G" || last == "g" {
+        mult = 1073741824
+        digits = s[0..s.len - 1]
+    }
+    let n = digits.to_int() else { return bad_size }
+    if n < 16 {
+        return bad_size
+    }
+    n * mult
+}
+
+fn option(mut cli: Cli, text: str) {
+    let eq = text.find("=") else -1
+    if eq < 0 {
+        cli.error = "burrow: -o {text}: expected Option=value"
+        return
+    }
+    let key = text[0..eq].lower()
+    let value = text[eq + 1..text.len]
+    if key == "userknownhostsfile" {
+        var files = List[str]()
+        for w in value.words() {
+            (mut files).push(w)
+        }
+        cli.known_hosts = files
+    } else if key == "stricthostkeychecking" {
+        if value.lower() != "yes" {
+            cli.error = "burrow: not yet implemented: StrictHostKeyChecking={value} (B2); only yes"
+        }
+    } else if key == "rekeylimit" {
+        let parts = value.words()
+        if parts.len > 0 && parts[0] != "default" {
+            cli.rekey_bytes = byte_count(parts[0]) else {
+                cli.error = "burrow: RekeyLimit {value}: not a size"
+                return
+            }
+        }
+        if parts.len > 1 {
+            cli.rekey_seconds = parts[1].to_int() else {
+                cli.error = "burrow: RekeyLimit {value}: not a number of seconds"
+                return
+            }
+        }
+    } else if key == "port" {
+        cli.port = value.to_int() else {
+            cli.error = "burrow: Port {value}: not a number"
+            return
+        }
+    } else if key == "user" {
+        cli.user = value
+    } else {
+        cli.error = "burrow: not yet implemented: -o {text}"
+    }
+}
+
+fn parse(args: List[str]) -> Cli {
+    let home = env.get("HOME") else ""
+    var known = List[str]()
+    if home.len > 0 {
+        (mut known).push(home + "/.ssh/known_hosts")
+    }
+    var cli = Cli {
+        host: "",
+        user: "",
+        port: 22,
+        verbose: 0,
+        known_hosts: known,
+        allow_no_strict: false,
+        rekey_bytes: 0,
+        rekey_seconds: 0,
+        traffic: 0,
+        error: "",
+    }
+    var i = 0
+    while i < args.len && cli.error == "" && cli.host == "" {
+        let a = args[i]
+        if a == "-v" || a == "-vv" || a == "-vvv" {
+            cli.verbose += a.len - 1
+        } else if a == "-p" || a == "-l" || a == "-o" {
+            if i + 1 >= args.len {
+                cli.error = "burrow: option requires an argument -- {a[1..2]}\n{usage()}"
+                return cli
+            }
+            let v = args[i + 1]
+            i += 1
+            if a == "-p" {
+                cli.port = v.to_int() else -1
+                if cli.port < 1 || cli.port > 65535 {
+                    cli.error = "burrow: Bad port '{v}'"
+                }
+            } else if a == "-l" {
+                cli.user = v
+            } else {
+                option(mut cli, v)
+            }
+        } else if a == "--no-strict-kex" {
+            cli.allow_no_strict = true
+        } else if a.starts_with("--test-traffic=") {
+            cli.traffic = byte_count(a[15..a.len]) else -1
+            if cli.traffic < 0 {
+                cli.error = "burrow: {a}: not a size"
+            }
+        } else if a == "-T" || a == "-N" {
+            // B3's flags; accepted, nothing to do before a channel exists.
+        } else if a.starts_with("-") {
+            cli.error = "burrow: not yet implemented: {a}\n{usage()}"
+        } else {
+            let at = a.rfind("@") else -1
+            if at >= 0 {
+                cli.user = a[0..at]
+                cli.host = a[at + 1..a.len]
+            } else {
+                cli.host = a
+            }
+        }
+        i += 1
+    }
+    if cli.error == "" && cli.host == "" {
+        cli.error = usage()
+    }
+    cli
+}
+
+// Sends IGNORE messages carrying `total` bytes, then a PING, and waits for
+// the PONG: the traffic rows' load, under which re-exchanges happen.
+fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
+    var data = List[byte]()
+    var i = 0
+    while i < 1000 {
+        (mut data).push((i % 251) as byte)
+        i += 1
+    }
+    var sent = 0
+    while sent < total {
+        var p = List[byte]()
+        wire.put_u8(mut p, refuse.msg_ignore())
+        wire.put_string(mut p, data)
+        transport.send(mut c, p)?
+        sent += data.len
+    }
+    var ping = List[byte]()
+    wire.put_u8(mut ping, refuse.msg_ping())
+    wire.put_text(mut ping, "burrow traffic {total}")
+    transport.send(mut c, ping)?
+    let back = transport.next(mut c)?
+    if transport.kind(back) != refuse.msg_pong() ||
+        wire.hex(back[1..back.len]) != wire.hex(ping[1..ping.len]) {
+        c.detail = "message {transport.kind(back)} in answer to PING"
+        return message_unexpected
+    }
+    eprint(
+        "burrow: traffic: {total} bytes sent; rekeys: {c.by_us} by burrow, {c.by_server} by the server; PONG received",
+    )
+}
+
+fn run(cli: Cli) -> int {
+    var opts = transport.options(cli.host, cli.port)
+    opts.known_hosts = cli.known_hosts
+    opts.allow_no_strict = cli.allow_no_strict
+    opts.verbose = cli.verbose
+    if cli.rekey_bytes > 0 {
+        opts.rekey_bytes = cli.rekey_bytes
+    }
+    if cli.rekey_seconds > 0 {
+        opts.rekey_seconds = cli.rekey_seconds
+    }
+    var c = transport.dial(opts) else |e| {
+        eprint("burrow: {e}: connect to host {cli.host} port {cli.port}")
+        return 255
+    }
+    var ok = true
+    var why = ""
+    transport.start(mut c) else |e| {
+        ok = false
+        why = "{e}"
+    }
+    if ok {
+        transport.service(mut c, "ssh-userauth") else |e| {
+            ok = false
+            why = "{e}"
+        }
+    }
+    if ok && cli.traffic > 0 {
+        traffic(mut c, cli.traffic) else |e| {
+            ok = false
+            why = "{e}"
+        }
+    }
+    if !ok {
+        if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
+            transport.disconnect(mut c, refuse.reason_of(why), why)
+        }
+        eprint("burrow: {why}: {c.detail}")
+        transport.close(take c)
+        return 255
+    }
+    transport.disconnect(mut c, 11, "not yet implemented: user authentication")
+    transport.close(take c)
+    eprint(
+        "burrow: not yet implemented: user authentication (B2); the transport to {cli.host} is up",
+    )
+    2
+}
+
+fn main() -> int {
+    let cli = parse(env.args())
+    if cli.error != "" {
+        eprint(cli.error)
+        return 255
+    }
+    run(cli)
+}
