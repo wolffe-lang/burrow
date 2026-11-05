@@ -102,8 +102,7 @@ jobs:
           name: linux-evidence
           path: |
             target/tests
-            target/transport/*/frames.txt
-            target/transport/*/sshd/sshd.log
+            target/evidence
   macos:
     needs: plan
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (contains(fromJSON(needs.plan.outputs.jobs || '[]'), 'macos')) }}
