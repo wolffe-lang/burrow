@@ -1,0 +1,48 @@
+//! member: false
+
+// SHA-1 (FIPS 180-4) and HMAC-SHA1 (RFC 2104) held to NIST's vectors:
+// FIPS 180-4's two examples, every CAVP ShortMsg record (0 to 64 bytes,
+// every padding boundary), four LongMsg records, and two HMAC records of
+// each key and tag length (keys under, at and over the 64-byte block).
+use sha1
+use sha1vec
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn main() {
+    var n = 0
+    for v in sha1vec.sha1() {
+        let f = v.split(" ")
+        let got = wire.hex(sha1.sum(x(f[0])))
+        if got != f[1] {
+            print("FAIL sha1 vector {n}: {got} wanted {f[1]}")
+        }
+        assert(got == f[1])
+        n += 1
+    }
+    var m = 0
+    for v in sha1vec.hmac() {
+        let f = v.split(" ")
+        let tag = wire.hex(sha1.hmac(x(f[0]), x(f[1])))
+        let got = tag[0..f[2].len]
+        if got != f[2] {
+            print("FAIL hmac vector {m}: {got} wanted {f[2]}")
+        }
+        assert(got == f[2])
+        m += 1
+    }
+    // An incremental digest equals the one-shot digest at any split.
+    let msg = x(sha1vec.sha1()[40].split(" ")[0])
+    var i = 0
+    while i <= msg.len {
+        var st = sha1.new()
+        sha1.update(mut st, msg[0..i])
+        sha1.update(mut st, msg[i..msg.len])
+        assert(wire.hex(sha1.finish(take st)) == wire.hex(sha1.sum(msg)))
+        i += 7
+    }
+    print("sha1: {n} SHA-1 and {m} HMAC-SHA1 vectors from NIST, and incremental splits")
+}

@@ -1,0 +1,46 @@
+//! member: true
+//!
+//! burrow.sha1 — SHA-1 (FIPS 180-4) and HMAC-SHA1 (RFC 2104), for hashed
+//! known_hosts names only. A stub until its implementation lands.
+
+/// A running SHA-1.
+pub struct State {
+    buf: List[byte],
+}
+
+/// A fresh SHA-1.
+pub fn new() -> State {
+    State { buf: List[byte]() }
+}
+
+/// Feeds `data`.
+pub fn update(mut st: State, data: List[byte]) {
+    for b in data {
+        (mut st.buf).push(b)
+    }
+}
+
+/// The 20-byte digest.
+pub fn finish(take st: State) -> List[byte] {
+    var out = List[byte]()
+    var i = 0
+    while i < 20 {
+        (mut out).push(0 as byte)
+        i += 1
+    }
+    let _ = st.buf.len
+    out
+}
+
+/// The SHA-1 digest of `msg`.
+pub fn sum(msg: List[byte]) -> List[byte] {
+    var st = new()
+    update(mut st, msg)
+    finish(take st)
+}
+
+/// HMAC-SHA1 of `msg` under `key`.
+pub fn hmac(key: List[byte], msg: List[byte]) -> List[byte] {
+    let _ = key.len
+    sum(msg)
+}
