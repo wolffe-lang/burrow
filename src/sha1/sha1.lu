@@ -1,35 +1,191 @@
 //! member: true
 //!
-//! burrow.sha1 — SHA-1 (FIPS 180-4) and HMAC-SHA1 (RFC 2104), for hashed
-//! known_hosts names only. A stub until its implementation lands.
+//! burrow.sha1 — SHA-1 (FIPS 180-4) and HMAC-SHA1 (RFC 2104), written from
+//! those documents and held to NIST's published vectors (`src/sha1_test.lu`,
+//! `src/sha1vec`).
+//!
+//! **Hashed known_hosts names only.** OpenSSH's `|1|salt|hash` host names are
+//! HMAC-SHA1 keyed by the salt over the name (measured against the pinned
+//! `ssh-keygen -H`); nothing else in burrow uses SHA-1, and no signature or
+//! key exchange ever will. **Replace this module with wolf-std's SHA-1 when
+//! wolf-std#131 lands.**
+//!
+//! 32-bit words ride in the low half of a `wrapping[u64]` and are masked
+//! after every sum and rotation, the spelling wolf-std's sha2 uses.
+//!
+//! ct: the compression function is additions, rotations and bitwise
+//! operations on fixed schedules, with no branch on data; it hashes public
+//! host names here, so nothing rests on that.
 
-/// A running SHA-1.
+/// A running SHA-1: the five chaining words (FIPS 180-4 §6.1.2), the
+/// unprocessed tail of the input, and the message length in bytes.
 pub struct State {
+    h0: wrapping[u64],
+    h1: wrapping[u64],
+    h2: wrapping[u64],
+    h3: wrapping[u64],
+    h4: wrapping[u64],
     buf: List[byte],
+    len: int,
 }
 
-/// A fresh SHA-1.
+fn mask32() -> wrapping[u64] {
+    0xffffffff
+}
+
+// ROTL n(x) on a 32-bit word (FIPS 180-4 §3.2).
+fn rotl(x: wrapping[u64], n: int) -> wrapping[u64] {
+    (x << n as wrapping[u64] | x >> (32 - n) as wrapping[u64]) & mask32()
+}
+
+/// A fresh SHA-1, at FIPS 180-4 §5.3.1's initial hash value.
 pub fn new() -> State {
-    State { buf: List[byte]() }
-}
-
-/// Feeds `data`.
-pub fn update(mut st: State, data: List[byte]) {
-    for b in data {
-        (mut st.buf).push(b)
+    // Typed bindings, as wolf-std's sha2 spells its initial words (lupin
+    // reads a bare literal in a struct field as `i32`).
+    let a0: wrapping[u64] = 0x67452301
+    let a1: wrapping[u64] = 0xefcdab89
+    let a2: wrapping[u64] = 0x98badcfe
+    let a3: wrapping[u64] = 0x10325476
+    let a4: wrapping[u64] = 0xc3d2e1f0
+    State {
+        h0: a0,
+        h1: a1,
+        h2: a2,
+        h3: a3,
+        h4: a4,
+        buf: List[byte](),
+        len: 0,
     }
 }
 
-/// The 20-byte digest.
-pub fn finish(take st: State) -> List[byte] {
-    var out = List[byte]()
+// One 512-bit block, `blk[at..at + 64]` (FIPS 180-4 §6.1.2).
+fn compress(mut st: State, blk: List[byte], at: int) {
+    var w = List[wrapping[u64]]()
+    var t = 0
+    while t < 16 {
+        let o = at + t * 4
+        (mut w).push(
+            blk[o] as int as wrapping[u64] << 24 |
+                blk[o + 1] as int as wrapping[u64] << 16 |
+                blk[o + 2] as int as wrapping[u64] << 8 |
+                blk[o + 3] as int as wrapping[u64],
+        )
+        t += 1
+    }
+    while t < 80 {
+        (mut w).push(rotl(w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16], 1))
+        t += 1
+    }
+    var a = st.h0
+    var b = st.h1
+    var c = st.h2
+    var d = st.h3
+    var e = st.h4
+    let k0: wrapping[u64] = 0x5a827999
+    let k1: wrapping[u64] = 0x6ed9eba1
+    let k2: wrapping[u64] = 0x8f1bbcdc
+    let k3: wrapping[u64] = 0xca62c1d6
+    t = 0
+    while t < 80 {
+        // f_t and K_t (§4.1.1, §4.2.1): Ch, Parity, Maj, Parity.
+        var f: wrapping[u64] = 0
+        var k: wrapping[u64] = 0
+        if t < 20 {
+            f = b & c ^ (b ^ mask32()) & d
+            k = k0
+        } else if t < 40 {
+            f = b ^ c ^ d
+            k = k1
+        } else if t < 60 {
+            f = b & c ^ b & d ^ c & d
+            k = k2
+        } else {
+            f = b ^ c ^ d
+            k = k3
+        }
+        let tt = rotl(a, 5) + f + e + k + w[t] & mask32()
+        e = d
+        d = c
+        c = rotl(b, 30)
+        b = a
+        a = tt
+        t += 1
+    }
+    st.h0 = st.h0 + a & mask32()
+    st.h1 = st.h1 + b & mask32()
+    st.h2 = st.h2 + c & mask32()
+    st.h3 = st.h3 + d & mask32()
+    st.h4 = st.h4 + e & mask32()
+}
+
+/// Feeds `data`; every whole block is compressed as soon as it is there.
+pub fn update(mut st: State, data: List[byte]) {
+    st.len += data.len
     var i = 0
-    while i < 20 {
-        (mut out).push(0 as byte)
+    if st.buf.len > 0 {
+        while i < data.len && st.buf.len < 64 {
+            (mut st.buf).push(data[i])
+            i += 1
+        }
+        if st.buf.len < 64 {
+            return
+        }
+        let blk = copy st.buf
+        compress(mut st, blk, 0)
+        st.buf = List[byte]()
+    }
+    while data.len - i >= 64 {
+        compress(mut st, data, i)
+        i += 64
+    }
+    while i < data.len {
+        (mut st.buf).push(data[i])
         i += 1
     }
-    let _ = st.buf.len
+}
+
+fn push_word(mut out: List[byte], w: wrapping[u64]) {
+    (mut out).push((w >> 24 & 0xff) as int as byte)
+    (mut out).push((w >> 16 & 0xff) as int as byte)
+    (mut out).push((w >> 8 & 0xff) as int as byte)
+    (mut out).push((w & 0xff) as int as byte)
+}
+
+/// Pads (FIPS 180-4 §5.1.1: a 1 bit, zeros, the bit length as 64 bits)
+/// and returns the 20-byte digest H0 || H1 || H2 || H3 || H4.
+pub fn finish(take st: State) -> List[byte] {
+    var s = st
+    let bits = s.len * 8
+    var tail = List[byte]()
+    (mut tail).push(128 as byte)
+    while (s.len + tail.len) % 64 != 56 {
+        (mut tail).push(0 as byte)
+    }
+    var i = 56
+    while i >= 0 {
+        (mut tail).push((bits / pow2(i) % 256) as byte)
+        i -= 8
+    }
+    let total = s.len
+    update(mut s, tail)
+    s.len = total
+    var out = List[byte]()
+    push_word(mut out, s.h0)
+    push_word(mut out, s.h1)
+    push_word(mut out, s.h2)
+    push_word(mut out, s.h3)
+    push_word(mut out, s.h4)
     out
+}
+
+fn pow2(n: int) -> int {
+    var p: int = 1
+    var i = 0
+    while i < n {
+        p *= 2
+        i += 1
+    }
+    p
 }
 
 /// The SHA-1 digest of `msg`.
@@ -39,8 +195,25 @@ pub fn sum(msg: List[byte]) -> List[byte] {
     finish(take st)
 }
 
-/// HMAC-SHA1 of `msg` under `key`.
+/// HMAC-SHA1 of `msg` under `key` (RFC 2104 §2, B = 64, L = 20): a key
+/// longer than B is hashed first, then zero-padded to B, and the tag is
+/// H(K ^ opad, H(K ^ ipad, msg)) with ipad 0x36 and opad 0x5c repeated.
 pub fn hmac(key: List[byte], msg: List[byte]) -> List[byte] {
-    let _ = key.len
-    sum(msg)
+    let k = if key.len > 64 then sum(key) else copy key
+    var ipad = List[byte]()
+    var opad = List[byte]()
+    var i = 0
+    while i < 64 {
+        let kb = if i < k.len then k[i] as int else 0
+        (mut ipad).push((kb ^ 0x36) as byte)
+        (mut opad).push((kb ^ 0x5c) as byte)
+        i += 1
+    }
+    var inner = new()
+    update(mut inner, ipad)
+    update(mut inner, msg)
+    var outer = new()
+    update(mut outer, opad)
+    update(mut outer, finish(take inner))
+    finish(take outer)
 }
