@@ -5,7 +5,12 @@
 // `ssh-userauth` service and stops there: user authentication is B2.
 //
 //   burrow [-v[v]] [-p port] [-l user] [-o Option=value]... [--no-strict-kex]
-//          [--test-traffic=BYTES] [[user@]host] [command...]
+//          [--test-auth-none] [--test-traffic=BYTES] [[user@]host] [command...]
+//
+// The two --test- options exist for the transport rows: --test-auth-none
+// sends RFC 4252 §5.2's `none` request for the user (the pinned sshd lets
+// no client re-exchange keys before user authentication, so the rekey rows
+// run after it), and --test-traffic sends IGNORE messages, then a PING.
 //
 // Exit 255 on every refusal (OpenSSH's ssh does the same), after
 // `burrow: <name>: <detail>` on stderr; exit 2 once the transport is up,
@@ -28,11 +33,12 @@ struct Cli {
     rekey_bytes: int,
     rekey_seconds: int,
     traffic: int,
+    auth_none: bool,
     error: str,
 }
 
 fn usage() -> str {
-    "usage: burrow [-v] [-p port] [-l user] [-o option] [--no-strict-kex] [--test-traffic=BYTES] [user@]host [command ...]"
+    "usage: burrow [-v] [-p port] [-l user] [-o option] [--no-strict-kex] [--test-auth-none] [--test-traffic=BYTES] [user@]host [command ...]"
 }
 
 // A byte count with an optional K, M or G suffix (ssh_config's RekeyLimit).
@@ -120,6 +126,7 @@ fn parse(args: List[str]) -> Cli {
         rekey_bytes: 0,
         rekey_seconds: 0,
         traffic: 0,
+        auth_none: false,
         error: "",
     }
     var i = 0
@@ -146,6 +153,8 @@ fn parse(args: List[str]) -> Cli {
             }
         } else if a == "--no-strict-kex" {
             cli.allow_no_strict = true
+        } else if a == "--test-auth-none" {
+            cli.auth_none = true
         } else if a.starts_with("--test-traffic=") {
             cli.traffic = byte_count(a[15..a.len]) else -1
             if cli.traffic < 0 {
@@ -170,6 +179,38 @@ fn parse(args: List[str]) -> Cli {
         cli.error = usage()
     }
     cli
+}
+
+// RFC 4252 §5.2: a `none` request for `user`, for the `ssh-connection`
+// service. SUCCESS means the server needs no authentication for this user;
+// FAILURE is `auth_refused`, with the methods that can continue.
+fn auth_none(mut c: transport.Conn, user: str) -> () ! refuse.Refusal {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_userauth_request())
+    wire.put_text(mut p, user)
+    wire.put_text(mut p, "ssh-connection")
+    wire.put_text(mut p, "none")
+    transport.send(mut c, p)?
+    loop {
+        let got = transport.next(mut c)?
+        let t = transport.kind(got)
+        if t == refuse.msg_userauth_success() {
+            if c.opts.verbose > 0 {
+                eprint("debug1: Authentication succeeded (none).")
+            }
+            return
+        }
+        if t == refuse.msg_userauth_failure() {
+            var r = wire.reader(got[1..got.len])
+            let methods = wire.read_utf8(mut r) else ""
+            c.detail = "the server refused `none` for {user}; methods that can continue: {methods}"
+            return auth_refused
+        }
+        if t != refuse.msg_userauth_banner() {
+            c.detail = "message {t} in answer to a userauth request"
+            return message_unexpected
+        }
+    }
 }
 
 // Sends IGNORE messages carrying `total` bytes, then a PING, and waits for
@@ -227,6 +268,16 @@ fn run(cli: Cli) -> int {
     }
     if ok {
         transport.service(mut c, "ssh-userauth") else |e| {
+            ok = false
+            why = "{e}"
+        }
+    }
+    var user = cli.user
+    if user == "" {
+        user = env.get("USER") else ""
+    }
+    if ok && cli.auth_none {
+        auth_none(mut c, user) else |e| {
             ok = false
             why = "{e}"
         }
