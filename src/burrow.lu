@@ -234,7 +234,24 @@ fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
     wire.put_u8(mut ping, refuse.msg_ping())
     wire.put_text(mut ping, "burrow traffic {total}")
     transport.send(mut c, ping)?
-    let back = transport.next(mut c)?
+    var back = transport.next(mut c)?
+    while transport.kind(back) == refuse.msg_global_request() {
+        // The pinned sshd announces its host keys after a login
+        // (`hostkeys-00@openssh.com`, `PROTOCOL` §2.5). With no connection
+        // layer yet, a request that wants a reply is declined (RFC 4254 §4).
+        var r = wire.reader(back[1..back.len])
+        let name = wire.read_utf8(mut r) else ""
+        let want = wire.read_bool(mut r) else false
+        if c.opts.verbose > 0 {
+            eprint("debug1: global request {name} (want reply {want}): declined")
+        }
+        if want {
+            var no = List[byte]()
+            wire.put_u8(mut no, refuse.msg_request_failure())
+            transport.send(mut c, no)?
+        }
+        back = transport.next(mut c)?
+    }
     if transport.kind(back) != refuse.msg_pong() ||
         wire.hex(back[1..back.len]) != wire.hex(ping[1..ping.len]) {
         c.detail = "message {transport.kind(back)} in answer to PING"
@@ -295,6 +312,12 @@ fn run(cli: Cli) -> int {
         eprint("burrow: {why}: {c.detail}")
         transport.close(take c)
         return 255
+    }
+    if cli.auth_none {
+        transport.disconnect(mut c, 11, "not yet implemented: channels")
+        transport.close(take c)
+        eprint("burrow: not yet implemented: channels (B3); {user} is authenticated on {cli.host}")
+        return 2
     }
     transport.disconnect(mut c, 11, "not yet implemented: user authentication")
     transport.close(take c)
