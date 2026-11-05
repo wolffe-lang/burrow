@@ -312,7 +312,7 @@ pub fn exchange_hash(
     wire.put_string(mut part, v_c)
     wire.put_string(mut part, v_s)
     wire.put_string(mut part, i_c)
-    wire.put_string(mut part, i_s)
+    wire.put_string(mut part, i_s[0..0])
     wire.put_string(mut part, k_s)
     wire.put_string(mut part, q_c)
     wire.put_string(mut part, q_s)
