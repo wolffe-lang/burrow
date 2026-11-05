@@ -8,8 +8,13 @@ keys for that run), runs burrow as a black box, and holds its exit status,
 its stderr and the sshd log to what the row names. Mutation rows put
 tools/mitm.py's relay between them. A row prints `PASS <row>` or
 `FAIL <row> <why>` at column 0; the exit status is the number of failures
-(capped at 100). Private keys stay in the run directory; rows print only
-fingerprints.
+(capped at 100). Private keys stay in the run directory (mode 0700, the
+container's root its owner); rows print only fingerprints.
+
+After the rows, each row's `sshd.log` and `frames.txt` are copied to
+target/evidence/transport-<tier>/<row>/, readable by every user (the CI
+runner uploads only that directory, not the run directories), and that copy
+is checked to hold no key file and no private key text (`evidence`).
 """
 import argparse
 import os
@@ -413,6 +418,37 @@ def transcript():
             f"packet_length/padding burrow vs ssh: {pads}")
 
 
+def keep_evidence(tier):
+    """Copies the rows' logs to a readable evidence directory; FAIL lines if
+    a key file or private key text would land there."""
+    out = ROOT / "target" / "evidence" / f"transport-{tier}"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    kept = 0
+    for d in sorted(p for p in WORK.iterdir() if p.is_dir() and p.name != "home"):
+        for rel in ("sshd/sshd.log", "frames.txt"):
+            src = d / rel
+            if src.is_file():
+                dst = out / d.name / src.name
+                dst.parent.mkdir(exist_ok=True)
+                shutil.copyfile(src, dst)
+                kept += 1
+    bad = []
+    for p in [out.parent, out] + sorted(out.rglob("*")):
+        os.chmod(p, 0o755 if p.is_dir() else 0o644)
+        if p.is_file():
+            if p.name.startswith(("host_", "id_", "other")) or p.suffix == ".pub":
+                bad.append(f"{p.relative_to(ROOT)} is a key file")
+            elif b"PRIVATE KEY" in p.read_bytes():
+                bad.append(f"{p.relative_to(ROOT)} holds private key text")
+    for why in bad:
+        print(f"FAIL evidence {why}", flush=True)
+    if not bad:
+        print(f"check-transport: {kept} evidence files in {out.relative_to(ROOT)}, readable, no key material")
+    return len(bad)
+
+
 def main():
     global BIN
     ap = argparse.ArgumentParser()
@@ -441,6 +477,7 @@ def main():
             fails += 1
             print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
     print(f"check-transport: {len([f for f in ROWS if not a.only or f.__name__.replace('_', '-') in a.only])} rows, {fails} failed, 0 SKIP")
+    fails += keep_evidence(BIN.parent.name)
     sys.exit(min(fails, 100))
 
 
