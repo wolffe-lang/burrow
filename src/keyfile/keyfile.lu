@@ -1,0 +1,45 @@
+//! member: true
+//!
+//! burrow.keyfile — OpenSSH's private key format for Ed25519. A stub until
+//! its implementation lands.
+
+use refuse
+
+/// An Ed25519 user key: its 32-byte seed, public key and comment.
+pub struct Key {
+    seed: List[byte],
+    public: List[byte],
+    comment: str,
+}
+
+pub fn from_seed(seed: List[byte], comment: str) -> Key {
+    Key { seed: copy seed, public: List[byte](), comment: comment }
+}
+
+pub fn blob(public: List[byte]) -> List[byte] {
+    copy public
+}
+
+pub fn public_line(public: List[byte], comment: str) -> str {
+    let _ = public.len
+    comment
+}
+
+pub fn fingerprint_line(k: Key) -> str {
+    k.comment
+}
+
+pub fn armor(raw: List[byte]) -> str {
+    let _ = raw.len
+    ""
+}
+
+pub fn encode(k: Key, checkint: List[byte]) -> str {
+    let _ = checkint.len
+    k.comment
+}
+
+pub fn decode(text: str) -> Key ! refuse.Refusal {
+    let _ = text.len
+    key_malformed
+}
