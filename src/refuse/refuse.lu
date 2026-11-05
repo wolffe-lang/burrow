@@ -42,6 +42,7 @@ pub error Refusal = {
     entropy_unavailable,
     sequence_wrapped,
     disconnected,
+    connect_refused,
     closed,
     timeout,
     io,

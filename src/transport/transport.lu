@@ -1,0 +1,597 @@
+//! member: true
+//!
+//! burrow.transport — the SSH transport layer (RFC 4253) over one TCP
+//! connection: the version exchange, the key exchange and every
+//! re-exchange, strict kex, ext-info, the service request, and
+//! disconnects.
+//!
+//! **Blocking, one connection.** `dial` opens the socket; `start` runs
+//! the version exchange and the first key exchange; `service` asks for a
+//! service; `next` returns the next message for the layer above and
+//! `send` sends one. Both of those handle the transport's own messages
+//! on the way: IGNORE, DEBUG and UNIMPLEMENTED (RFC 4253 §11), the
+//! server's EXT_INFO (RFC 8308; unknown extensions ignored, §2.5), the
+//! server's KEXINIT (a re-exchange it started, §9), OpenSSH's PING
+//! (answered with PONG) and DISCONNECT (the `disconnected` refusal).
+//!
+//! **Strict kex** (OpenSSH `PROTOCOL` §1.10). burrow always offers
+//! `kex-strict-c-v00@openssh.com` and refuses a server that does not
+//! offer `-s-v00` (`strict_kex_missing`) unless `allow_no_strict`. When
+//! it is in force: the server's first packet must be its KEXINIT, and
+//! during the first exchange any message the exchange does not need
+//! (IGNORE and DEBUG included) is `strict_kex_violation`; and every
+//! NEWKEYS, sent or received, resets that direction's sequence number.
+//!
+//! **Re-exchange** (RFC 4253 §9, RFC 4344 §3). burrow starts one when a
+//! direction has carried `rekey_bytes` (1 GiB by default) or
+//! `rekey_packets` (2^31) since its last NEWKEYS, or `rekey_seconds`
+//! (one hour) have passed, and answers the server's KEXINIT at any
+//! time. The session identifier stays the first H; the host key must not
+//! change (`host_key_changed`). Messages for the layer above that arrive
+//! while burrow waits for the server's KEXINIT are kept, in order.
+//!
+//! **Detail.** A refusal is a tag; `detail` holds the sentence that
+//! explains it, for `burrow: <tag>: <detail>`.
+
+use std.fs
+use std.net
+use std.time
+use entropy
+use hostkey
+use kex
+use packet
+use refuse
+use version
+use wire
+
+/// What a connection is configured with.
+pub struct Options {
+    host: str,
+    port: int,
+    known_hosts: List[str],
+    allow_no_strict: bool,
+    rekey_bytes: int,
+    rekey_packets: int,
+    rekey_seconds: int,
+    timeout_ms: int,
+    verbose: int,
+}
+
+/// The defaults for `host` and `port`: strict kex, strict host keys
+/// (`known_hosts` is filled by the caller), RFC 4253 §9's rekey points.
+pub fn options(host: str, port: int) -> Options {
+    Options {
+        host: host,
+        port: port,
+        known_hosts: List[str](),
+        allow_no_strict: false,
+        rekey_bytes: 1073741824,
+        rekey_packets: 2147483648,
+        rekey_seconds: 3600,
+        timeout_ms: 30000,
+        verbose: 0,
+    }
+}
+
+/// One connection's transport state.
+pub struct Conn {
+    sock: net.Socket,
+    opts: Options,
+    inbuf: List[byte],
+    inpos: int,
+    tx: packet.Direction,
+    rx: packet.Direction,
+    pool: entropy.Source,
+    v_s: List[byte],
+    software: str,
+    session_id: List[byte],
+    host_k_s: List[byte],
+    strict: bool,
+    exchanges: int,
+    by_us: int,
+    by_server: int,
+    keyed_at_ns: int,
+    pending: List[List[byte]],
+    extensions: List[str],
+    sig_algs: str,
+    detail: str,
+}
+
+fn say(c: Conn, level: int, msg: str) {
+    if c.opts.verbose >= level {
+        eprint("debug{level}: {msg}")
+    }
+}
+
+fn join(xs: List[str]) -> str {
+    var out = ""
+    for x in xs {
+        if out.len > 0 {
+            out += ","
+        }
+        out += x
+    }
+    out
+}
+
+/// Opens the TCP connection (no bytes sent yet).
+pub fn dial(opts: Options) -> Conn ! refuse.Refusal {
+    var sock = net.connect(net.endpoint(opts.host, opts.port)) else |e| match e {
+        refused => {
+            return connect_refused
+        },
+        timeout => {
+            return timeout
+        },
+        io => {
+            return io
+        },
+    }
+    net.set_deadline(mut sock, opts.timeout_ms) else {
+        return io
+    }
+    Conn {
+        sock: sock,
+        opts: copy opts,
+        inbuf: List[byte](),
+        inpos: 0,
+        tx: packet.plain(),
+        rx: packet.plain(),
+        pool: entropy.system(),
+        v_s: List[byte](),
+        software: "",
+        session_id: List[byte](),
+        host_k_s: List[byte](),
+        strict: false,
+        exchanges: 0,
+        by_us: 0,
+        by_server: 0,
+        keyed_at_ns: time.monotonic_ns(),
+        pending: List[List[byte]](),
+        extensions: List[str](),
+        sig_algs: "",
+        detail: "",
+    }
+}
+
+fn fill(mut c: Conn) -> () ! refuse.Refusal {
+    if c.inpos > 0 && c.inpos == c.inbuf.len {
+        c.inbuf = List[byte]()
+        c.inpos = 0
+    } else if c.inpos > 65536 {
+        c.inbuf = c.inbuf[c.inpos..c.inbuf.len]
+        c.inpos = 0
+    }
+    let got = net.read_bytes(mut c.sock, 65536) else |e| match e {
+        closed => {
+            c.detail = "the server closed the connection"
+            return closed
+        },
+        timeout => {
+            c.detail = "no bytes from the server within {c.opts.timeout_ms} ms"
+            return timeout
+        },
+        io => {
+            return io
+        },
+    }
+    wire.put_raw(mut c.inbuf, got)
+}
+
+fn send_raw(mut c: Conn, bytes: List[byte]) -> () ! refuse.Refusal {
+    net.write_bytes(mut c.sock, bytes) else |e| match e {
+        closed => {
+            c.detail = "the server closed the connection"
+            return closed
+        },
+        invalid => {
+            return io
+        },
+        io => {
+            return io
+        },
+    }
+}
+
+fn send_packet(mut c: Conn, payload: List[byte]) -> () ! refuse.Refusal {
+    let pad = entropy.draw(mut c.pool, packet.pad_len(payload.len))?
+    let out = packet.seal(mut c.tx, payload, pad)?
+    send_raw(mut c, out)?
+}
+
+fn read_packet(mut c: Conn) -> List[byte] ! refuse.Refusal {
+    loop {
+        c.detail = "a packet from the server, sequence number {c.rx.seq}"
+        let o = packet.open(mut c.rx, c.inbuf, c.inpos)?
+        if o.complete {
+            c.inpos += o.used
+            if o.payload.len == 0 {
+                c.detail = "a packet with an empty payload"
+                return malformed
+            }
+            return o.payload
+        }
+        fill(mut c)?
+    }
+}
+
+/// The message number of a payload.
+pub fn kind(p: List[byte]) -> int {
+    p[0] as int
+}
+
+// The detail of the server's SSH_MSG_DISCONNECT: its reason and text.
+fn note_disconnect(mut c: Conn, p: List[byte]) {
+    var r = wire.reader(p[1..p.len])
+    let code = wire.read_u32(mut r) else 0
+    let text = wire.read_utf8(mut r) else "<no description>"
+    c.detail = "{refuse.reason_name(code)} ({code}): {text}"
+}
+
+fn on_debug(c: Conn, p: List[byte]) {
+    var r = wire.reader(p[1..p.len])
+    let _ = wire.read_bool(mut r) else false
+    let text = wire.read_utf8(mut r) else "<unreadable>"
+    say(c, 1, "Remote: {text}")
+}
+
+/// Reads the server's identification and runs the first key exchange.
+pub fn start(mut c: Conn) -> () ! refuse.Refusal {
+    send_raw(mut c, version.client_line())?
+    say(c, 1, "Local version string {version.client_ident()}")
+    loop {
+        c.detail = "the server's identification"
+        let s = version.scan(c.inbuf[c.inpos..c.inbuf.len])?
+        if s.found {
+            for b in s.banners {
+                say(c, 1, "banner line: {b}")
+            }
+            c.detail = "the server identified as {str_from_utf8(s.line) else "<not UTF-8>"}"
+            let id = version.parse(s.line)?
+            c.v_s = s.line
+            c.software = id.software
+            c.inpos += s.consumed
+            say(c, 1, "Remote protocol version {id.proto}, remote software version {id.software}")
+            break
+        }
+        fill(mut c)?
+    }
+    exchange(mut c, List[byte]())?
+}
+
+fn noise(t: int) -> bool {
+    t == refuse.msg_ignore() || t == refuse.msg_debug() || t == refuse.msg_unimplemented()
+}
+
+// Reads the next packet of an exchange, which must be `want`. In the
+// first exchange under strict kex nothing else may arrive; otherwise
+// IGNORE, DEBUG and UNIMPLEMENTED are handled and skipped (RFC 4253 §7.1).
+fn expect(mut c: Conn, want: int, initial: bool, what: str) -> List[byte] ! refuse.Refusal {
+    loop {
+        let p = read_packet(mut c)?
+        let t = kind(p)
+        if t == want {
+            return p
+        }
+        if t == refuse.msg_disconnect() {
+            note_disconnect(mut c, p)
+            return disconnected
+        }
+        if initial && c.strict {
+            c.detail = "message {t} while expecting {what} in the first key exchange"
+            return strict_kex_violation
+        }
+        if !noise(t) {
+            c.detail = "message {t} while expecting {what}"
+            return message_unexpected
+        }
+        if t == refuse.msg_debug() {
+            on_debug(c, p)
+        }
+    }
+}
+
+fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
+    let name = hostkey.lookup_name(c.opts.host, c.opts.port)
+    var text = ""
+    for path in c.opts.known_hosts {
+        if fs.exists(path) {
+            let t = fs.read_text(path) else {
+                c.detail = "{path} cannot be read"
+                return known_hosts_unreadable
+            }
+            text += t
+            text += "\n"
+        }
+    }
+    c.detail = "{name} presents ssh-ed25519 {hostkey.fingerprint(k_s)}; known_hosts: {join(c.opts.known_hosts)}"
+    hostkey.check_text(text, name, k_s)?
+}
+
+// One key exchange: the first when `exchanges` is 0, a re-exchange
+// otherwise. `theirs` is the server's KEXINIT when it started this one.
+fn exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
+    let initial = c.exchanges == 0
+    let cookie = entropy.draw(mut c.pool, 16)?
+    let ours = kex.our_proposal(cookie)
+    let i_c = kex.encode(ours)
+    send_packet(mut c, i_c)?
+    say(c, 1, "SSH2_MSG_KEXINIT sent")
+    var i_s = copy theirs
+    var before = 0
+    while i_s.len == 0 {
+        let p = read_packet(mut c)?
+        let t = kind(p)
+        if t == refuse.msg_kexinit() {
+            i_s = p
+        } else if t == refuse.msg_disconnect() {
+            note_disconnect(mut c, p)
+            return disconnected
+        } else if noise(t) {
+            before += 1
+            if t == refuse.msg_debug() {
+                on_debug(c, p)
+            }
+        } else if initial {
+            c.detail = "message {t} before the server's KEXINIT"
+            return message_unexpected
+        } else if t == refuse.msg_ext_info() {
+            on_ext_info(mut c, p)?
+        } else if t == refuse.msg_ping() {
+            pong(mut c, p)?
+        } else {
+            // In flight before the server saw our KEXINIT (§7.1): kept.
+            (mut c.pending).push(p)
+        }
+    }
+    say(c, 1, "SSH2_MSG_KEXINIT received")
+    c.detail = "the server's KEXINIT"
+    let server = kex.decode(i_s)?
+    say(
+        c,
+        2,
+        "peer server KEXINIT proposal: kex {join(server.kex)}; host key {join(server.hostkey)}",
+    )
+    say(c, 2, "ciphers ctos {join(server.cipher_c2s)}; stoc {join(server.cipher_s2c)}")
+    c.detail = "the server offers kex {join(server.kex)}; host keys {join(server.hostkey)}; ciphers ctos {join(server.cipher_c2s)}, stoc {join(server.cipher_s2c)}; compression ctos {join(server.comp_c2s)}, stoc {join(server.comp_s2c)}"
+    let chosen = kex.negotiate(ours, server, initial)?
+    if initial {
+        if !chosen.strict && !c.opts.allow_no_strict {
+            c.detail = "the server's KEXINIT does not offer kex-strict-s-v00@openssh.com"
+            return strict_kex_missing
+        }
+        c.strict = chosen.strict
+        if c.strict && before > 0 {
+            c.detail = "{before} message(s) before the server's KEXINIT"
+            return strict_kex_violation
+        }
+        if c.strict {
+            say(c, 2, "will use strict KEX ordering")
+        }
+    }
+    say(c, 1, "kex: algorithm: {chosen.kex}")
+    say(c, 1, "kex: host key algorithm: {chosen.hostkey}")
+    say(
+        c,
+        1,
+        "kex: server->client cipher: {chosen.cipher_s2c} MAC: <implicit> compression: {chosen.comp_s2c}",
+    )
+    say(
+        c,
+        1,
+        "kex: client->server cipher: {chosen.cipher_c2s} MAC: <implicit> compression: {chosen.comp_c2s}",
+    )
+    if chosen.ignore_guess {
+        let _ = read_packet(mut c)?
+        say(c, 1, "ignored the server's guessed key exchange packet")
+    }
+    let secret = entropy.draw(mut c.pool, 32)?
+    let q_c = kex.public_value(secret)
+    send_packet(mut c, kex.ecdh_init(q_c))?
+    say(c, 1, "expecting SSH2_MSG_KEX_ECDH_REPLY")
+    let rp = expect(mut c, refuse.msg_kex_ecdh_reply(), initial, "SSH2_MSG_KEX_ECDH_REPLY")?
+    c.detail = "the server's SSH2_MSG_KEX_ECDH_REPLY"
+    let reply = kex.decode_reply(rp)?
+    let key = hostkey.ed25519_key(reply.k_s)?
+    let x = kex.agree(secret, reply.q_s)?
+    let h = kex.exchange_hash(
+        wire.bytes_of(version.client_ident()),
+        c.v_s,
+        i_c,
+        i_s,
+        reply.k_s,
+        q_c,
+        reply.q_s,
+        x,
+    )
+    c.detail = "the server's signature on the exchange hash"
+    hostkey.verify(key, reply.sig, h)?
+    say(c, 1, "Server host key: ssh-ed25519 {hostkey.fingerprint(reply.k_s)}")
+    if initial {
+        check_known_hosts(mut c, reply.k_s)?
+        say(c, 1, "Host key found in known_hosts")
+        c.session_id = copy h
+        c.host_k_s = reply.k_s
+    } else if wire.hex(reply.k_s) != wire.hex(c.host_k_s) {
+        c.detail = "the host key changed in a re-exchange, to {hostkey.fingerprint(reply.k_s)}"
+        return host_key_changed
+    }
+    let k = kex.k_mpint(x)
+    let c2s = kex.derive(k, h, 67, c.session_id, 64)
+    let s2c = kex.derive(k, h, 68, c.session_id, 64)
+    var nk = List[byte]()
+    wire.put_u8(mut nk, refuse.msg_newkeys())
+    send_packet(mut c, nk)?
+    packet.take_keys(mut c.tx, c2s, c.strict)
+    say(c, 1, "SSH2_MSG_NEWKEYS sent")
+    say(c, 1, "expecting SSH2_MSG_NEWKEYS")
+    let got = expect(mut c, refuse.msg_newkeys(), initial, "SSH2_MSG_NEWKEYS")?
+    if got.len != 1 {
+        c.detail = "an SSH2_MSG_NEWKEYS with a body"
+        return malformed
+    }
+    packet.take_keys(mut c.rx, s2c, c.strict)
+    say(c, 1, "SSH2_MSG_NEWKEYS received")
+    c.exchanges += 1
+    c.keyed_at_ns = time.monotonic_ns()
+}
+
+fn on_ext_info(mut c: Conn, p: List[byte]) -> () ! refuse.Refusal {
+    var r = wire.reader(p[1..p.len])
+    c.detail = "the server's SSH2_MSG_EXT_INFO"
+    let n = wire.read_u32(mut r) else { return malformed }
+    var names = List[str]()
+    var i = 0
+    while i < n {
+        let name = wire.read_string(mut r) else { return malformed }
+        let value = wire.read_string(mut r) else { return malformed }
+        let nm = str_from_utf8(name) else "<not UTF-8>"
+        if nm == "server-sig-algs" {
+            c.sig_algs = str_from_utf8(value) else ""
+        }
+        (mut names).push(nm)
+        i += 1
+    }
+    if !wire.at_end(r) {
+        return malformed
+    }
+    c.extensions = copy names
+    say(c, 1, "SSH2_MSG_EXT_INFO received: {join(names)}")
+}
+
+fn pong(mut c: Conn, p: List[byte]) -> () ! refuse.Refusal {
+    var out = copy p
+    out[0] = refuse.msg_pong() as byte
+    send_packet(mut c, out)?
+}
+
+fn due(c: Conn) -> bool {
+    let o = c.opts
+    c.tx.bytes >= o.rekey_bytes ||
+        c.rx.bytes >= o.rekey_bytes ||
+        c.tx.packets >= o.rekey_packets ||
+        c.rx.packets >= o.rekey_packets ||
+        time.monotonic_ns() - c.keyed_at_ns >= o.rekey_seconds * 1000000000
+}
+
+fn rekey_if_due(mut c: Conn) -> () ! refuse.Refusal {
+    if c.exchanges > 0 && due(c) {
+        c.by_us += 1
+        say(
+            c,
+            1,
+            "rekeying: sent {c.tx.bytes} bytes / {c.tx.packets} packets, received {c.rx.bytes} / {c.rx.packets} since the last NEWKEYS",
+        )
+        exchange(mut c, List[byte]())?
+    }
+}
+
+// Reads and handles one packet. Returns the empty list for a transport
+// message it handled, else the message for the layer above.
+fn step(mut c: Conn) -> List[byte] ! refuse.Refusal {
+    let p = read_packet(mut c)?
+    let t = kind(p)
+    if t == refuse.msg_disconnect() {
+        note_disconnect(mut c, p)
+        return disconnected
+    }
+    if t == refuse.msg_ignore() || t == refuse.msg_unimplemented() {
+        return List[byte]()
+    }
+    if t == refuse.msg_debug() {
+        on_debug(c, p)
+        return List[byte]()
+    }
+    if t == refuse.msg_ext_info() {
+        on_ext_info(mut c, p)?
+        return List[byte]()
+    }
+    if t == refuse.msg_kexinit() {
+        c.by_server += 1
+        say(c, 1, "the server started a key re-exchange")
+        exchange(mut c, p)?
+        return List[byte]()
+    }
+    if t == refuse.msg_ping() {
+        pong(mut c, p)?
+        return List[byte]()
+    }
+    if t == refuse.msg_newkeys() || t >= 30 && t <= 49 || t == refuse.msg_service_request() {
+        c.detail = "message {t} outside a key exchange"
+        return message_unexpected
+    }
+    p
+}
+
+/// The next message for the layer above.
+pub fn next(mut c: Conn) -> List[byte] ! refuse.Refusal {
+    if c.pending.len > 0 {
+        let first = copy c.pending[0]
+        c.pending = c.pending[1..c.pending.len]
+        return first
+    }
+    loop {
+        rekey_if_due(mut c)?
+        let p = step(mut c)?
+        if p.len > 0 {
+            return p
+        }
+    }
+}
+
+fn readable(c: Conn) -> bool ! refuse.Refusal {
+    if c.inbuf.len > c.inpos {
+        return true
+    }
+    var fds = List[int]()
+    (mut fds).push(c.sock.fd)
+    let ready = net.wait(fds, 0) else { return io }
+    ready.len > 0
+}
+
+/// Sends one message, first handling whatever the server has already
+/// sent (a re-exchange it started is carried out before this message)
+/// and starting a re-exchange if one is due.
+pub fn send(mut c: Conn, payload: List[byte]) -> () ! refuse.Refusal {
+    while readable(c)? {
+        let p = step(mut c)?
+        if p.len > 0 {
+            (mut c.pending).push(p)
+        }
+    }
+    rekey_if_due(mut c)?
+    send_packet(mut c, payload)?
+}
+
+/// Requests a service (RFC 4253 §10) and waits for its acceptance.
+pub fn service(mut c: Conn, name: str) -> () ! refuse.Refusal {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_service_request())
+    wire.put_text(mut p, name)
+    send(mut c, p)?
+    say(c, 1, "SSH2_MSG_SERVICE_REQUEST sent")
+    let got = next(mut c)?
+    var r = wire.reader(got[1..got.len])
+    let back = wire.read_utf8(mut r) else ""
+    if kind(got) != refuse.msg_service_accept() || back != name {
+        c.detail = "message {kind(got)} in answer to the {name} service request"
+        return service_refused
+    }
+    say(c, 1, "SSH2_MSG_SERVICE_ACCEPT received")
+}
+
+/// Sends SSH_MSG_DISCONNECT with `code` and `text` (RFC 4253 §11.1),
+/// ignoring a failure to send it: the connection is ending either way.
+pub fn disconnect(mut c: Conn, code: int, text: str) {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_disconnect())
+    wire.put_u32(mut p, code)
+    wire.put_text(mut p, text)
+    wire.put_text(mut p, "")
+    send_packet(mut c, p) else {}
+}
+
+/// Closes the socket.
+pub fn close(take c: Conn) {
+    net.close(take c.sock) else {}
+}
