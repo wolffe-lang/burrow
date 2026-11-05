@@ -1,0 +1,348 @@
+//! member: true
+//!
+//! burrow.kex — algorithm negotiation (RFC 4253 §7.1), the
+//! `curve25519-sha256` key exchange (RFC 8731 §3, with RFC 4253 §8's
+//! exchange hash) and key derivation (RFC 4253 §7.2).
+//!
+//! **What burrow offers**, in order: kex `curve25519-sha256` and its
+//! older name `curve25519-sha256@libssh.org` (RFC 8731's
+//! acknowledgement: identical), then the indicators `ext-info-c` (RFC
+//! 8308 §2.1) and `kex-strict-c-v00@openssh.com` (OpenSSH `PROTOCOL`
+//! §1.10); host key `ssh-ed25519`; cipher
+//! `chacha20-poly1305@openssh.com` both ways; MAC `hmac-sha2-256`,
+//! which an AEAD cipher never uses (PROTOCOL.chacha20poly1305,
+//! "Negotiation") but which keeps the list non-empty as §7.1 asks;
+//! compression `none`; no languages; no guessed packet.
+//!
+//! **The indicators are not algorithms.** `ext-info-c`/`-s` and
+//! `kex-strict-c-v00`/`-s-v00` are skipped when the kex algorithm is
+//! chosen (RFC 8308 §2.2: one negotiated as a method is a disconnect),
+//! and the strict-kex pair counts only in the first KEXINIT (`PROTOCOL`
+//! §1.10).
+//!
+//! **The exchange hash** is RFC 4253 §8's, with RFC 8731 §3's public
+//! values: string V_C, string V_S, string I_C, string I_S, string K_S,
+//! string Q_C, string Q_S, mpint K, hashed with SHA-256; K is the X25519
+//! output read as a big-endian unsigned integer. A zero X25519 output
+//! (a small-order Q_S) aborts the exchange (`kex_failed`, RFC 8731 §3).
+
+use std.x.crypto.curve25519
+use std.x.crypto.sha2
+use refuse
+use wire
+
+/// One side's SSH_MSG_KEXINIT, parsed.
+pub struct Proposal {
+    cookie: List[byte],
+    kex: List[str],
+    hostkey: List[str],
+    cipher_c2s: List[str],
+    cipher_s2c: List[str],
+    mac_c2s: List[str],
+    mac_s2c: List[str],
+    comp_c2s: List[str],
+    comp_s2c: List[str],
+    lang_c2s: List[str],
+    lang_s2c: List[str],
+    follows: bool,
+}
+
+/// What negotiation chose.
+pub struct Chosen {
+    kex: str,
+    hostkey: str,
+    cipher_c2s: str,
+    cipher_s2c: str,
+    mac_c2s: str,
+    mac_s2c: str,
+    comp_c2s: str,
+    comp_s2c: str,
+    strict: bool,
+    ext_info: bool,
+    ignore_guess: bool,
+}
+
+/// burrow's kex list, indicators included.
+pub fn our_kex() -> List[str] {
+    var out = List[str]()
+    (mut out).push("curve25519-sha256")
+    (mut out).push("curve25519-sha256@libssh.org")
+    (mut out).push("ext-info-c")
+    (mut out).push("kex-strict-c-v00@openssh.com")
+    out
+}
+
+fn one(name: str) -> List[str] {
+    var out = List[str]()
+    (mut out).push(name)
+    out
+}
+
+/// burrow's proposal with `cookie`. In a re-exchange the indicators are
+/// still sent (they are ignored there, `PROTOCOL` §1.10, RFC 8308 §2.1).
+pub fn our_proposal(cookie: List[byte]) -> Proposal {
+    Proposal {
+        cookie: copy cookie,
+        kex: our_kex(),
+        hostkey: one("ssh-ed25519"),
+        cipher_c2s: one("chacha20-poly1305@openssh.com"),
+        cipher_s2c: one("chacha20-poly1305@openssh.com"),
+        mac_c2s: one("hmac-sha2-256"),
+        mac_s2c: one("hmac-sha2-256"),
+        comp_c2s: one("none"),
+        comp_s2c: one("none"),
+        lang_c2s: List[str](),
+        lang_s2c: List[str](),
+        follows: false,
+    }
+}
+
+/// The SSH_MSG_KEXINIT payload of a proposal (RFC 4253 §7.1).
+pub fn encode(p: Proposal) -> List[byte] {
+    assert(p.cookie.len == 16, "kex: a 16-byte cookie")
+    var out = List[byte]()
+    wire.put_u8(mut out, refuse.msg_kexinit())
+    wire.put_raw(mut out, p.cookie)
+    wire.put_name_list(mut out, p.kex)
+    wire.put_name_list(mut out, p.hostkey)
+    wire.put_name_list(mut out, p.cipher_c2s)
+    wire.put_name_list(mut out, p.cipher_s2c)
+    wire.put_name_list(mut out, p.mac_c2s)
+    wire.put_name_list(mut out, p.mac_s2c)
+    wire.put_name_list(mut out, p.comp_c2s)
+    wire.put_name_list(mut out, p.comp_s2c)
+    wire.put_name_list(mut out, p.lang_c2s)
+    wire.put_name_list(mut out, p.lang_s2c)
+    wire.put_bool(mut out, p.follows)
+    wire.put_u32(mut out, 0)
+    out
+}
+
+fn names(mut r: wire.Reader) -> List[str] ! refuse.Refusal {
+    wire.read_name_list(mut r) else { return malformed }
+}
+
+/// Parses an SSH_MSG_KEXINIT payload. Every field must be there and
+/// nothing may follow the reserved uint32 (`malformed`).
+pub fn decode(payload: List[byte]) -> Proposal ! refuse.Refusal {
+    var r = wire.reader(payload)
+    let t = wire.read_u8(mut r) else { return malformed }
+    if t != refuse.msg_kexinit() {
+        return message_unexpected
+    }
+    let cookie = wire.read_raw(mut r, 16) else { return malformed }
+    let kex = names(mut r)?
+    let hostkey = names(mut r)?
+    let cipher_c2s = names(mut r)?
+    let cipher_s2c = names(mut r)?
+    let mac_c2s = names(mut r)?
+    let mac_s2c = names(mut r)?
+    let comp_c2s = names(mut r)?
+    let comp_s2c = names(mut r)?
+    let lang_c2s = names(mut r)?
+    let lang_s2c = names(mut r)?
+    let follows = wire.read_bool(mut r) else { return malformed }
+    let _ = wire.read_u32(mut r) else { return malformed }
+    if !wire.at_end(r) {
+        return malformed
+    }
+    Proposal {
+        cookie: cookie,
+        kex: kex,
+        hostkey: hostkey,
+        cipher_c2s: cipher_c2s,
+        cipher_s2c: cipher_s2c,
+        mac_c2s: mac_c2s,
+        mac_s2c: mac_s2c,
+        comp_c2s: comp_c2s,
+        comp_s2c: comp_s2c,
+        lang_c2s: lang_c2s,
+        lang_s2c: lang_s2c,
+        follows: follows,
+    }
+}
+
+/// Whether `name` is one of the pseudo-algorithm indicators.
+pub fn is_indicator(name: str) -> bool {
+    name == "ext-info-c" ||
+        name == "ext-info-s" ||
+        name == "kex-strict-c-v00@openssh.com" ||
+        name == "kex-strict-s-v00@openssh.com"
+}
+
+fn has(xs: List[str], name: str) -> bool {
+    for x in xs {
+        if x == name {
+            return true
+        }
+    }
+    false
+}
+
+/// The first of the client's names the server also lists (§7.1's rule
+/// for every list but kex), skipping indicators; "" when there is none.
+pub fn first_common(client: List[str], server: List[str]) -> str {
+    for c in client {
+        if !is_indicator(c) && has(server, c) {
+            return c
+        }
+    }
+    ""
+}
+
+/// RFC 4253 §7.1's negotiation, from the client's side. `initial` is
+/// whether this is the first exchange of the connection (the only one
+/// whose strict-kex indicators count). burrow's single kex method and
+/// single host key algorithm make §7.1's kex rule (the first client
+/// method the server supports, whose host key needs a common algorithm)
+/// the plain first-common rule followed by the host key check.
+pub fn negotiate(ours: Proposal, theirs: Proposal, initial: bool) -> Chosen ! refuse.Refusal {
+    let kex = first_common(ours.kex, theirs.kex)
+    if kex == "" {
+        return no_common_kex
+    }
+    let hostkey = first_common(ours.hostkey, theirs.hostkey)
+    if hostkey == "" {
+        return no_common_hostkey
+    }
+    let c2s = first_common(ours.cipher_c2s, theirs.cipher_c2s)
+    let s2c = first_common(ours.cipher_s2c, theirs.cipher_s2c)
+    if c2s == "" || s2c == "" {
+        return no_common_cipher
+    }
+    // chacha20-poly1305@openssh.com is burrow's only cipher, and an AEAD
+    // ignores the MAC lists (PROTOCOL.chacha20poly1305, "Negotiation"):
+    // what they share is recorded, and an empty share is no refusal.
+    let mac_c2s = first_common(ours.mac_c2s, theirs.mac_c2s)
+    let mac_s2c = first_common(ours.mac_s2c, theirs.mac_s2c)
+    let comp_c2s = first_common(ours.comp_c2s, theirs.comp_c2s)
+    let comp_s2c = first_common(ours.comp_s2c, theirs.comp_s2c)
+    if comp_c2s == "" || comp_s2c == "" {
+        return no_common_compression
+    }
+    // §7.1: the server's guess is wrong when its first kex or host key
+    // algorithm is not the one chosen; its guessed packet is then ignored.
+    var guess_right = false
+    if theirs.kex.len > 0 && theirs.hostkey.len > 0 {
+        guess_right = theirs.kex[0] == kex && theirs.hostkey[0] == hostkey
+    }
+    Chosen {
+        kex: kex,
+        hostkey: hostkey,
+        cipher_c2s: c2s,
+        cipher_s2c: s2c,
+        mac_c2s: mac_c2s,
+        mac_s2c: mac_s2c,
+        comp_c2s: comp_c2s,
+        comp_s2c: comp_s2c,
+        strict: initial && has(theirs.kex, "kex-strict-s-v00@openssh.com"),
+        ext_info: initial && has(theirs.kex, "ext-info-s"),
+        ignore_guess: theirs.follows && !guess_right,
+    }
+}
+
+/// The SSH_MSG_KEX_ECDH_INIT payload: byte 30, string Q_C.
+pub fn ecdh_init(q_c: List[byte]) -> List[byte] {
+    var out = List[byte]()
+    wire.put_u8(mut out, refuse.msg_kex_ecdh_init())
+    wire.put_string(mut out, q_c)
+    out
+}
+
+/// The server's SSH_MSG_KEX_ECDH_REPLY.
+pub struct Reply {
+    k_s: List[byte],
+    q_s: List[byte],
+    sig: List[byte],
+}
+
+/// Parses SSH_MSG_KEX_ECDH_REPLY: string K_S, string Q_S, string the
+/// signature of H. Q_S must be 32 bytes (RFC 8731 §3: `kex_failed`).
+pub fn decode_reply(payload: List[byte]) -> Reply ! refuse.Refusal {
+    var r = wire.reader(payload)
+    let t = wire.read_u8(mut r) else { return malformed }
+    if t != refuse.msg_kex_ecdh_reply() {
+        return message_unexpected
+    }
+    let k_s = wire.read_string(mut r) else { return malformed }
+    let q_s = wire.read_string(mut r) else { return malformed }
+    let sig = wire.read_string(mut r) else { return malformed }
+    if !wire.at_end(r) {
+        return malformed
+    }
+    if q_s.len != 32 {
+        return kex_failed
+    }
+    Reply { k_s: k_s, q_s: q_s, sig: sig }
+}
+
+/// X25519(secret, Q_S), refused as `kex_failed` when it is all zero.
+pub fn agree(secret: List[byte], q_s: List[byte]) -> List[byte] ! refuse.Refusal {
+    if q_s.len != 32 {
+        return kex_failed
+    }
+    curve25519.x25519(secret, q_s) else { return kex_failed }
+}
+
+/// Our public value Q_C for a 32-byte secret scalar.
+pub fn public_value(secret: List[byte]) -> List[byte] {
+    curve25519.x25519_base(secret)
+}
+
+/// The mpint encoding of K for a 32-byte X25519 output (RFC 8731 §3.1).
+pub fn k_mpint(x: List[byte]) -> List[byte] {
+    var out = List[byte]()
+    wire.put_mpint_unsigned(mut out, x)
+    out
+}
+
+/// The exchange hash H (RFC 4253 §8 with RFC 8731 §3's strings).
+pub fn exchange_hash(
+    v_c: List[byte],
+    v_s: List[byte],
+    i_c: List[byte],
+    i_s: List[byte],
+    k_s: List[byte],
+    q_c: List[byte],
+    q_s: List[byte],
+    x: List[byte],
+) -> List[byte] {
+    var h = sha2.new256()
+    var part = List[byte]()
+    wire.put_string(mut part, v_c)
+    wire.put_string(mut part, v_s)
+    wire.put_string(mut part, i_c)
+    wire.put_string(mut part, i_s)
+    wire.put_string(mut part, k_s)
+    wire.put_string(mut part, q_c)
+    wire.put_string(mut part, q_s)
+    wire.put_mpint_unsigned(mut part, x)
+    sha2.update256(mut h, part)
+    sha2.final256(take h)
+}
+
+/// `n` bytes of key `letter` (RFC 4253 §7.2): HASH(K || H || letter ||
+/// session_id), extended by HASH(K || H || key-so-far) until long enough.
+/// `k` is K's mpint encoding.
+pub fn derive(
+    k: List[byte],
+    h: List[byte],
+    letter: int,
+    session_id: List[byte],
+    n: int,
+) -> List[byte] {
+    var first = List[byte]()
+    wire.put_raw(mut first, k)
+    wire.put_raw(mut first, h)
+    wire.put_u8(mut first, letter)
+    wire.put_raw(mut first, session_id)
+    var key = sha2.sum256(first)
+    while key.len < n {
+        var more = List[byte]()
+        wire.put_raw(mut more, k)
+        wire.put_raw(mut more, h)
+        wire.put_raw(mut more, key)
+        wire.put_raw(mut key, sha2.sum256(more))
+    }
+    key[0..n]
+}
