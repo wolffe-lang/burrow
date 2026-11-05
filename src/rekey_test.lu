@@ -15,7 +15,7 @@ fn main() {
     let lim = packet.default_limits()
     assert(lim.bytes == 1073741824 && lim.packets == 2147483648 && lim.seconds == 3600)
     let quiet = at(0, 0)
-    let hour = 3600 * 1000000000
+    let hour: int = 3600 * 1000000000
     assert(!packet.rekey_due(quiet, quiet, lim, 0))
     // Bytes: one under the bound is not due; at the bound it is, either way.
     assert(!packet.rekey_due(at(1073741823, 10), quiet, lim, 0))
