@@ -96,6 +96,20 @@ def client_disconnect(sshd, code):
     return wait_log(sshd, rf"Received disconnect from 127\.0\.0\.1 port \d+:{code}:")
 
 
+def server_agrees(sshd, what):
+    """sshd's own negotiation failed the same way, or it read burrow's
+    disconnect (reason 3) first: both sides refuse at once."""
+    return wait_log(sshd, rf"(Unable to negotiate with 127\.0\.0\.1 port \d+: no matching {what}|Received disconnect from 127\.0\.0\.1 port \d+:3:)")
+
+
+def known_relay(d, sshd, relay, kind="ed25519"):
+    """known_hosts naming the relay's port with the sshd's key."""
+    kh = d / "known_hosts"
+    algo, blob = sshd.host_pub(kind).read_text().split()[:2]
+    kh.write_text(f"[127.0.0.1]:{relay.port} {algo} {blob}\n")
+    return kh
+
+
 # ---- the handshake ------------------------------------------------------------
 @row
 def handshake():
@@ -130,7 +144,7 @@ def banner_lines():
     d = run_dir("banner-lines")
     with oraclelib.Sshd(d / "sshd") as s, \
             mitm.Relay(s.port, mitm.Hook(banner=b"a banner line\r\nanother, LF only\n")) as m:
-        r = burrow(m.port, known(d, s, text=f"[127.0.0.1]:{m.port} {s.host_pub().read_text().split()[0]} {s.host_pub().read_text().split()[1]}\n"))
+        r = burrow(m.port, known_relay(d, s, m))
         transport_up(r)
         check("debug1: banner line: a banner line\n" in r.stderr, "first banner line not seen")
         check("debug1: banner line: another, LF only\n" in r.stderr, "second banner line not seen")
@@ -183,7 +197,7 @@ def host_key_signature():
         return None
 
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=flip)) as m:
-        r = burrow(m.port, known(d, s))
+        r = burrow(m.port, known_relay(d, s, m))
         refused(r, "host_key_bad_signature")
 
 
@@ -194,7 +208,7 @@ def no_common_kex():
     with oraclelib.Sshd(d / "sshd", ["KexAlgorithms mlkem768x25519-sha256,ecdh-sha2-nistp256"]) as s:
         r = burrow(s.port, known(d, s))
         refused(r, "no_common_kex")
-        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+        check(server_agrees(s, "key exchange method"), "sshd logged neither its own refusal nor burrow's")
 
 
 @row
@@ -203,7 +217,7 @@ def no_common_hostkey():
     with oraclelib.Sshd(d / "sshd", host_keys=("ecdsa", "rsa")) as s:
         r = burrow(s.port, known(d, s, "ecdsa"))
         refused(r, "no_common_hostkey")
-        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+        check(server_agrees(s, "host key type"), "sshd logged neither its own refusal nor burrow's")
 
 
 @row
@@ -212,7 +226,7 @@ def no_common_cipher():
     with oraclelib.Sshd(d / "sshd", ["Ciphers aes128-ctr,aes256-gcm@openssh.com"]) as s:
         r = burrow(s.port, known(d, s))
         refused(r, "no_common_cipher")
-        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+        check(server_agrees(s, "cipher"), "sshd logged neither its own refusal nor burrow's")
 
 
 # ---- strict kex ---------------------------------------------------------------------
@@ -227,7 +241,7 @@ def strict_kex_missing():
         return None
 
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
-        r = burrow(m.port, known(d, s))
+        r = burrow(m.port, known_relay(d, s, m))
         refused(r, "strict_kex_missing")
 
 
@@ -243,7 +257,7 @@ def downgrade_caught():
         return None
 
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
-        r = burrow(m.port, known(d, s), "--no-strict-kex")
+        r = burrow(m.port, known_relay(d, s, m), "--no-strict-kex")
         refused(r, "host_key_bad_signature")
 
 
@@ -257,7 +271,7 @@ def strict_ignore_first():
         return None
 
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=inject)) as m:
-        r = burrow(m.port, known(d, s))
+        r = burrow(m.port, known_relay(d, s, m))
         refused(r, "strict_kex_violation")
 
 
@@ -271,7 +285,7 @@ def strict_ignore_mid():
         return None
 
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=inject)) as m:
-        r = burrow(m.port, known(d, s))
+        r = burrow(m.port, known_relay(d, s, m))
         refused(r, "strict_kex_violation")
 
 
@@ -281,7 +295,7 @@ def mac_mismatch():
     """One flipped tag byte in the server's first sealed packet."""
     d = run_dir("mac-mismatch")
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(flip_first_sealed_tag=True)) as m:
-        r = burrow(m.port, known(d, s))
+        r = burrow(m.port, known_relay(d, s, m))
         refused(r, "mac_mismatch")
         check(any(e[0] == "flip" for e in m.events), "the relay flipped nothing")
 
