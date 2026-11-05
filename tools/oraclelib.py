@@ -79,16 +79,17 @@ class Sshd:
         os.chmod(self.dir, 0o700)
         for kind in self.kinds:
             keygen(self.dir / f"host_{kind}", kind, comment=f"burrow-row-host-{kind}")
-        lines = [
+        # sshd takes the first value it reads for an option: a row's own
+        # lines come first, so they win over these defaults.
+        lines = self.extra + [
             f"ListenAddress 127.0.0.1:{self.port}",
             f"PidFile {self.dir / 'sshd.pid'}",
             f"LogLevel {self.level}",
-            "UsePAM no",
             "PasswordAuthentication no",
             "KbdInteractiveAuthentication no",
             f"AuthorizedKeysFile {self.dir / 'authorized_keys'}",
             "StrictModes no",
-        ] + [f"HostKey {self.dir / ('host_' + k)}" for k in self.kinds] + self.extra
+        ] + [f"HostKey {self.dir / ('host_' + k)}" for k in self.kinds]
         (self.dir / "sshd_config").write_text("\n".join(lines) + "\n")
         (self.dir / "authorized_keys").write_text("")
         self.log = open(self.dir / "sshd.log", "wb")
