@@ -1,0 +1,187 @@
+//! member: true
+//!
+//! burrow.packet — the binary packet protocol (RFC 4253 §6), one
+//! direction at a time, plaintext before the first NEWKEYS and
+//! `chacha20-poly1305@openssh.com` after it.
+//!
+//! **The frame.** `uint32 packet_length, byte padding_length, payload,
+//! padding`. burrow pads every frame it sends so that the whole frame,
+//! `packet_length` included, is a multiple of 8 with at least 4 padding
+//! bytes (§6: "This constraint MUST be enforced, even when using stream
+//! ciphers"), and holds received frames to the same rules, each refused
+//! by name:
+//!
+//! - `packet_too_short`: `packet_length` under 12 (the 16-byte minimum
+//!   frame, §6);
+//! - `packet_too_long`: `packet_length` over 262144 (§6.1 requires
+//!   35000 and lets an implementation take more; burrow bounds it before
+//!   it reads the rest);
+//! - `padding_short`: fewer than 4 padding bytes;
+//! - `padding_overrun`: padding that leaves no room for the
+//!   padding-length byte itself;
+//! - `unaligned`: a frame that is not a multiple of 8;
+//! - `mac_mismatch`: a sealed frame whose tag does not verify.
+//!
+//! **Sequence numbers** (§6.4) count every packet in a direction from 0,
+//! as a uint32 that would wrap after 2^32 - 1. burrow rekeys long before
+//! that (RFC 4344 §3.1); a direction whose number wrapped under its
+//! keys refuses its next packet (`sequence_wrapped`) rather than reuse a
+//! nonce. With strict kex the
+//! number resets to 0 at every NEWKEYS (`reset_sequence`).
+
+use chachapoly
+use refuse
+use wire
+
+/// One direction's state.
+pub struct Direction {
+    seq: int,
+    wrapped: bool,
+    keyed: bool,
+    keys: chachapoly.Keys,
+    packets: int,
+    bytes: int,
+}
+
+/// What `open` found at the front of the input.
+pub struct Opened {
+    complete: bool,
+    payload: List[byte],
+    used: int,
+}
+
+/// The longest `packet_length` burrow accepts.
+pub fn max_packet_length() -> int {
+    262144
+}
+
+/// A direction before any NEWKEYS: plaintext, sequence number 0.
+pub fn plain() -> Direction {
+    Direction {
+        seq: 0,
+        wrapped: false,
+        keyed: false,
+        keys: chachapoly.Keys { main: List[byte](), header: List[byte]() },
+        packets: 0,
+        bytes: 0,
+    }
+}
+
+/// Takes new keys into use (RFC 4253 §7.3), and resets the counts the
+/// rekey limits read. The sequence number continues unless `strict`.
+pub fn take_keys(mut d: Direction, material: List[byte], strict: bool) {
+    d.keyed = true
+    d.wrapped = false
+    d.keys = chachapoly.keys(material)
+    d.packets = 0
+    d.bytes = 0
+    if strict {
+        d.seq = 0
+    }
+}
+
+/// The padding length burrow sends for a payload of `n` bytes: the
+/// least p >= 4 with 5 + n + p a multiple of 8.
+pub fn pad_len(n: int) -> int {
+    var p = 4
+    while (5 + n + p) % 8 != 0 {
+        p += 1
+    }
+    p
+}
+
+/// The frame of `payload` with `padding` (exactly `pad_len` bytes).
+pub fn frame(payload: List[byte], padding: List[byte]) -> List[byte] {
+    assert(padding.len == pad_len(payload.len), "packet: the padding is pad_len bytes")
+    var out = List[byte]()
+    wire.put_u32(mut out, 1 + payload.len + padding.len)
+    (mut out).push(padding.len as byte)
+    wire.put_raw(mut out, payload)
+    wire.put_raw(mut out, padding)
+    out
+}
+
+fn advance(mut d: Direction, n: int) {
+    if d.seq == 4294967295 {
+        d.seq = 0
+        d.wrapped = d.keyed
+    } else {
+        d.seq += 1
+    }
+    d.packets += 1
+    d.bytes += n
+}
+
+/// The bytes on the wire for one payload, sealed if the direction is
+/// keyed, and the direction advanced past it.
+pub fn seal(
+    mut d: Direction,
+    payload: List[byte],
+    padding: List[byte],
+) -> List[byte] ! refuse.Refusal {
+    if d.wrapped {
+        return sequence_wrapped
+    }
+    let f = frame(payload, padding)
+    let out = if d.keyed then chachapoly.seal(d.keys, d.seq, f) else f
+    advance(mut d, out.len)
+    out
+}
+
+fn check_length(len: int) -> () ! refuse.Refusal {
+    if len < 12 {
+        return packet_too_short
+    }
+    if len > max_packet_length() {
+        return packet_too_long
+    }
+    if (4 + len) % 8 != 0 {
+        return unaligned
+    }
+}
+
+fn payload_of(body: List[byte], len: int) -> List[byte] ! refuse.Refusal {
+    let padlen = body[0] as int
+    if padlen < 4 {
+        return padding_short
+    }
+    if padlen > len - 1 {
+        return padding_overrun
+    }
+    body[1..len - padlen]
+}
+
+/// Reads one packet from `buf` starting at `at`, if all of it is there.
+/// `complete` false means more bytes are needed (and nothing advanced).
+/// A refusal is final: the connection ends.
+pub fn open(mut d: Direction, buf: List[byte], at: int) -> Opened ! refuse.Refusal {
+    if d.wrapped {
+        return sequence_wrapped
+    }
+    let none = Opened { complete: false, payload: List[byte](), used: 0 }
+    if buf.len - at < 4 {
+        return none
+    }
+    let len = if d.keyed {
+        chachapoly.length(d.keys, d.seq, buf[at..at + 4])
+    } else {
+        buf[at] as int * 16777216 +
+            buf[at + 1] as int * 65536 +
+            buf[at + 2] as int * 256 +
+            buf[at + 3] as int
+    }
+    check_length(len)?
+    let tag = if d.keyed then chachapoly.tag_len() else 0
+    let total = 4 + len + tag
+    if buf.len - at < total {
+        return none
+    }
+    let body = if d.keyed {
+        chachapoly.open(d.keys, d.seq, buf[at..at + total])?
+    } else {
+        buf[at + 4..at + total]
+    }
+    let payload = payload_of(body, len)?
+    advance(mut d, total)
+    Opened { complete: true, payload: payload, used: total }
+}
