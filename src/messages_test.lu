@@ -1,0 +1,92 @@
+//! member: false
+
+// RFC 4253 §11.1's DISCONNECT, RFC 4250 §4.2.2's reason codes, and RFC
+// 8308's EXT_INFO (unknown extensions ignored, NUL bytes and all).
+use kex
+use refuse
+use wire
+
+fn ext(pairs: List[str], values: List[List[byte]]) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_ext_info())
+    wire.put_u32(mut p, pairs.len)
+    var i = 0
+    while i < pairs.len {
+        wire.put_text(mut p, pairs[i])
+        wire.put_string(mut p, values[i])
+        i += 1
+    }
+    p
+}
+
+fn main() {
+    // burrow's DISCONNECT: byte 1, uint32 reason, the text, an empty language.
+    let d = refuse.disconnect_payload(11, "not yet")
+    assert(
+        wire.hex(d) ==
+            "01" + "0000000b" + "00000007" + wire.hex(wire.bytes_of("not yet")) + "00000000",
+    )
+    assert(refuse.describe_disconnect(d) == "SSH_DISCONNECT_BY_APPLICATION (11): not yet")
+    // A server's DISCONNECT, and a truncated one.
+    let s = refuse.disconnect_payload(2, "Too many authentication failures")
+    assert(
+        refuse.describe_disconnect(s) ==
+            "SSH_DISCONNECT_PROTOCOL_ERROR (2): Too many authentication failures",
+    )
+    assert(
+        refuse.describe_disconnect(d[0..7]) ==
+            "SSH_DISCONNECT_BY_APPLICATION (11): <no description>",
+    )
+    // Each refusal's reason code (RFC 4250 §4.2.2).
+    assert(refuse.reason_of("host_key_unknown") == 9 && refuse.reason_of("host_key_changed") == 9)
+    assert(refuse.reason_of("mac_mismatch") == 5 && refuse.reason_of("no_common_cipher") == 3)
+    assert(
+        refuse.reason_of("strict_kex_violation") == 2 && refuse.reason_of("version_too_long") == 8,
+    )
+    assert(refuse.reason_of("kex_failed") == 3 && refuse.reason_of("service_refused") == 7)
+    assert(
+        refuse.reason_name(15) == "SSH_DISCONNECT_ILLEGAL_USER_NAME" &&
+            refuse.reason_name(99) == "unknown reason",
+    )
+    // EXT_INFO: server-sig-algs kept, an unknown extension with NUL bytes
+    // in its value ignored, the order of names kept.
+    var names = List[str]()
+    var values = List[List[byte]]()
+    (mut names).push("x-unknown@example.test")
+    (mut values).push(wire.unhex("00ff0000") else List[byte]())
+    (mut names).push("server-sig-algs")
+    (mut values).push(wire.bytes_of("ssh-ed25519,rsa-sha2-512"))
+    (mut names).push("ping@openssh.com")
+    (mut values).push(wire.bytes_of("0"))
+    let info = kex.decode_ext_info(ext(names, values)) else {
+        assert(false, "a valid EXT_INFO was refused")
+        return
+    }
+    assert(info.names.len == 3 && info.names[0] == "x-unknown@example.test")
+    assert(info.sig_algs == "ssh-ed25519,rsa-sha2-512")
+    // No server-sig-algs: an empty value; zero extensions: no names.
+    var none = List[str]()
+    let empty = kex.decode_ext_info(ext(none, List[List[byte]]())) else {
+        assert(false, "an empty EXT_INFO was refused")
+        return
+    }
+    assert(empty.names.len == 0 && empty.sig_algs == "")
+    // A count past the message, or bytes after the last value: malformed.
+    var bad = ext(names, values)
+    bad[4] = 4 as byte
+    var why = "none"
+    let _ = kex.decode_ext_info(bad) else |e| {
+        why = "{e}"
+        copy empty
+    }
+    assert(why == "malformed")
+    var extra = ext(names, values)
+    (mut extra).push(0 as byte)
+    why = "none"
+    let _ = kex.decode_ext_info(extra) else |e| {
+        why = "{e}"
+        copy empty
+    }
+    assert(why == "malformed")
+    print("messages: 5 groups, 0 SKIP")
+}
