@@ -1,0 +1,173 @@
+//! member: true
+//!
+//! burrow.version — the protocol version exchange (RFC 4253 §4.2, §5.1).
+//!
+//! burrow sends `SSH-2.0-burrow_<version>` then CR LF. From the server
+//! it reads lines until one begins `SSH-`: earlier lines are banner
+//! lines, which §4.2 lets a server send and a client must process (each
+//! is kept for `-v` and otherwise ignored). The identification line
+//! itself is at most 255 bytes including CR LF; its part before CR LF
+//! is V_S of the exchange hash. A line ended by a bare LF is accepted,
+//! as §4.2 suggests for compatibility, and V_S is then the part before
+//! the LF. `protoversion` must be "2.0", or "1.99" (§5.1: identical to
+//! 2.0). Banner lines are bounded too: at most 1024 of them, each at
+//! most 8192 bytes, so a peer cannot hold the client reading forever.
+
+use refuse
+
+/// What a scan of the server's first bytes found.
+pub struct Scan {
+    found: bool,
+    line: List[byte],
+    consumed: int,
+    banners: List[str],
+}
+
+/// The most banner lines burrow reads before the identification line.
+pub fn max_banner_lines() -> int {
+    1024
+}
+
+/// The longest banner line burrow reads, in bytes, CR LF included.
+pub fn max_banner_line() -> int {
+    8192
+}
+
+/// The longest identification line, CR LF included (RFC 4253 §4.2).
+pub fn max_version_line() -> int {
+    255
+}
+
+/// burrow's identification string, without CR LF: V_C.
+pub fn client_ident() -> str {
+    "SSH-2.0-burrow_0.0.0"
+}
+
+/// burrow's identification line as sent: V_C then CR LF.
+pub fn client_line() -> List[byte] {
+    var out = List[byte]()
+    for b in client_ident().bytes() {
+        (mut out).push(b)
+    }
+    (mut out).push(13 as byte)
+    (mut out).push(10 as byte)
+    out
+}
+
+fn starts_ssh(b: List[byte], from: int) -> bool {
+    if from + 4 > b.len {
+        return false
+    }
+    b[from] as int == 83 &&
+        b[from + 1] as int == 83 &&
+        b[from + 2] as int == 72 &&
+        b[from + 3] as int == 45
+}
+
+fn line_text(b: List[byte]) -> str {
+    str_from_utf8(b) else "<a banner line that is not UTF-8>"
+}
+
+/// Scans the bytes the server has sent so far. `found` false with no
+/// row means more bytes are needed. Once found, `line` is the
+/// identification string without its line ending (V_S), `consumed` the
+/// bytes up to and including its LF, and `banners` the lines before it.
+pub fn scan(buf: List[byte]) -> Scan ! refuse.Refusal {
+    var banners = List[str]()
+    var start: int = 0
+    var i: int = 0
+    while i < buf.len {
+        let is_ident = starts_ssh(buf, start)
+        let cap = if is_ident then max_version_line() else max_banner_line()
+        if i - start + 1 > cap {
+            if is_ident {
+                return version_too_long
+            }
+            return banner_too_long
+        }
+        if buf[i] as int == 10 {
+            var end = i
+            if end > start && buf[end - 1] as int == 13 {
+                end -= 1
+            }
+            let line = buf[start..end]
+            if is_ident {
+                return Scan { found: true, line: line, consumed: i + 1, banners: banners }
+            }
+            if banners.len >= max_banner_lines() {
+                return banner_too_many
+            }
+            (mut banners).push(line_text(line))
+            start = i + 1
+        }
+        i += 1
+    }
+    // An unfinished line that cannot end within its bound (it needs at
+    // least its LF still) is refused now.
+    if buf.len - start + 1 >
+        (if starts_ssh(buf, start) then max_version_line() else max_banner_line()) {
+        if starts_ssh(buf, start) {
+            return version_too_long
+        }
+        return banner_too_long
+    }
+    Scan { found: false, line: List[byte](), consumed: 0, banners: banners }
+}
+
+/// The parts of an identification string (without CR LF).
+pub struct Ident {
+    proto: str,
+    software: str,
+    comments: str,
+}
+
+/// Checks V_S against RFC 4253 §4.2: `SSH-protoversion-softwareversion`,
+/// then optionally SP and comments; protoversion and softwareversion are
+/// printable US-ASCII without whitespace, and no NUL anywhere. §4.2 also
+/// keeps `-` out of softwareversion; burrow accepts one there, because
+/// deployed servers send it, and protoversion still ends at the first.
+/// `version_unsupported` for a protoversion other than 2.0 or 1.99.
+pub fn parse(line: List[byte]) -> Ident ! refuse.Refusal {
+    if !starts_ssh(line, 0) {
+        return version_malformed
+    }
+    for b in line {
+        if b as int == 0 {
+            return version_malformed
+        }
+    }
+    var i: int = 4
+    let proto_start = i
+    while i < line.len && line[i] as int != 45 {
+        let v = line[i] as int
+        if v < 33 || v > 126 {
+            return version_malformed
+        }
+        i += 1
+    }
+    if i >= line.len || i == proto_start {
+        return version_malformed
+    }
+    let proto = line_text(line[proto_start..i])
+    i += 1
+    let soft_start = i
+    while i < line.len && line[i] as int != 32 {
+        let v = line[i] as int
+        if v < 33 || v > 126 {
+            return version_malformed
+        }
+        i += 1
+    }
+    if i == soft_start {
+        return version_malformed
+    }
+    let software = line_text(line[soft_start..i])
+    var comments = ""
+    if i < line.len {
+        comments = str_from_utf8(line[i + 1..line.len]) else { return version_malformed }
+    }
+    if proto != "2.0" && proto != "1.99" {
+        return version_unsupported
+    }
+    Ident { proto: proto, software: software, comments: comments }
+}
