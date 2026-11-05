@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""check-transport — B1's rows: burrow against the pinned sshd, on loopback.
+
+    tools/in-container tools/check-transport --bin target/native/burrow [--only ROW...]
+
+Every row starts its own sshd (oraclelib.Sshd: its own port, its own host
+keys for that run), runs burrow as a black box, and holds its exit status,
+its stderr and the sshd log to what the row names. Mutation rows put
+tools/mitm.py's relay between them. A row prints `PASS <row>` or
+`FAIL <row> <why>` at column 0; the exit status is the number of failures
+(capped at 100). Private keys stay in the run directory; rows print only
+fingerprints.
+"""
+import argparse
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import mitm  # noqa: E402
+import oraclelib  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "transport"
+ROWS = []
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def burrow(port, known_hosts, *extra, timeout=120):
+    args = [str(BIN), "-v", "-o", f"UserKnownHostsFile={known_hosts}", "-p", str(port)] + list(extra) + ["127.0.0.1"]
+    t0 = time.monotonic()
+    r = subprocess.run(args, capture_output=True, text=True, timeout=timeout,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(WORK / "home")})
+    r.secs = time.monotonic() - t0
+    return r
+
+
+def run_dir(name):
+    d = WORK / name
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    return d
+
+
+def known(d, sshd, kind="ed25519", text=None):
+    kh = d / "known_hosts"
+    kh.write_text(text if text is not None else sshd.known_hosts_line(kind))
+    return kh
+
+
+def wait_log(sshd, pattern, secs=5):
+    deadline = time.monotonic() + secs
+    while time.monotonic() < deadline:
+        if re.search(pattern, sshd.log_text()):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def refused(r, name):
+    check(r.returncode == 255, f"exit {r.returncode}, wanted 255; stderr: {tail(r.stderr)}")
+    check(re.search(rf"^burrow: {name}: ", r.stderr, re.M), f"no 'burrow: {name}:' line; stderr: {tail(r.stderr)}")
+
+
+def transport_up(r):
+    check(r.returncode == 2, f"exit {r.returncode}, wanted 2 (transport up, auth not yet); stderr: {tail(r.stderr)}")
+    check("debug1: SSH2_MSG_SERVICE_ACCEPT received" in r.stderr, "no SERVICE_ACCEPT debug line")
+    check("not yet implemented: user authentication" in r.stderr, "no not-yet line")
+
+
+def tail(s, n=600):
+    s = s.strip()
+    return s[-n:].replace("\n", " | ")
+
+
+def client_disconnect(sshd, code):
+    """sshd logged burrow's SSH_MSG_DISCONNECT with reason `code`."""
+    return wait_log(sshd, rf"Received disconnect from 127\.0\.0\.1 port \d+:{code}:")
+
+
+# ---- the handshake ------------------------------------------------------------
+@row
+def handshake():
+    d = run_dir("handshake")
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s))
+        transport_up(r)
+        log = s.log_text()
+        check(re.search(r"kex: algorithm: curve25519-sha256\b", log), "sshd did not log kex curve25519-sha256")
+        check("kex: host key algorithm: ssh-ed25519" in log, "sshd did not log host key ssh-ed25519")
+        check(re.search(r"kex: client->server cipher: chacha20-poly1305@openssh.com", log), "sshd did not log chacha20 c2s")
+        check(re.search(r"kex: server->client cipher: chacha20-poly1305@openssh.com", log), "sshd did not log chacha20 s2c")
+        check(re.search(r"Remote protocol version 2\.0, remote software version burrow_0\.0\.0", log), "sshd did not see burrow's version")
+        check(client_disconnect(s, 11), "sshd did not log burrow's disconnect, reason 11")
+        check("strict KEX" in log or "strict kex" in log.lower(), "sshd did not log strict kex")
+        check("debug1: SSH2_MSG_EXT_INFO received: server-sig-algs" in r.stderr, "burrow did not read EXT_INFO")
+    return f"SERVICE_ACCEPT in {r.secs:.2f}s"
+
+
+@row
+def fingerprint():
+    d = run_dir("fingerprint")
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s))
+        want = oraclelib.fingerprint(s.host_pub("ed25519"))
+        check(f"debug1: Server host key: ssh-ed25519 {want}\n" in r.stderr, f"burrow did not print {want}")
+    return want
+
+
+@row
+def banner_lines():
+    d = run_dir("banner-lines")
+    with oraclelib.Sshd(d / "sshd") as s, \
+            mitm.Relay(s.port, mitm.Hook(banner=b"a banner line\r\nanother, LF only\n")) as m:
+        r = burrow(m.port, known(d, s, text=f"[127.0.0.1]:{m.port} {s.host_pub().read_text().split()[0]} {s.host_pub().read_text().split()[1]}\n"))
+        transport_up(r)
+        check("debug1: banner line: a banner line\n" in r.stderr, "first banner line not seen")
+        check("debug1: banner line: another, LF only\n" in r.stderr, "second banner line not seen")
+
+
+@row
+def version_too_long():
+    with mitm.FakeServer(b"SSH-2.0-" + b"x" * 300 + b"\r\n") as f:
+        r = burrow(f.port, WORK / "no-known-hosts")
+    refused(r, "version_too_long")
+
+
+@row
+def version_unsupported():
+    with mitm.FakeServer(b"SSH-1.5-ancient\r\n") as f:
+        r = burrow(f.port, WORK / "no-known-hosts")
+    refused(r, "version_unsupported")
+    check(f.got.startswith(b"SSH-2.0-burrow_0.0.0\r\n"), f"burrow's version line was {bytes(f.got[:40])!r}")
+
+
+# ---- host keys ------------------------------------------------------------------
+@row
+def host_key_unknown():
+    d = run_dir("host-key-unknown")
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s, text=""))
+        refused(r, "host_key_unknown")
+        check(client_disconnect(s, 9), "sshd did not log a disconnect with reason 9")
+
+
+@row
+def host_key_changed():
+    d = run_dir("host-key-changed")
+    other = oraclelib.keygen(d / "other", "ed25519")
+    algo, blob = other.read_text().split()[:2]
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s, text=f"[127.0.0.1]:{s.port} {algo} {blob}\n"))
+        refused(r, "host_key_changed")
+        check(client_disconnect(s, 9), "sshd did not log a disconnect with reason 9")
+
+
+@row
+def host_key_signature():
+    """The last byte of the server's KEX_ECDH_REPLY is the signature's."""
+    d = run_dir("host-key-signature")
+
+    def flip(t, payload):
+        if t == 31:
+            return [mitm.frame(payload[:-1] + bytes([payload[-1] ^ 1]))]
+        return None
+
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=flip)) as m:
+        r = burrow(m.port, known(d, s))
+        refused(r, "host_key_bad_signature")
+
+
+# ---- negotiation -----------------------------------------------------------------
+@row
+def no_common_kex():
+    d = run_dir("no-common-kex")
+    with oraclelib.Sshd(d / "sshd", ["KexAlgorithms mlkem768x25519-sha256,ecdh-sha2-nistp256"]) as s:
+        r = burrow(s.port, known(d, s))
+        refused(r, "no_common_kex")
+        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+
+
+@row
+def no_common_hostkey():
+    d = run_dir("no-common-hostkey")
+    with oraclelib.Sshd(d / "sshd", host_keys=("ecdsa", "rsa")) as s:
+        r = burrow(s.port, known(d, s, "ecdsa"))
+        refused(r, "no_common_hostkey")
+        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+
+
+@row
+def no_common_cipher():
+    d = run_dir("no-common-cipher")
+    with oraclelib.Sshd(d / "sshd", ["Ciphers aes128-ctr,aes256-gcm@openssh.com"]) as s:
+        r = burrow(s.port, known(d, s))
+        refused(r, "no_common_cipher")
+        check(client_disconnect(s, 3), "sshd did not log a disconnect with reason 3")
+
+
+# ---- strict kex ---------------------------------------------------------------------
+@row
+def strict_kex_missing():
+    """The server's kex-strict-s-v00 stripped in flight: refused at negotiation."""
+    d = run_dir("strict-kex-missing")
+
+    def strip(t, payload):
+        if t == 20:
+            return [mitm.frame(mitm.kexinit_without(payload, "kex-strict-s-v00@openssh.com"))]
+        return None
+
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
+        r = burrow(m.port, known(d, s))
+        refused(r, "strict_kex_missing")
+
+
+@row
+def downgrade_caught():
+    """With strict kex waived, the same tampering breaks H: the server's
+    signature covers the KEXINIT it sent, not the one burrow read."""
+    d = run_dir("downgrade-caught")
+
+    def strip(t, payload):
+        if t == 20:
+            return [mitm.frame(mitm.kexinit_without(payload, "kex-strict-s-v00@openssh.com"))]
+        return None
+
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
+        r = burrow(m.port, known(d, s), "--no-strict-kex")
+        refused(r, "host_key_bad_signature")
+
+
+@row
+def strict_ignore_first():
+    d = run_dir("strict-ignore-first")
+
+    def inject(t, payload):
+        if t == 20:
+            return [mitm.ignore_packet(), mitm.frame(payload)]
+        return None
+
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=inject)) as m:
+        r = burrow(m.port, known(d, s))
+        refused(r, "strict_kex_violation")
+
+
+@row
+def strict_ignore_mid():
+    d = run_dir("strict-ignore-mid")
+
+    def inject(t, payload):
+        if t == 21:
+            return [mitm.ignore_packet(), mitm.frame(payload)]
+        return None
+
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=inject)) as m:
+        r = burrow(m.port, known(d, s))
+        refused(r, "strict_kex_violation")
+
+
+# ---- the sealed transport -----------------------------------------------------------
+@row
+def mac_mismatch():
+    """One flipped tag byte in the server's first sealed packet."""
+    d = run_dir("mac-mismatch")
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(flip_first_sealed_tag=True)) as m:
+        r = burrow(m.port, known(d, s))
+        refused(r, "mac_mismatch")
+        check(any(e[0] == "flip" for e in m.events), "the relay flipped nothing")
+
+
+@row
+def rekey_by_burrow():
+    d = run_dir("rekey-by-burrow")
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s), "-o", "RekeyLimit=32K", "--test-traffic=256K")
+        transport_up(r)
+        m = re.search(r"rekeys: (\d+) by burrow, (\d+) by the server; PONG received", r.stderr)
+        check(m, f"no traffic line; stderr: {tail(r.stderr)}")
+        check(int(m[1]) >= 4, f"only {m[1]} rekeys by burrow")
+        n = len(re.findall(r"SSH2_MSG_NEWKEYS received", s.log_text()))
+        check(n >= 1 + int(m[1]), f"sshd logged {n} NEWKEYS received")
+    return f"{m[1]} by burrow"
+
+
+@row
+def rekey_by_server():
+    d = run_dir("rekey-by-server")
+    with oraclelib.Sshd(d / "sshd", ["RekeyLimit 32K"]) as s:
+        r = burrow(s.port, known(d, s), "--test-traffic=256K")
+        transport_up(r)
+        m = re.search(r"rekeys: (\d+) by burrow, (\d+) by the server; PONG received", r.stderr)
+        check(m, f"no traffic line; stderr: {tail(r.stderr)}")
+        check(int(m[2]) >= 1, f"{m[2]} rekeys by the server")
+    return f"{m[2]} by the server"
+
+
+# ---- the transcript against the pinned OpenSSH client ----------------------------------
+@row
+def transcript():
+    d = run_dir("transcript")
+    lists = ["-o", "KexAlgorithms=curve25519-sha256,curve25519-sha256@libssh.org",
+             "-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "Ciphers=chacha20-poly1305@openssh.com",
+             "-o", "MACs=hmac-sha2-256", "-o", "Compression=no"]
+    with oraclelib.Sshd(d / "sshd") as s:
+        with mitm.Relay(s.port) as a:
+            kh_a = d / "known_hosts_burrow"
+            kh_a.write_text(f"[127.0.0.1]:{a.port} " + " ".join(s.host_pub().read_text().split()[:2]) + "\n")
+            rb = burrow(a.port, kh_a)
+        time.sleep(0.2)
+        with mitm.Relay(s.port) as b:
+            kh_b = d / "known_hosts_ssh"
+            kh_b.write_text(f"[127.0.0.1]:{b.port} " + " ".join(s.host_pub().read_text().split()[:2]) + "\n")
+            ro = subprocess.run([str(oraclelib.SSH), "-F", "none", "-p", str(b.port), "-o", "BatchMode=yes",
+                                 "-o", f"UserKnownHostsFile={kh_b}", "-o", "PreferredAuthentications=none",
+                                 "-l", "nobody"] + lists + ["127.0.0.1", "true"],
+                                capture_output=True, text=True, timeout=60)
+        time.sleep(0.2)
+    transport_up(rb)
+    bl, bp = mitm.plaintext_packets(a.c2s)
+    ol, op = mitm.plaintext_packets(b.c2s)
+    (d / "burrow-c2s.hex").write_text(bytes(a.c2s[:4096]).hex())
+    (d / "ssh-c2s.hex").write_text(bytes(b.c2s[:4096]).hex())
+    check(bl == b"SSH-2.0-burrow_0.0.0\r\n", f"burrow's version line {bl!r}")
+    check(re.fullmatch(rb"SSH-2\.0-OpenSSH_[^ \r\n]+\r\n", ol), f"ssh's version line {ol!r}")
+    check([p[2][0] for p in bp] == [20, 30, 21], f"burrow's plaintext packets {[p[2][0] for p in bp]}")
+    check([p[2][0] for p in op] == [20, 30, 21], f"ssh's plaintext packets {[p[2][0] for p in op]}")
+    bk, ok = bp[0][2], op[0][2]
+    check(bk[0] == ok[0] == 20 and bk[17:] == ok[17:],
+          f"KEXINIT after the cookie differs: burrow {bk[17:].hex()} ssh {ok[17:].hex()}")
+    check(len(bp[1][2]) == len(op[1][2]) == 37 and bp[1][2][:5] == op[1][2][:5], "KEX_ECDH_INIT differs in shape")
+    check(bp[2][2] == op[2][2] == b"\x15", "NEWKEYS payloads differ")
+    pads = " ".join(f"{p[2][0]}:{p[0]}/{p[1]} vs {q[0]}/{q[1]}" for p, q in zip(bp, op))
+    (d / "frames.txt").write_text(pads + "\n")
+    return f"KEXINIT equal after the cookie ({len(bk)} bytes); packet_length/padding burrow vs ssh: {pads}"
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    if not BIN.exists():
+        print(f"FAIL setup no burrow binary at {BIN}")
+        sys.exit(1)
+    oraclelib.require_oracle()
+    WORK.mkdir(parents=True, exist_ok=True)
+    (WORK / "home").mkdir(exist_ok=True)
+    fails = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:  # a harness fault is a red row too, by name
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-transport: {len([f for f in ROWS if not a.only or f.__name__.replace('_', '-') in a.only])} rows, {fails} failed, 0 SKIP")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
