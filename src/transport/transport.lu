@@ -88,6 +88,7 @@ pub struct Conn {
     host_k_s: List[byte],
     strict: bool,
     exchanges: int,
+    kexinit_seq: int,
     by_us: int,
     by_server: int,
     keyed_at_ns: int,
@@ -144,6 +145,7 @@ pub fn dial(opts: Options) -> Conn ! refuse.Refusal {
         host_k_s: List[byte](),
         strict: false,
         exchanges: 0,
+        kexinit_seq: -1,
         by_us: 0,
         by_server: 0,
         keyed_at_ns: time.monotonic_ns(),
@@ -259,6 +261,23 @@ pub fn start(mut c: Conn) -> () ! refuse.Refusal {
     exchange(mut c, List[byte]())?
 }
 
+// Whether `p` is the server's SSH_MSG_UNIMPLEMENTED for our KEXINIT
+// (RFC 4253 §11.4 names the rejected packet by its sequence number): the
+// server will not run this exchange. The pinned sshd answers a client's
+// re-exchange that way before user authentication.
+fn refused_kexinit(mut c: Conn, p: List[byte]) -> bool {
+    if kind(p) != refuse.msg_unimplemented() {
+        return false
+    }
+    var r = wire.reader(p[1..p.len])
+    let seq = wire.read_u32(mut r) else -1
+    if seq != c.kexinit_seq {
+        return false
+    }
+    c.detail = "the server answered our KEXINIT (sequence number {seq}) with SSH2_MSG_UNIMPLEMENTED"
+    true
+}
+
 fn noise(t: int) -> bool {
     t == refuse.msg_ignore() || t == refuse.msg_debug() || t == refuse.msg_unimplemented()
 }
@@ -280,6 +299,9 @@ fn expect(mut c: Conn, want: int, initial: bool, what: str) -> List[byte] ! refu
         if initial && c.strict {
             c.detail = "message {t} while expecting {what} in the first key exchange"
             return strict_kex_violation
+        }
+        if refused_kexinit(mut c, p) {
+            return kex_failed
         }
         if !noise(t) {
             c.detail = "message {t} while expecting {what}"
@@ -315,6 +337,7 @@ fn exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
     let cookie = entropy.draw(mut c.pool, 16)?
     let ours = kex.our_proposal(cookie)
     let i_c = kex.encode(ours)
+    c.kexinit_seq = c.tx.seq
     send_packet(mut c, i_c)?
     say(c, 1, "SSH2_MSG_KEXINIT sent")
     var i_s = copy theirs
@@ -327,6 +350,8 @@ fn exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
         } else if t == refuse.msg_disconnect() {
             note_disconnect(mut c, p)
             return disconnected
+        } else if refused_kexinit(mut c, p) {
+            return kex_failed
         } else if noise(t) {
             before += 1
             if t == refuse.msg_debug() {

@@ -39,6 +39,7 @@ pub error Refusal = {
     host_key_changed,
     known_hosts_unreadable,
     service_refused,
+    auth_refused,
     entropy_unavailable,
     sequence_wrapped,
     disconnected,
@@ -104,6 +105,26 @@ pub fn msg_kex_ecdh_reply() -> int {
     31
 }
 
+/// SSH_MSG_USERAUTH_REQUEST (RFC 4252 §5).
+pub fn msg_userauth_request() -> int {
+    50
+}
+
+/// SSH_MSG_USERAUTH_FAILURE (RFC 4252 §5.1).
+pub fn msg_userauth_failure() -> int {
+    51
+}
+
+/// SSH_MSG_USERAUTH_SUCCESS (RFC 4252 §5.1).
+pub fn msg_userauth_success() -> int {
+    52
+}
+
+/// SSH_MSG_USERAUTH_BANNER (RFC 4252 §5.4).
+pub fn msg_userauth_banner() -> int {
+    53
+}
+
 /// SSH2_MSG_PING (OpenSSH `PROTOCOL` §1.9, advertised by ext-info).
 pub fn msg_ping() -> int {
     192
@@ -136,6 +157,7 @@ pub fn reason_of(code_name: str) -> int {
         "host_key_changed" => 9,
         "known_hosts_unreadable" => 9,
         "service_refused" => 7,
+        "auth_refused" => 14,
         "entropy_unavailable" => 11,
         _ => 2,
     }
