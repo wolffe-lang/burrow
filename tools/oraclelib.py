@@ -48,7 +48,7 @@ def keygen(path, kind, comment="burrow-row"):
     """A fresh key pair at `path` (no passphrase), made by the pinned ssh-keygen."""
     args = [str(KEYGEN), "-q", "-t", kind, "-N", "", "-C", comment, "-f", str(path)]
     if kind == "rsa":
-        args[3:3] = ["-b", "3072"]
+        args[4:4] = ["-b", "3072"]
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
     return pathlib.Path(str(path) + ".pub")
 
