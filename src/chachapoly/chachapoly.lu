@@ -1,0 +1,96 @@
+//! member: true
+//!
+//! burrow.chachapoly — `chacha20-poly1305@openssh.com`, as OpenSSH's
+//! PROTOCOL.chacha20poly1305 describes it, over std's RFC 8439
+//! primitives.
+//!
+//! The 64 bytes of key material split in two: the first 32 are K_2,
+//! which encrypts the packet and keys its MAC; the second 32 are K_1,
+//! which encrypts only the 4-byte packet length. Both instances use the
+//! packet's sequence number, as an SSH uint64, for the nonce. The note's
+//! ChaCha20 has a 64-bit nonce and a 64-bit block counter; RFC 8439's
+//! has a 96-bit nonce and a 32-bit counter. They are the same function
+//! when the 96-bit nonce is four zero bytes then the uint64 sequence
+//! number: those four bytes are the high word of the 64-bit counter,
+//! which no packet reaches (a packet is a few hundred blocks at most).
+//!
+//! The Poly1305 key is the first 32 bytes of K_2's keystream at block
+//! 0; the packet body is encrypted from block 1; the tag covers the
+//! encrypted length and the encrypted body. On receipt the tag is
+//! checked, with `wire.ct_eq`'s constant-time comparison, before a
+//! single byte of the body is decrypted.
+//!
+//! ct: the cipher and MAC are std's (their own `ct:` lines); burrow
+//! adds only the tag comparison, `wire.ct_eq`, which folds every byte
+//! before it tests anything.
+
+use std.x.crypto.chacha20
+use refuse
+use wire
+
+/// A direction's two keys: `main` (K_2) and `header` (K_1).
+pub struct Keys {
+    main: List[byte],
+    header: List[byte],
+}
+
+/// The key material this cipher needs from the key exchange.
+pub fn key_len() -> int {
+    64
+}
+
+/// The tag length.
+pub fn tag_len() -> int {
+    16
+}
+
+/// Splits 64 bytes of derived key material into K_2 and K_1.
+pub fn keys(material: List[byte]) -> Keys {
+    assert(material.len == 64, "chachapoly: 64 bytes of key material")
+    Keys { main: material[0..32], header: material[32..64] }
+}
+
+/// The 96-bit RFC 8439 nonce of a sequence number.
+pub fn nonce(seq: int) -> List[byte] {
+    var out = List[byte]()
+    wire.put_u32(mut out, 0)
+    wire.put_u64(mut out, seq)
+    out
+}
+
+/// Encrypts and authenticates one frame (`packet_length` and the rest):
+/// the encrypted length, the encrypted rest, then the 16-byte tag.
+pub fn seal(k: Keys, seq: int, frame: List[byte]) -> List[byte] {
+    let n = nonce(seq)
+    var out = chacha20.stream_xor(k.header, 0, n, frame[0..4])
+    wire.put_raw(mut out, chacha20.stream_xor(k.main, 1, n, frame[4..frame.len]))
+    let otk = chacha20.block(k.main, 0, n)
+    let tag = chacha20.poly1305(otk[0..32], out)
+    wire.put_raw(mut out, tag)
+    out
+}
+
+/// The plaintext packet length from its 4 encrypted bytes. It is not
+/// yet authenticated: the caller bounds it, then `open` checks the tag
+/// over these same bytes.
+pub fn length(k: Keys, seq: int, enc: List[byte]) -> int {
+    let p = chacha20.stream_xor(k.header, 0, nonce(seq), enc[0..4])
+    p[0] as int * 16777216 + p[1] as int * 65536 + p[2] as int * 256 + p[3] as int
+}
+
+/// Checks the tag of one whole sealed packet (`4 + length + 16` bytes)
+/// and returns its decrypted body: padding_length, payload, padding.
+/// `mac_mismatch` when the tag does not verify; nothing is decrypted then.
+pub fn open(k: Keys, seq: int, sealed: List[byte]) -> List[byte] ! refuse.Refusal {
+    if sealed.len < 4 + tag_len() {
+        return mac_mismatch
+    }
+    let n = nonce(seq)
+    let body_end = sealed.len - tag_len()
+    let otk = chacha20.block(k.main, 0, n)
+    let want = chacha20.poly1305(otk[0..32], sealed[0..body_end])
+    if !wire.ct_eq(want, sealed[body_end..sealed.len]) {
+        return mac_mismatch
+    }
+    chacha20.stream_xor(k.main, 1, n, sealed[4..body_end])
+}
