@@ -5,7 +5,7 @@
 # and PROTOCOL.certkeys; 10.1p1 onward points at Internet-Drafts instead.
 [oracle]
 version = "10.0p2"
-version_line = "PENDING"
+version_line = "OpenSSH_10.0p2, OpenSSL 3.0.13 30 Jan 2024"
 url = "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz"
 sha256 = "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c"
 sig_url = "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz.asc"
@@ -18,6 +18,6 @@ top = "openssh-10.0p1"
 prefix = "/work/burrow/.oracle/openssh-10.0p2"
 image = "docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
 apt_snapshot = "20261101T000000Z"
-ssh_sha256 = "PENDING"
-sshd_sha256 = "PENDING"
-ssh_keygen_sha256 = "PENDING"
+ssh_sha256 = "a95aff08678e82500dbde571f13337f32d05d1308f6b184af052d14de4ce810f"
+sshd_sha256 = "2b783b0208e091c08943e8a4d438975f5d665f430f19caec4acf83efc7af33dc"
+ssh_keygen_sha256 = "d84e9069787182d0c0617ad52ba08b33d0d4c88b2b1fa99f2fbb84734e444d4c"
