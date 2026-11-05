@@ -9,7 +9,9 @@ any ssh implementation: X25519 from RFC 7748 §5, Ed25519 from RFC 8032
 §5.1, ChaCha20 and Poly1305 from RFC 8439 §2.3–§2.5, the exchange hash from
 RFC 4253 §8 with RFC 8731 §3's string-encoded public values and mpint K,
 key derivation from RFC 4253 §7.2, and the packet construction from OpenSSH's
-PROTOCOL.chacha20poly1305. Only SHA-256 and SHA-512 come from hashlib.
+PROTOCOL.chacha20poly1305; B2's key file, userauth and channel messages
+from PROTOCOL.key, RFC 4252 §7, RFC 8709 §6 and RFC 4254. Only SHA-256 and
+SHA-512 come from hashlib, and HMAC-SHA1 for one hashed known_hosts name.
 
 Every input is fixed, so the output is the same bytes on every run; the
 generated module is checked in, and the gate regenerates and compares it.
@@ -312,6 +314,55 @@ def vectors():
     seed1 = bytes.fromhex("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
     assert ed25519_public(seed1).hex() == "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
     assert ed25519_sign(seed1, b"").hex().startswith("e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bac")
+    # ---- B2: the OpenSSH private key format (PROTOCOL.key, its private
+    # section's layout measured from the pinned ssh-keygen), for TEST 1's
+    # published seed. Only the file's digest and its public line become
+    # vectors: no key encoding is written into the repository.
+    pub1 = ed25519_public(seed1)
+    blob1 = string(b"ssh-ed25519") + string(pub1)
+    comment = b"burrow vector"
+    check = bytes([1, 2, 3, 4])
+    sect = check + check + string(b"ssh-ed25519") + string(pub1) + string(seed1 + pub1) + string(comment)
+    n = 1
+    while len(sect) % 8:
+        sect += bytes([n])
+        n += 1
+    raw = (b"openssh-key-v1\0" + string(b"none") + string(b"none") + string(b"") + u32(1)
+           + string(blob1) + string(sect))
+    import base64
+    b64 = base64.b64encode(raw).decode()
+    text = "-----BEGIN OPENSSH PRIVATE KEY-----\n" + "".join(b64[i:i + 70] + "\n" for i in range(0, len(b64), 70)) \
+        + "-----END OPENSSH PRIVATE KEY-----\n"
+    v["keyfile_sha256"] = hashlib.sha256(text.encode()).digest()
+    v["keyfile_public_line"] = ("ssh-ed25519 " + base64.b64encode(blob1).decode() + " burrow vector\n").encode()
+    v["user_blob"] = blob1
+    # ---- B2: publickey authentication (RFC 4252 §7, RFC 8709 §6) for the
+    # user `burrowtest`, under the first exchange's H as session id.
+    user = b"burrowtest"
+    head = bytes([50]) + string(user) + string(b"ssh-connection") + string(b"publickey")
+    v["auth_query"] = head + b"\x00" + string(b"ssh-ed25519") + string(blob1)
+    signed = string(H) + head + b"\x01" + string(b"ssh-ed25519") + string(blob1)
+    v["auth_signed_data"] = signed
+    usig = string(b"ssh-ed25519") + string(ed25519_sign(seed1, signed))
+    v["auth_signed_request"] = head + b"\x01" + string(b"ssh-ed25519") + string(blob1) + string(usig)
+    v["auth_pk_ok"] = bytes([60]) + string(b"ssh-ed25519") + string(blob1)
+    # ---- B3: the session channel's messages (RFC 4254 §5.1, §6.4, §6.5,
+    # §5.2), channel 0, window 2 MiB, maximum packet 32768.
+    v["chan_open_session"] = bytes([90]) + string(b"session") + u32(0) + u32(2097152) + u32(32768)
+    v["chan_env_git"] = bytes([98]) + u32(7) + string(b"env") + b"\x00" + string(b"GIT_PROTOCOL") + string(b"version=2")
+    v["chan_exec"] = bytes([98]) + u32(7) + string(b"exec") + b"\x01" + string(b"'git-upload-pack' '/srv/a b.git'")
+    v["chan_window_adjust"] = bytes([93]) + u32(7) + u32(1048576)
+    v["chan_data"] = bytes([94]) + u32(7) + string(bytes([0, 255, 10, 0xc3, 0x28]))
+    v["chan_eof"] = bytes([96]) + u32(7)
+    v["chan_close"] = bytes([97]) + u32(7)
+    # ---- B2: a hashed known_hosts name (|1|salt|hash), HMAC-SHA1 keyed by
+    # the salt over the name (the construction measured against the pinned
+    # ssh-keygen -H); hashlib's HMAC-SHA1 is used here as a black box.
+    import hmac
+    salt = hashlib.sha256(b"burrow vector: a known_hosts salt").digest()[:20]
+    mac = hmac.new(salt, b"[127.0.0.1]:2222", hashlib.sha1).digest()
+    v["kh_salt"] = salt
+    v["kh_hashed_name"] = ("|1|" + base64.b64encode(salt).decode() + "|" + base64.b64encode(mac).decode()).encode()
     return v
 
 
