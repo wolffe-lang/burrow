@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""measure-handshake — the cost of a handshake, burrow against the pinned ssh.
+
+    tools/in-container python3 -I tools/measure-handshake --bin target/release/burrow [--runs N]
+
+Evidence only, never a gate. One sshd (a row's own, keys for this run)
+admits the image's empty-password user through RFC 4252 `none`. Each turn
+runs burrow (`--test-auth-none`: the transport, the login, a DISCONNECT) and
+the pinned `ssh` (`PreferredAuthentications=none`, then `true` on a session
+channel), interleaved. For each client it records the child's CPU time
+(user + system, from rusage) and the wall time, and prints the minimum and
+median of each with the ratios. ssh does slightly more (a channel and an
+exec); the CPU column is the client's own work either way.
+"""
+import argparse
+import json
+import pathlib
+import resource
+import statistics
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+
+def timed(args):
+    before = resource.getrusage(resource.RUSAGE_CHILDREN)
+    t0 = time.monotonic()
+    r = subprocess.run(args, capture_output=True, text=True, timeout=120)
+    wall = time.monotonic() - t0
+    after = resource.getrusage(resource.RUSAGE_CHILDREN)
+    cpu = (after.ru_utime - before.ru_utime) + (after.ru_stime - before.ru_stime)
+    return r, cpu, wall
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--runs", type=int, default=15)
+    a = ap.parse_args()
+    out = oraclelib.ROOT / "target" / "measure"
+    with oraclelib.Sshd(out / "sshd", ["PermitEmptyPasswords yes", "PasswordAuthentication yes"],
+                        log_level="INFO") as s:
+        kh = out / "known_hosts"
+        kh.write_text(s.known_hosts_line())
+        burrow = [str(pathlib.Path(a.bin).resolve()), "-o", f"UserKnownHostsFile={kh}", "-p", str(s.port),
+                  "-l", "burrowtest", "--test-auth-none", "127.0.0.1"]
+        ssh = [str(oraclelib.SSH), "-F", "none", "-p", str(s.port), "-o", "BatchMode=yes",
+               "-o", f"UserKnownHostsFile={kh}", "-o", "PreferredAuthentications=none",
+               "-o", "KexAlgorithms=curve25519-sha256", "-o", "HostKeyAlgorithms=ssh-ed25519",
+               "-o", "Ciphers=chacha20-poly1305@openssh.com", "-l", "burrowtest", "127.0.0.1", "true"]
+        rows = {"burrow": [], "ssh": []}
+        for i in range(a.runs):
+            for name, args, want in (("burrow", burrow, 2), ("ssh", ssh, 0)):
+                r, cpu, wall = timed(args)
+                if r.returncode != want:
+                    print(f"measure-handshake: {name} exit {r.returncode}: {r.stderr[-300:]}")
+                    sys.exit(1)
+                rows[name].append((cpu, wall))
+    res = {}
+    for name, xs in rows.items():
+        cpus, walls = [x[0] for x in xs], [x[1] for x in xs]
+        res[name] = {"cpu_min": min(cpus), "cpu_median": statistics.median(cpus),
+                     "wall_min": min(walls), "wall_median": statistics.median(walls), "runs": len(xs)}
+        print(f"measure-handshake: {name:6} cpu min {min(cpus) * 1000:7.2f} ms median {statistics.median(cpus) * 1000:7.2f} ms; "
+              f"wall min {min(walls) * 1000:7.2f} ms median {statistics.median(walls) * 1000:7.2f} ms ({len(xs)} runs)")
+    for k in ("cpu_min", "wall_min", "cpu_median", "wall_median"):
+        res["ratio_" + k] = res["burrow"][k] / res["ssh"][k]
+    print("measure-handshake: burrow / ssh: cpu min %.2fx, wall min %.2fx (medians %.2fx, %.2fx)" % (
+        res["ratio_cpu_min"], res["ratio_wall_min"], res["ratio_cpu_median"], res["ratio_wall_median"]))
+    (oraclelib.ROOT / "target" / "measure.json").write_text(json.dumps(res, indent=2) + "\n")
+
+
+if __name__ == "__main__":
+    main()
