@@ -1,0 +1,50 @@
+//! member: false
+
+// The rekey points: RFC 4253 §9 (1 GiB, one hour) and RFC 4344 §3.1
+// (2^31 packets on receipt, well before 2^32 sent), either direction.
+use packet
+
+fn at(bytes: int, packets: int) -> packet.Direction {
+    var d = packet.plain()
+    d.bytes = bytes
+    d.packets = packets
+    d
+}
+
+fn main() {
+    let lim = packet.default_limits()
+    assert(lim.bytes == 1073741824 && lim.packets == 2147483648 && lim.seconds == 3600)
+    let quiet = at(0, 0)
+    let hour = 3600 * 1000000000
+    assert(!packet.rekey_due(quiet, quiet, lim, 0))
+    // Bytes: one under the bound is not due; at the bound it is, either way.
+    assert(!packet.rekey_due(at(1073741823, 10), quiet, lim, 0))
+    assert(packet.rekey_due(at(1073741824, 10), quiet, lim, 0))
+    assert(packet.rekey_due(quiet, at(1073741824, 10), lim, 0))
+    // Packets: 2^31, either direction.
+    assert(!packet.rekey_due(at(10, 2147483647), quiet, lim, 0))
+    assert(packet.rekey_due(at(10, 2147483648), quiet, lim, 0))
+    assert(packet.rekey_due(quiet, at(10, 2147483648), lim, 0))
+    // Time: an hour since the last NEWKEYS.
+    assert(!packet.rekey_due(quiet, quiet, lim, hour - 1))
+    assert(packet.rekey_due(quiet, quiet, lim, hour))
+    // A RekeyLimit lowers the byte bound and the time, never the packets.
+    let low = packet.limits(32768, 10)
+    assert(low.packets == 2147483648)
+    assert(
+        !packet.rekey_due(at(32767, 1), quiet, low, 0) &&
+            packet.rekey_due(at(32768, 1), quiet, low, 0),
+    )
+    assert(packet.rekey_due(quiet, quiet, low, 10 * 1000000000))
+    // take_keys resets the counts the bounds read.
+    var d = at(1073741824, 2147483648)
+    var material = List[byte]()
+    var i = 0
+    while i < 64 {
+        (mut material).push(i as byte)
+        i += 1
+    }
+    packet.take_keys(mut d, material, true)
+    assert(d.bytes == 0 && d.packets == 0 && !packet.rekey_due(d, quiet, lim, 0))
+    print("rekey: 5 groups, 0 SKIP")
+}
