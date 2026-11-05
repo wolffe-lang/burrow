@@ -473,12 +473,8 @@ fn pong(mut c: Conn, p: List[byte]) -> () ! refuse.Refusal {
 }
 
 fn due(c: Conn) -> bool {
-    let o = c.opts
-    c.tx.bytes >= o.rekey_bytes ||
-        c.rx.bytes >= o.rekey_bytes ||
-        c.tx.packets >= o.rekey_packets ||
-        c.rx.packets >= o.rekey_packets ||
-        time.monotonic_ns() - c.keyed_at_ns >= o.rekey_seconds * 1000000000
+    let lim = packet.limits(c.opts.rekey_bytes, c.opts.rekey_seconds)
+    packet.rekey_due(c.tx, c.rx, lim, time.monotonic_ns() - c.keyed_at_ns)
 }
 
 fn rekey_if_due(mut c: Conn) -> () ! refuse.Refusal {

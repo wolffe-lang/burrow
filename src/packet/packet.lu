@@ -193,3 +193,32 @@ pub fn open(mut d: Direction, buf: List[byte], at: int) -> Opened ! refuse.Refus
     advance(mut d, total)
     Opened { complete: true, payload: payload, used: total }
 }
+
+/// The rekey bounds: bytes and packets either direction since the last
+/// NEWKEYS, and seconds since it.
+pub struct Limits {
+    bytes: int,
+    packets: int,
+    seconds: int,
+}
+
+/// RFC 4253 §9's 1 GiB and one hour, and RFC 4344 §3.1's 2^31 packets
+/// (its preferred point on receipt, applied both ways). ChaCha20's
+/// 512-bit block puts §3.2's block bound (2^128 blocks) out of reach.
+pub fn default_limits() -> Limits {
+    Limits { bytes: 1073741824, packets: 2147483648, seconds: 3600 }
+}
+
+/// The default limits with the byte and time bounds of a RekeyLimit.
+pub fn limits(bytes: int, seconds: int) -> Limits {
+    Limits { bytes: bytes, packets: 2147483648, seconds: seconds }
+}
+
+/// Whether a re-exchange is due, `elapsed_ns` after the last NEWKEYS.
+pub fn rekey_due(tx: Direction, rx: Direction, lim: Limits, elapsed_ns: int) -> bool {
+    tx.bytes >= lim.bytes ||
+        rx.bytes >= lim.bytes ||
+        tx.packets >= lim.packets ||
+        rx.packets >= lim.packets ||
+        elapsed_ns >= lim.seconds * 1000000000
+}
