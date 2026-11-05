@@ -1,0 +1,26 @@
+# bw01 (2026-11-05): wolf release 435500500 and lupin release 433110898,
+# read twice from the release API, agreeing on asset ids and digests.
+# Whole release archives, including libwolf_rt.a; the std pin is the
+# commit the wolf 0.2.37 archive bundles (its std/STD-REV).
+
+[wolf]
+version = "0.2.37"
+repo = "wolffe-lang/wolf-lang"
+rev = "e2757a7bd702d3b21f06396291010d2d1cb6101d"
+version_line = "wolf 0.2.37 (wolfgang, pin e2757a7)"
+aarch64-apple-darwin = "c2ebfba6f80b96710b818d3d72f3a201144698abdfc6d065594acaa8c10f5e15"
+x86_64-unknown-linux-gnu = "9811d32e1dddcb743b96a14ea685faee06ba453242c1ae3deb90063f5bb9bcaa"
+aarch64-unknown-linux-gnu = "24c0975dfbc804dbb76c26449a9795a6897f186089fa39e2de1a84ab78d431f8"
+
+[lupin]
+version = "0.1.59"
+repo = "wolffe-lang/wolf-interp"
+rev = "668fb752c690f33cf124c052cc9bae2e9696eeef"
+version_line = "lupin 0.1.59 (wolf-interp, reference interpreter at pin b16353e)"
+aarch64-apple-darwin = "9f091af873768677593659bf2fda97243db01c489e6836b15c17ed50aabbf5f5"
+x86_64-unknown-linux-gnu = "12121909c289ac8ff4a138de8faabdb86b72df97988832b39047d5f312ec3a18"
+aarch64-unknown-linux-gnu = "73bdf749f5c9699c724776d00995e16c6432c66d0e69c497ca6ccdf83f766a3f"
+
+[std]
+repo = "wolffe-lang/wolf-std"
+rev = "5b3a59942b2ee69b99682544341ce8a12c984e9e"
