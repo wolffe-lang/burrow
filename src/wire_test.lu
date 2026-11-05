@@ -1,0 +1,116 @@
+//! member: false
+
+// RFC 4251 §5's data types, including the section's own mpint examples.
+use wire
+
+fn mp(magnitude: List[byte]) -> str {
+    var out = List[byte]()
+    wire.put_mpint_unsigned(mut out, magnitude)
+    wire.hex(out)
+}
+
+fn main() {
+    // uint32 and uint64 round trips, big-endian.
+    var out = List[byte]()
+    wire.put_u32(mut out, 699921578)
+    wire.put_u64(mut out, 4294967297)
+    wire.put_bool(mut out, true)
+    wire.put_text(mut out, "testing")
+    assert(wire.hex(out) == "29b7f4aa000000010000000101" + "0000000774657374696e67")
+    var r = wire.reader(out)
+    assert((wire.read_u32(mut r) else -1) == 699921578)
+    assert((wire.read_u64(mut r) else -1) == 4294967297)
+    assert(wire.read_bool(mut r) else false)
+    assert((wire.read_utf8(mut r) else "") == "testing")
+    assert(wire.at_end(r))
+    // A truncated value is `short`; a boolean of 7 is true (§5).
+    var t = wire.reader(wire.unhex("000000") else List[byte]())
+    let short_u32 = wire.read_u32(mut t) else |e| match e {
+        short => 1,
+    }
+    assert(short_u32 == 1)
+    var s = wire.reader(wire.unhex("0000000568656c6c") else List[byte]())
+    var got = "none"
+    let _ = wire.read_string(mut s) else |e| match e {
+        short => {
+            got = "short"
+            List[byte]()
+        },
+    }
+    assert(got == "short")
+    var b7 = wire.reader(wire.unhex("07") else List[byte]())
+    assert(wire.read_bool(mut b7) else false)
+    // RFC 4251 §5's mpint examples (the non-negative ones).
+    assert(mp(List[byte]()) == "00000000")
+    assert(mp(wire.unhex("09a378f9b2e332a7") else List[byte]()) == "0000000809a378f9b2e332a7")
+    assert(mp(wire.unhex("80") else List[byte]()) == "000000020080")
+    assert(mp(wire.unhex("0000000080") else List[byte]()) == "000000020080")
+    var m = wire.reader(wire.unhex("000000020080") else List[byte]())
+    assert(wire.hex(wire.read_mpint(mut m) else List[byte]()) == "0080")
+    // A negative mpint, or a superfluous leading zero, is malformed.
+    var neg = wire.reader(wire.unhex("00000002edcc") else List[byte]())
+    var why = "none"
+    let _ = wire.read_mpint(mut neg) else |e| match e {
+        short => {
+            why = "short"
+            List[byte]()
+        },
+        malformed => {
+            why = "malformed"
+            List[byte]()
+        },
+    }
+    assert(why == "malformed")
+    var lead = wire.reader(wire.unhex("000000020001") else List[byte]())
+    why = "none"
+    let _ = wire.read_mpint(mut lead) else |e| match e {
+        short => {
+            why = "short"
+            List[byte]()
+        },
+        malformed => {
+            why = "malformed"
+            List[byte]()
+        },
+    }
+    assert(why == "malformed")
+    // name-lists: §5's examples, the empty list, and the refusals.
+    var names = List[str]()
+    (mut names).push("zlib")
+    (mut names).push("none")
+    var nl = List[byte]()
+    wire.put_name_list(mut nl, names)
+    assert(wire.hex(nl) == "000000097a6c69622c6e6f6e65")
+    var nr = wire.reader(nl)
+    let back = wire.read_name_list(mut nr) else List[str]()
+    assert(back.len == 2 && back[0] == "zlib" && back[1] == "none")
+    let empty = wire.split_names(List[byte]()) else List[str]()
+    assert(empty.len == 0)
+    var bad = 0
+    let _ = wire.split_names(wire.bytes_of("a,,b")) else |e| match e {
+        malformed => {
+            bad += 1
+            List[str]()
+        },
+    }
+    let _ = wire.split_names(wire.bytes_of("a b")) else |e| match e {
+        malformed => {
+            bad += 1
+            List[str]()
+        },
+    }
+    let _ = wire.split_names(wire.bytes_of("trailing,")) else |e| match e {
+        malformed => {
+            bad += 1
+            List[str]()
+        },
+    }
+    assert(bad == 3)
+    // ct_eq: equal, one bit apart, different lengths.
+    let a = wire.unhex("00112233445566778899aabbccddeeff") else List[byte]()
+    let c = wire.unhex("00112233445566778899aabbccddeefe") else List[byte]()
+    assert(wire.ct_eq(a, a))
+    assert(!wire.ct_eq(a, c))
+    assert(!wire.ct_eq(a, a[0..15]))
+    print("wire: 9 groups, 0 SKIP")
+}
