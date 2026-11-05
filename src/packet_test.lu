@@ -125,6 +125,21 @@ fn main() {
         packet.Opened { complete: false, payload: List[byte](), used: 0 }
     }
     assert(why3 == "unaligned")
+    // The smallest sealed frame: a 1-byte payload, packet_length 8 (the
+    // pinned sshd's USERAUTH_SUCCESS); 12 stays the plaintext minimum.
+    var tx8 = packet.plain()
+    packet.take_keys(mut tx8, x(kexvec.key_c2s_64()), true)
+    var rx8 = packet.plain()
+    packet.take_keys(mut rx8, x(kexvec.key_c2s_64()), true)
+    var one = List[byte]()
+    wire.put_u8(mut one, 52)
+    let s8 = packet.seal(mut tx8, one, zeros(packet.pad_len(1, true))) else List[byte]()
+    assert(s8.len == 4 + 8 + 16)
+    let o8 = packet.open(mut rx8, s8, 0) else |e| {
+        assert(false, "a packet_length-8 sealed frame was refused: {e}")
+        return
+    }
+    assert(o8.complete && o8.payload.len == 1 && o8.payload[0] as int == 52)
     // One flipped tag byte is mac_mismatch, and so is one flipped body byte.
     var bad = copy sealed
     bad[bad.len - 1] = (bad[bad.len - 1] as int ^ 1) as byte
