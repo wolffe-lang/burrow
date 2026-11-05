@@ -38,12 +38,29 @@ fn refusal_of(buf: List[byte]) -> str {
 
 fn main() {
     // Padding: at least 4, the whole frame a multiple of 8.
-    assert(packet.pad_len(17) == 10 && packet.pad_len(1) == 10 && packet.pad_len(37) == 6)
-    assert(packet.pad_len(179) == 8 && packet.pad_len(3) == 8 && packet.pad_len(2) == 9)
+    // Padding: at least 4; plaintext frames a multiple of 8 as a whole,
+    // sealed frames with packet_length a multiple of 8 (the measured rule).
+    assert(
+        packet.pad_len(17, false) == 10 &&
+            packet.pad_len(1, false) == 10 &&
+            packet.pad_len(37, false) == 6,
+    )
+    assert(
+        packet.pad_len(179, false) == 8 &&
+            packet.pad_len(3, false) == 8 &&
+            packet.pad_len(2, false) == 9,
+    )
+    assert(
+        packet.pad_len(17, true) == 6 &&
+            packet.pad_len(1, true) == 6 &&
+            packet.pad_len(3, true) == 4,
+    )
+    assert(packet.pad_len(2, true) == 5 && packet.pad_len(305, true) == 6)
     // Plaintext frames equal vectorgen's.
     let sr = service_request()
     assert(
-        wire.hex(packet.frame(sr, zeros(packet.pad_len(sr.len)))) == kexvec.frame_service_request(),
+        wire.hex(packet.frame(sr, zeros(packet.pad_len(sr.len, false)))) ==
+            kexvec.frame_service_request(),
     )
     var nk = List[byte]()
     wire.put_u8(mut nk, 21)
@@ -51,7 +68,10 @@ fn main() {
     var ei = List[byte]()
     wire.put_u8(mut ei, 30)
     wire.put_string(mut ei, x(kexvec.q_c()))
-    assert(wire.hex(packet.frame(ei, zeros(packet.pad_len(ei.len)))) == kexvec.frame_ecdh_init())
+    assert(
+        wire.hex(packet.frame(ei, zeros(packet.pad_len(ei.len, false)))) ==
+            kexvec.frame_ecdh_init(),
+    )
     // A plaintext direction: seal, then open what it sealed, seq advancing.
     var out = packet.plain()
     var inn = packet.plain()
@@ -78,10 +98,11 @@ fn main() {
     // chacha20-poly1305@openssh.com against the vectors.
     let kc = chachapoly.keys(x(kexvec.key_c2s_64()))
     let ks = chachapoly.keys(x(kexvec.key_s2c_64()))
-    let f = packet.frame(sr, zeros(10))
+    let f = packet.frame(sr, zeros(6))
+    assert(wire.hex(f) == kexvec.sealed_frame_service_request())
     assert(wire.hex(chachapoly.seal(kc, 0, f)) == kexvec.sealed_service_request_seq0())
     assert(wire.hex(chachapoly.seal(kc, 3, f)) == kexvec.sealed_service_request_seq3())
-    let big = x(kexvec.frame_ignore_300())
+    let big = x(kexvec.sealed_frame_ignore_300())
     assert(
         wire.hex(chachapoly.seal(kc, 4294967295, big)) == kexvec.sealed_ignore_300_seq4294967295(),
     )
@@ -95,6 +116,15 @@ fn main() {
         return
     }
     assert(acc.complete && acc.payload[0] as int == 6 && rx.seq == 2)
+    // A sealed frame aligned the plaintext way (packet_length 28) is unaligned.
+    var rx3 = packet.plain()
+    packet.take_keys(mut rx3, x(kexvec.key_s2c_64()), false)
+    var why3 = "none"
+    let _ = packet.open(mut rx3, chachapoly.seal(ks, 0, packet.frame(sr, zeros(10))), 0) else |e| {
+        why3 = "{e}"
+        packet.Opened { complete: false, payload: List[byte](), used: 0 }
+    }
+    assert(why3 == "unaligned")
     // One flipped tag byte is mac_mismatch, and so is one flipped body byte.
     var bad = copy sealed
     bad[bad.len - 1] = (bad[bad.len - 1] as int ^ 1) as byte
@@ -135,14 +165,14 @@ fn main() {
     assert(tx.seq == 3)
     packet.take_keys(mut tx, x(kexvec.key_c2s_64()), true)
     assert(tx.seq == 0)
-    let s0 = packet.seal(mut tx, sr, zeros(10)) else List[byte]()
+    let s0 = packet.seal(mut tx, sr, zeros(6)) else List[byte]()
     assert(wire.hex(s0) == kexvec.sealed_service_request_seq0() && tx.seq == 1 && tx.packets == 1)
     // A keyed sequence number that wraps refuses the packet after it.
     tx.seq = 4294967295
-    let last = packet.seal(mut tx, sr, zeros(10)) else List[byte]()
+    let last = packet.seal(mut tx, sr, zeros(6)) else List[byte]()
     assert(last.len > 0 && tx.seq == 0 && tx.wrapped)
     why = "none"
-    let _ = packet.seal(mut tx, sr, zeros(10)) else |e| {
+    let _ = packet.seal(mut tx, sr, zeros(6)) else |e| {
         why = "{e}"
         List[byte]()
     }

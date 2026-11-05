@@ -209,10 +209,12 @@ def kexinit(cookie, kex, hostkey, cipher, mac, comp):
             + b"\x00" + u32(0))
 
 
-def frame(payload, pad_byte=0):
-    """RFC 4253 §6 with the whole frame a multiple of 8 and padding >= 4."""
+def frame(payload, pad_byte=0, sealed=False):
+    """RFC 4253 §6 with padding >= 4: a plaintext frame a multiple of 8 as
+    a whole; a sealed chacha20-poly1305 frame with packet_length a multiple
+    of 8 (the length field outside the alignment, as the pinned sshd does)."""
     padlen = 4
-    while (4 + 1 + len(payload) + padlen) % 8:
+    while ((0 if sealed else 4) + 1 + len(payload) + padlen) % 8:
         padlen += 1
     return u32(1 + len(payload) + padlen) + bytes([padlen]) + payload + bytes([pad_byte]) * padlen
 
@@ -287,13 +289,14 @@ def vectors():
     v["frame_service_request"] = frame(service)
     v["frame_newkeys"] = frame(bytes([21]))
     v["frame_ecdh_init"] = frame(bytes([30]) + string(Q_C))
-    v["sealed_service_request_seq0"] = chachapoly_seal(v["key_c2s_64"], 0, frame(service))
-    v["sealed_service_request_seq3"] = chachapoly_seal(v["key_c2s_64"], 3, frame(service))
+    v["sealed_frame_service_request"] = frame(service, sealed=True)
+    v["sealed_service_request_seq0"] = chachapoly_seal(v["key_c2s_64"], 0, frame(service, sealed=True))
+    v["sealed_service_request_seq3"] = chachapoly_seal(v["key_c2s_64"], 3, frame(service, sealed=True))
     accept = bytes([6]) + string(b"ssh-userauth")
-    v["sealed_service_accept_seq1"] = chachapoly_seal(v["key_s2c_64"], 1, frame(accept))
+    v["sealed_service_accept_seq1"] = chachapoly_seal(v["key_s2c_64"], 1, frame(accept, sealed=True))
     big = bytes([2]) + string(bytes((i * 7) % 256 for i in range(300)))
-    v["frame_ignore_300"] = frame(big)
-    v["sealed_ignore_300_seq4294967295"] = chachapoly_seal(v["key_c2s_64"], 4294967295, frame(big))
+    v["sealed_frame_ignore_300"] = frame(big, sealed=True)
+    v["sealed_ignore_300_seq4294967295"] = chachapoly_seal(v["key_c2s_64"], 4294967295, frame(big, sealed=True))
     # RFC 8439 §2.5.2's Poly1305 vector and §2.4.2's ChaCha20 vector, as a
     # self-check of this generator's own primitives.
     rfc_key = bytes.fromhex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
