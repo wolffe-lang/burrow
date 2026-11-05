@@ -1,0 +1,36 @@
+#!/usr/bin/env python3
+"""oracle-probe — what the pinned sshd offers, measured with the pinned ssh.
+
+    tools/in-container tools/oracle-probe [OUTDIR]
+
+Starts a row's sshd (ed25519, ecdsa and rsa host keys, generated for the
+run), connects the pinned `ssh -vvv` with no usable credential, and prints
+both KEXINIT proposals as the client's debug log states them, the
+negotiated algorithms, and the server's EXT_INFO names. Writes the raw
+client and server logs to OUTDIR (default target/oracle-probe).
+"""
+import pathlib
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+out = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else oraclelib.ROOT / "target" / "oracle-probe")
+out.mkdir(parents=True, exist_ok=True)
+with oraclelib.Sshd(out / "run") as d:
+    client = subprocess.run(
+        [str(oraclelib.SSH), "-vvv", "-F", "none", "-p", str(d.port),
+         "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+         "-o", f"UserKnownHostsFile={out / 'known_hosts'}",
+         "-o", "PreferredAuthentications=none", "-o", "IdentitiesOnly=yes",
+         "-i", "/dev/null", "-l", "nobody", "127.0.0.1", "true"],
+        capture_output=True, text=True, timeout=60)
+    server_log = d.log_text()
+(out / "ssh-vvv.log").write_text(client.stderr)
+(out / "sshd.log").write_text(server_log)
+print(f"oracle-probe: ssh exit {client.returncode}")
+for line in client.stderr.splitlines():
+    if re.search(r"(local version|remote software version|KEXINIT proposal|^debug2: (KEX|host key|ciphers|MACs|compression|languages|first_kex)|kex: |SSH2_MSG_EXT_INFO|kex_ext_info|server-sig-algs|host key algorithm|Server host key|SSH2_MSG_NEWKEYS|SERVICE_ACCEPT|strict|rekey)", line):
+        print("  " + line)
