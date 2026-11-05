@@ -5,11 +5,15 @@
 //! `chacha20-poly1305@openssh.com` after it.
 //!
 //! **The frame.** `uint32 packet_length, byte padding_length, payload,
-//! padding`. burrow pads every frame it sends so that the whole frame,
-//! `packet_length` included, is a multiple of 8 with at least 4 padding
-//! bytes (§6: "This constraint MUST be enforced, even when using stream
-//! ciphers"), and holds received frames to the same rules, each refused
-//! by name:
+//! padding`, with at least 4 padding bytes. A plaintext frame is a
+//! multiple of 8 as a whole, `packet_length` included (§6). A sealed
+//! `chacha20-poly1305@openssh.com` frame is aligned without its
+//! `packet_length` field: `packet_length` itself is a multiple of 8. That
+//! is the measured rule (the pinned sshd sends and expects it; the
+//! encrypted length is outside the alignment, as it is for OpenSSH's
+//! `-etm` MACs, `PROTOCOL` §1.5), and it departs from §6's text, which
+//! counts the length field even for stream ciphers. burrow sends and
+//! holds received frames to these rules, each refused by name:
 //!
 //! - `packet_too_short`: `packet_length` under 12 (the 16-byte minimum
 //!   frame, §6);
@@ -19,7 +23,7 @@
 //! - `padding_short`: fewer than 4 padding bytes;
 //! - `padding_overrun`: padding that leaves no room for the
 //!   padding-length byte itself;
-//! - `unaligned`: a frame that is not a multiple of 8;
+//! - `unaligned`: a frame off its multiple of 8;
 //! - `mac_mismatch`: a sealed frame whose tag does not verify.
 //!
 //! **Sequence numbers** (§6.4) count every packet in a direction from 0,
@@ -81,18 +85,20 @@ pub fn take_keys(mut d: Direction, material: List[byte], strict: bool) {
 }
 
 /// The padding length burrow sends for a payload of `n` bytes: the
-/// least p >= 4 with 5 + n + p a multiple of 8.
-pub fn pad_len(n: int) -> int {
+/// least p >= 4 with 5 + n + p a multiple of 8 for a plaintext frame,
+/// and with 1 + n + p (`packet_length`) a multiple of 8 for a sealed one.
+pub fn pad_len(n: int, sealed: bool) -> int {
+    let base = if sealed then 1 + n else 5 + n
     var p = 4
-    while (5 + n + p) % 8 != 0 {
+    while (base + p) % 8 != 0 {
         p += 1
     }
     p
 }
 
-/// The frame of `payload` with `padding` (exactly `pad_len` bytes).
+/// The frame of `payload` with `padding` (4 to 255 bytes).
 pub fn frame(payload: List[byte], padding: List[byte]) -> List[byte] {
-    assert(padding.len == pad_len(payload.len), "packet: the padding is pad_len bytes")
+    assert(padding.len >= 4 && padding.len <= 255, "packet: 4 to 255 padding bytes")
     var out = List[byte]()
     wire.put_u32(mut out, 1 + payload.len + padding.len)
     (mut out).push(padding.len as byte)
@@ -122,20 +128,21 @@ pub fn seal(
     if d.wrapped {
         return sequence_wrapped
     }
+    assert(padding.len == pad_len(payload.len, d.keyed), "packet: the padding is pad_len bytes")
     let f = frame(payload, padding)
     let out = if d.keyed then chachapoly.seal(d.keys, d.seq, f) else f
     advance(mut d, out.len)
     out
 }
 
-fn check_length(len: int) -> () ! refuse.Refusal {
+fn check_length(len: int, sealed: bool) -> () ! refuse.Refusal {
     if len < 12 {
         return packet_too_short
     }
     if len > max_packet_length() {
         return packet_too_long
     }
-    if (4 + len) % 8 != 0 {
+    if (if sealed then len % 8 else (4 + len) % 8) != 0 {
         return unaligned
     }
 }
@@ -170,7 +177,7 @@ pub fn open(mut d: Direction, buf: List[byte], at: int) -> Opened ! refuse.Refus
             buf[at + 2] as int * 256 +
             buf[at + 3] as int
     }
-    check_length(len)?
+    check_length(len, d.keyed)?
     let tag = if d.keyed then chachapoly.tag_len() else 0
     let total = 4 + len + tag
     if buf.len - at < total {

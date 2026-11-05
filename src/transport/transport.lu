@@ -194,7 +194,7 @@ fn send_raw(mut c: Conn, bytes: List[byte]) -> () ! refuse.Refusal {
 }
 
 fn send_packet(mut c: Conn, payload: List[byte]) -> () ! refuse.Refusal {
-    let pad = entropy.draw(mut c.pool, packet.pad_len(payload.len))?
+    let pad = entropy.draw(mut c.pool, packet.pad_len(payload.len, c.tx.keyed))?
     let out = packet.seal(mut c.tx, payload, pad)?
     send_raw(mut c, out)?
 }
