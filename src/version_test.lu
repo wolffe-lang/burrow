@@ -1,0 +1,86 @@
+//! member: false
+
+// RFC 4253 §4.2 and §5.1: the version exchange, as the client reads it.
+use refuse
+use version
+use wire
+
+fn b(s: str) -> List[byte] {
+    wire.bytes_of(s)
+}
+
+fn refusal(buf: List[byte]) -> str {
+    let s = version.scan(buf) else |e| {
+        return "{e}"
+    }
+    if s.found then "found" else "more"
+}
+
+fn parsed(line: str) -> str {
+    let id = version.parse(b(line)) else |e| {
+        return "{e}"
+    }
+    "{id.proto}|{id.software}|{id.comments}"
+}
+
+fn main() {
+    assert(version.client_ident() == "SSH-2.0-burrow_0.0.0")
+    assert(wire.hex(version.client_line()) == wire.hex(b("SSH-2.0-burrow_0.0.0\r\n")))
+    // Banner lines before the identification line, CR LF and bare LF.
+    let s = version.scan(
+        b("hello there\r\nsecond line\nSSH-2.0-OpenSSH_10.0p2\r\n\x00\x00\x01"),
+    ) else {
+        assert(false, "scan refused a valid exchange")
+        return
+    }
+    assert(
+        s.found &&
+            s.banners.len == 2 &&
+            s.banners[0] == "hello there" &&
+            s.banners[1] == "second line",
+    )
+    assert(wire.hex(s.line) == wire.hex(b("SSH-2.0-OpenSSH_10.0p2")))
+    assert(s.consumed == 13 + 12 + 24)
+    let lf = version.scan(b("SSH-2.0-x\n")) else {
+        assert(false, "scan refused a bare LF")
+        return
+    }
+    assert(lf.found && wire.hex(lf.line) == wire.hex(b("SSH-2.0-x")) && lf.consumed == 10)
+    // Incomplete input asks for more bytes.
+    assert(refusal(b("SSH-2.0-Open")) == "more")
+    assert(refusal(b("a banner")) == "more")
+    // The length limits: 255 bytes for the identification line, CR LF in.
+    var long = "SSH-2.0-"
+    while long.len < 253 {
+        long += "x"
+    }
+    assert(refusal(b(long + "\r\n")) == "found")
+    assert(refusal(b(long + "y\r\n")) == "version_too_long")
+    assert(refusal(b(long + "yy")) == "version_too_long")
+    var banner = ""
+    while banner.len < 8191 {
+        banner += "b"
+    }
+    assert(refusal(b(banner + "\n")) == "more")
+    assert(refusal(b(banner + "bb\n")) == "banner_too_long")
+    var many = ""
+    var i = 0
+    while i < 1025 {
+        many += "x\r\n"
+        i += 1
+    }
+    assert(refusal(b(many + "SSH-2.0-x\r\n")) == "banner_too_many")
+    // The identification string's parts and refusals.
+    assert(parsed("SSH-2.0-OpenSSH_10.0p2") == "2.0|OpenSSH_10.0p2|")
+    assert(parsed("SSH-2.0-billsSSH_3.6.3q3") == "2.0|billsSSH_3.6.3q3|")
+    assert(parsed("SSH-1.99-Old_1 compat mode") == "1.99|Old_1|compat mode")
+    assert(parsed("SSH-2.0-babeld-1a2b3c") == "2.0|babeld-1a2b3c|")
+    assert(parsed("SSH-1.5-ancient") == "version_unsupported")
+    assert(parsed("SSH-2.0-") == "version_malformed")
+    assert(parsed("SSH-2.0") == "version_malformed")
+    assert(parsed("SSH--x") == "version_malformed")
+    assert(parsed("SSH-2.0-a\x00b") == "version_malformed")
+    assert(parsed("SSH-2.0-tab\there") == "version_malformed")
+    assert(refuse.reason_of("version_unsupported") == 8)
+    print("version: 7 groups, 0 SKIP")
+}
