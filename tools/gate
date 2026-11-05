@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# gate [STEP...] — burrow's whole local gauntlet, or the named steps of it.
+#
+# Each step prints `START <step>`, its output indented two spaces (a row's
+# `FAIL <row>` lines stay at column 0, so a planted break is read by name),
+# then `END <step> exit=N secs=S`. The gauntlet stops at the first nonzero
+# step and exits with its status. Linux steps run in the pinned container
+# (tools/in-container); the host needs bash, sed and the engine.
+#
+#   toolchain   the pinned wolf, lupin and std, by digest and identity
+#   oracle      the pinned OpenSSH, by digest and `ssh -V`
+#   planner     the CI planner's own test and the local-gate wiring proof
+#   vectors     tools/vectorgen.py regenerates src/kexvec byte for byte
+#   fmt         `wolf fmt --check`
+#   build       the native and release tiers, warnings denied
+#   unit        every src/*_test.lu: the checked machine, native and lupin
+#   transport   the transport rows against the pinned sshd, native
+#   transport-release   the same rows, release
+set -u
+cd "$(dirname "$0")/.." || exit 1
+ALL="toolchain oracle planner vectors fmt build unit transport transport-release"
+STEPS=${*:-$ALL}
+
+gauntlet_step() {
+    local name=$1 rc started=$SECONDS
+    shift
+    printf 'START %s\n' "$name"
+    "$@" 2>&1 | sed -u -e '/^FAIL /!s/^/  /'
+    rc=${PIPESTATUS[0]}
+    printf 'END %s exit=%s secs=%s\n' "$name" "$rc" "$((SECONDS - started))"
+    return "$rc"
+}
+
+run() {
+    case $1 in
+    toolchain) tools/in-container tools/fetch-toolchain ;;
+    oracle) tools/in-container tools/fetch-oracle ;;
+    planner) tools/in-container sh -c 'python3 -I ci/tiers-test.py && python3 -I ci/local-gate-test.py' ;;
+    vectors) tools/in-container python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu ;;
+    fmt) tools/in-container tools/check-fmt ;;
+    build) tools/in-container tools/build --all ;;
+    unit) tools/in-container tools/check-test ;;
+    transport) tools/in-container python3 -I tools/check-transport --bin target/native/burrow ;;
+    transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;
+    *)
+        echo "gate: no step $1 (steps: $ALL)"
+        return 2
+        ;;
+    esac
+}
+
+for step in $STEPS; do
+    gauntlet_step "$step" run "$step" || exit $?
+done
