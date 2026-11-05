@@ -1,0 +1,23 @@
+# The oracle: OpenSSH portable, built from its signed release tarball with
+# its own default configure (only --prefix is set), never read. Only the
+# tarball's top-level PROTOCOL* notes are consulted (docs/SOURCES.md).
+# 10.0p2 is the last release whose tarball carries PROTOCOL.chacha20poly1305
+# and PROTOCOL.certkeys; 10.1p1 onward points at Internet-Drafts instead.
+[oracle]
+version = "10.0p2"
+version_line = "PENDING"
+url = "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz"
+sha256 = "021a2e709a0edf4250b1256bd5a9e500411a90dddabea830ed59cef90eb9d85c"
+sig_url = "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-10.0p2.tar.gz.asc"
+sig_sha256 = "f71cf3240516ce59c2240532143982fcd97e2e286e6eb1eb6c3080a1ec012a04"
+key_url = "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/RELEASE_KEY.asc"
+key_sha256 = "c4a6f4692c9b8e75ec096add049fe0314b3ceff9410321f1e85907cf7a864269"
+signing_fingerprint = "7168B983815A5EEF59A4ADFD2A3F414E736060BA"
+# The tarball's top directory (10.0p2 unpacks as openssh-10.0p1/).
+top = "openssh-10.0p1"
+prefix = "/work/burrow/.oracle/openssh-10.0p2"
+image = "docker.io/library/ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55"
+apt_snapshot = "20261101T000000Z"
+ssh_sha256 = "PENDING"
+sshd_sha256 = "PENDING"
+ssh_keygen_sha256 = "PENDING"
