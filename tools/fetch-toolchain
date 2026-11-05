@@ -1,0 +1,92 @@
+#!/bin/sh
+# Adapted from wolffe-lang/scent eb888dfc tools/fetch-toolchain (aspen 476edee3's); own code.
+# fetch-toolchain — stage the pinned wolf, lupin and std into .wolf-bin/.
+#
+# Archives are fetched from the GitHub release and REFUSED unless their
+# sha256 matches wolf-toolchain.toml. The std tree is fetched at its
+# pinned commit. A stage whose recorded digests already match is left
+# alone, so the tool is cheap to run before every build.
+set -eu
+BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
+export BURROW_ROOT
+cd "$BURROW_ROOT"
+. tools/lib-toml.sh
+
+target=$(host_target) || {
+    echo "fetch-toolchain: no pinned archive for $(uname -s) $(uname -m)" >&2
+    exit 1
+}
+
+sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    else
+        shasum -a 256 "$1" | cut -d' ' -f1
+    fi
+}
+
+wolf_digest=$(toml_value wolf "$target")
+lupin_digest=$(toml_value lupin "$target")
+std_rev=$(toml_value std rev)
+want_stamp="$target wolf=$wolf_digest lupin=$lupin_digest std=$std_rev"
+
+if [ -f .wolf-bin/STAMP ] && [ "$(cat .wolf-bin/STAMP)" = "$want_stamp" ]; then
+    echo "fetch-toolchain: .wolf-bin/ already holds the pin ($target)"
+    exit 0
+fi
+
+mkdir -p "${TMPDIR:-$BURROW_ROOT/target/tmp}"
+tmp=$(mktemp -d "${TMPDIR:-$BURROW_ROOT/target/tmp}/burrow-toolchain.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+rm -rf .wolf-bin
+mkdir -p .wolf-bin
+
+# fetch_archive <section> <name-prefix> <digest>
+fetch_archive() {
+    version=$(toml_value "$1" version)
+    repo=$(toml_value "$1" repo)
+    base="$2-$version-$target"
+    # $BURROW_ARCHIVE_DIR takes the archive from a directory instead of the
+    # network, for a host whose link to GitHub is slow or absent. The
+    # digest check below is the same either way: the pin is what makes an
+    # archive acceptable, never where it came from.
+    if [ -n "${BURROW_ARCHIVE_DIR:-}" ] && [ -f "$BURROW_ARCHIVE_DIR/$base.tar.gz" ]; then
+        echo "fetch-toolchain: $BURROW_ARCHIVE_DIR/$base.tar.gz"
+        cp "$BURROW_ARCHIVE_DIR/$base.tar.gz" "$tmp/$base.tar.gz"
+    else
+        url="https://github.com/$repo/releases/download/v$version/$base.tar.gz"
+        echo "fetch-toolchain: $url"
+        curl -sSfL --retry 3 --retry-delay 5 -o "$tmp/$base.tar.gz" "$url"
+    fi
+    have=$(sha256 "$tmp/$base.tar.gz")
+    if [ "$have" != "$3" ]; then
+        echo "fetch-toolchain: REFUSED — $base.tar.gz sha256 $have, pin wants $3" >&2
+        exit 1
+    fi
+    echo "fetch-toolchain: sha256 $have OK"
+    tar -xzf "$tmp/$base.tar.gz" -C "$tmp"
+    cp -R "$tmp/$base/." .wolf-bin/
+}
+
+fetch_archive wolf wolf "$wolf_digest"
+fetch_archive lupin lupin "$lupin_digest"
+
+# Since wolf 0.2.27 the wolf archive carries a `std/` of its own
+# (`std/STD-REV` names its commit). The pin below is unpacked into an
+# empty place, never over that tree: a mix of two commits' files is
+# neither. What the archive bundled is said, so a pin that has drifted
+# from it is seen.
+if [ -d .wolf-bin/std ]; then
+    echo "fetch-toolchain: the archive bundles std $(cat .wolf-bin/std/STD-REV 2>/dev/null || echo '(no STD-REV)'); staging the pin instead"
+    rm -rf .wolf-bin/std
+fi
+
+std_repo=$(toml_value std repo)
+echo "fetch-toolchain: https://github.com/$std_repo at $std_rev"
+git init -q "$tmp/std"
+git -C "$tmp/std" fetch -q --depth 1 "https://github.com/$std_repo" "$std_rev"
+git -C "$tmp/std" archive FETCH_HEAD std | tar -x -C .wolf-bin/
+git -C "$tmp/std" rev-parse FETCH_HEAD >.wolf-bin/std/STD-REV
+
+echo "$want_stamp" >.wolf-bin/STAMP
+echo "fetch-toolchain: staged $target into .wolf-bin/"
