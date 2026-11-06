@@ -504,7 +504,7 @@ def inert(row_name, opt, honest, login=unauthorized):
     for r in outs:
         for ln in secrets:
             check(ln not in r.stdout and ln not in r.stderr, "a private key line appeared in burrow's output")
-    return f"7 conditions refused as without {' '.join(opt)}; {note}"
+    return f"7 conditions held under {' '.join(opt)}; {note}"
 
 
 @row
