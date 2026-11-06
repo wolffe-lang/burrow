@@ -27,3 +27,7 @@
   re-exchange no longer lets a later message overtake the ones it kept.
 - The session rows against the pinned OpenSSH, hostile-peer rows against a
   scripted server, NIST's SHA-1 vectors, and the measurement against `ssh`.
+- B1's `--no-strict-kex` leaves the command line on every tier (it is now
+  `option_unknown`); the downgrade row's waiver moves to a row program,
+  `rows/kexprobe`, never installed. Rows hold each test option inert for
+  security.
