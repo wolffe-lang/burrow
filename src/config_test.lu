@@ -47,7 +47,9 @@ fn ready(args: List[str], text: str) -> config.Settings {
 fn refused(args: List[str], text: str, name: str, line: str) -> bool {
     let s = ready(args, text)
     if s.refusal != name || !s.line.starts_with(line) {
-        print("FAIL config refusal: wanted {name} '{line}', got {s.refusal} '{s.line}' ({s.detail})")
+        print(
+            "FAIL config refusal: wanted {name} '{line}', got {s.refusal} '{s.line}' ({s.detail})",
+        )
         return false
     }
     true
@@ -69,13 +71,21 @@ fn main() {
     let b = ready(den_argv("2222", "git@example.test"), "")
     assert(b.refusal == "" && b.port == 2222 && b.user == "git" && b.host == "example.test")
     // The rest of the surface: -l, -i, -T, -v, -F, ssh:// and its port.
-    let c = ready(["-T", "-vv", "-l", "me", "-i", "~/k1", "-i", "/abs/k2", "h.test", "echo", "a b"], "")
+    let c = ready(
+        ["-T", "-vv", "-l", "me", "-i", "~/k1", "-i", "/abs/k2", "h.test", "echo", "a b"],
+        "",
+    )
     assert(c.refusal == "" && c.user == "me" && c.verbose == 2)
     assert(c.identities.len == 2 && c.identities[0] == "/home/u/k1" && c.identities[1] == "/abs/k2")
     assert(config.remote_command(c) == "echo a b")
+    assert(ready(["-l", "me", "git@h.test", "x"], "").user == "me")
+    assert(ready(["-o", "RekeyLimit=1G", "h", "x"], "").rekey_bytes == 1073741824)
     let d = ready(["ssh://git@h.test:2200", "true"], "")
     assert(d.refusal == "" && d.user == "git" && d.host == "h.test" && d.port == 2200)
-    let e = ready(["-F", "none", "-o", "Port=7", "-o", "User u2", "-o", "IdentityFile=none", "h.test", "x"], "Host *\n  Port 9\n")
+    let e = ready(
+        ["-F", "none", "-o", "Port=7", "-o", "User u2", "-o", "IdentityFile=none", "h.test", "x"],
+        "Host *\n  Port 9\n",
+    )
     assert(e.refusal == "" && e.port == 7 && e.user == "u2" && e.identities.len == 0)
     // ~/.ssh/config: Host and Match host, first value wins, accumulation.
     let text = "# comment\n" +
@@ -97,17 +107,39 @@ fn main() {
     let f = ready(["-p", "2222", "h.test", "true"], text)
     assert(f.refusal == "")
     assert(f.port == 2222 && f.user == "cfguser" && f.strict == "accept-new" && f.hash_known)
-    assert(f.identities.len == 2 && f.identities[0] == "/home/u/.ssh/test_key" && f.identities[1] == "/second")
-    assert(f.known_hosts.len == 2 && f.known_hosts[0] == "/home/u/.ssh/kh test" && f.known_hosts[1] == "/etc/kh2")
+    assert(
+        f.identities.len == 2 &&
+            f.identities[0] == "/home/u/.ssh/test_key" &&
+            f.identities[1] == "/second",
+    )
+    assert(
+        f.known_hosts.len == 2 &&
+            f.known_hosts[0] == "/home/u/.ssh/kh test" &&
+            f.known_hosts[1] == "/etc/kh2",
+    )
     assert(f.send_env.len == 2 && f.send_env[0] == "LANG" && f.send_env[1] == "GIT_*")
     let g = ready(["bad.test", "true"], text)
     assert(g.refusal == "" && g.port == 2299 && g.user == "localuser")
     // Hostname, HostKeyAlias, SetEnv, RekeyLimit, the strictness words.
     let h = ready(
-        ["-o", "SetEnv=A=1 B=two", "-o", "RekeyLimit=32K 60", "-o", "StrictHostKeyChecking=off", "alias", "x"],
+        [
+            "-o",
+            "SetEnv=A=1 B=two",
+            "-o",
+            "RekeyLimit=32K 60",
+            "-o",
+            "StrictHostKeyChecking=off",
+            "alias",
+            "x",
+        ],
         "Host alias\n  Hostname 127.0.0.1\n  HostKeyAlias github.test\n",
     )
-    assert(h.refusal == "" && h.host == "alias" && h.hostname == "127.0.0.1" && h.key_alias == "github.test")
+    assert(
+        h.refusal == "" &&
+            h.host == "alias" &&
+            h.hostname == "127.0.0.1" &&
+            h.key_alias == "github.test",
+    )
     assert(h.set_env.len == 2 && h.set_env[0] == "A=1" && h.set_env[1] == "B=two")
     assert(h.rekey_bytes == 32768 && h.rekey_seconds == 60 && h.strict == "no")
     assert(ready(["-o", "StrictHostKeyChecking=ask", "x", "y"], "").strict == "yes")
@@ -117,19 +149,42 @@ fn main() {
     assert(refused(["-t", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
-    assert(refused(["-o", "Foo=bar", "h", "x"], "", "option_unknown", "command-line: line 0: Bad configuration option: foo"))
+    assert(
+        refused(
+            ["-o", "Foo=bar", "h", "x"],
+            "",
+            "option_unknown",
+            "command-line: line 0: Bad configuration option: foo",
+        ),
+    )
     assert(refused(["-o", "ForwardAgent=yes", "h", "x"], "", "option_unsupported", ""))
-    assert(refused(["-o", "StrictHostKeyChecking=maybe", "h", "x"], "", "option_unsupported", "command-line line 0: unsupported option \"maybe\"."))
+    assert(
+        refused(
+            ["-o", "StrictHostKeyChecking=maybe", "h", "x"],
+            "",
+            "option_unsupported",
+            "command-line line 0: unsupported option \"maybe\".",
+        ),
+    )
     assert(refused(["-o", "ControlMaster=auto", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["-o", "ControlPath=/tmp/c", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["-o", "UpdateHostKeys=yes", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["-o", "Port=99999", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["h.test", "x"], "Host *\n  ForwardAgent yes\n", "config_unsupported", ""))
-    assert(refused(["h.test", "x"], "Host *\n  Bogus 1\n", "config_unsupported", "~/.ssh/config: line 2: Bad configuration option: bogus"))
+    assert(
+        refused(
+            ["h.test", "x"],
+            "Host *\n  Bogus 1\n",
+            "config_unsupported",
+            "~/.ssh/config: line 2: Bad configuration option: bogus",
+        ),
+    )
     assert(refused(["h.test", "x"], "Match exec true\n  Port 1\n", "config_unsupported", ""))
     assert(refused(["h.test", "x"], "Include other\n", "config_unsupported", ""))
     assert(refused(["h.test", "x"], "Host *\n  IdentityFile ~/.ssh/%h\n", "config_unsupported", ""))
-    assert(refused(["h.test", "x"], "Host *\n  IdentityFile ${{HOME}}/k\n", "config_unsupported", ""))
+    assert(
+        refused(["h.test", "x"], "Host *\n  IdentityFile ${{HOME}}/k\n", "config_unsupported", ""),
+    )
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
     print("config: den's argv shapes, ssh's flags, Host and Match host, 17 refusals")
