@@ -146,6 +146,8 @@ fn main() {
     assert(ready(["-o", "StrictHostKeyChecking=no", "x", "y"], "").strict == "no")
     // Refusals, each with the pinned ssh's line where it has one.
     assert(refused(["-Z", "h", "x"], "", "option_unknown", "unknown option -- Z"))
+    // No strict-kex waiver on any tier: B1's flag is an unknown option.
+    assert(refused(["--no-strict-kex", "h", "x"], "", "option_unknown", "unknown option -- -"))
     assert(refused(["-t", "h", "x"], "", "option_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
@@ -187,5 +189,5 @@ fn main() {
     )
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
-    print("config: den's argv shapes, ssh's flags, Host and Match host, 17 refusals")
+    print("config: den's argv shapes, ssh's flags, Host and Match host, 18 refusals")
 }
