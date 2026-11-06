@@ -23,15 +23,18 @@ home and burrow reads $HOME; the server repositories
 reset from one template, the local destination at the same path), and
 compares den's exit code, stdout and stderr byte for byte, the local
 repository (HEAD, refs, objects, worktree files), the server repository
-(refs, objects, fsck) and the wrappers' log. Not compared byte for byte:
+(refs, objects, fsck), the wrappers' log and, in the `den-command-*` rows,
+the command sshd was sent (an authorized_keys `command=` recorder, sshd(8)),
+held to git's form: `git-upload-pack 'PATH'`. Not compared byte for byte:
 the local `index` (stat data) and `logs/` (reflog times). A row prints
 `PASS <row>` or `FAIL <row> <why>` at column 0; the exit status is the
 number of failures (capped at 100).
 
 Private keys stay in the run directories (0711, the files 0600); rows print
-public lines and fingerprints only. Each row's sshd.log, compare.txt and
-protocol.log are copied to target/evidence/den-<tier>/<row>/, readable, and
-that copy is scanned for key files and private key text (`evidence`).
+public lines and fingerprints only. Each row's sshd.log, compare.txt,
+protocol.log and command.log are copied to
+target/evidence/den-<tier>/<row>/, readable, and that copy is scanned for
+key files and private key text (`evidence`).
 """
 import argparse
 import os
@@ -74,10 +77,14 @@ def row(fn):
 
 
 class Row:
-    """One row's directory, sshd, client HOME and fixture."""
+    """One row's directory, sshd, client HOME and fixture. With
+    `record_command`, the row key's authorized_keys line carries
+    `command=` the fixture's recorder, which logs the command sshd was sent
+    and runs it."""
 
-    def __init__(self, name):
+    def __init__(self, name, record_command=False):
         self.name = name
+        self.record_command = record_command
         self.d = WORK / name
         if self.d.exists():
             shutil.rmtree(self.d)
@@ -99,7 +106,12 @@ class Row:
         self.server = None
 
     def __enter__(self):
-        self.server = oraclelib.Sshd(self.d / "sshd", ["AcceptEnv GIT_PROTOCOL"], authorized=[str(self.key) + ".pub"])
+        authorized = pathlib.Path(str(self.key) + ".pub")
+        if self.record_command:
+            line = authorized.read_text()
+            authorized = self.d / "authorized-command"
+            authorized.write_text(f'command="{self.fx.recorder}" {line}')
+        self.server = oraclelib.Sshd(self.d / "sshd", ["AcceptEnv GIT_PROTOCOL"], authorized=[str(authorized)])
         self.server.__enter__()
         (self.home / ".ssh" / "known_hosts").write_text(self.server.known_hosts_line())
         cfg = self.home / ".ssh" / "config"
@@ -144,7 +156,7 @@ class Row:
             res = {"exit": r[0], "stdout": r[1], "stderr": r[2],
                    "local": repo_state(self.fx, self.local, local_bare),
                    "server": {repo: repo_state(self.fx, self.srv_path(repo)) for repo in repos},
-                   "protocol": self.fx.log.read_text()}
+                   "protocol": self.fx.log.read_text(), "command": self.fx.command_log.read_text()}
             out[client] = res
             kept = self.d / f"{client}-local"
             if kept.exists():
@@ -162,7 +174,7 @@ class Row:
         lines = [f"row {self.name}", f"den {' '.join(a(self) if callable(a) else a for a in args)}"]
         for client, r in out.items():
             lines += [f"--- through {client}", f"exit {r['exit']}", f"stdout {r['stdout']!r}", f"stderr {r['stderr']!r}",
-                      f"protocol {r['protocol']!r}", f"local refs {r['local'].get('refs')}",
+                      f"protocol {r['protocol']!r}", f"command {r['command']!r}", f"local refs {r['local'].get('refs')}",
                       f"local objects {len(r['local'].get('objects', {}))}"]
             for repo, st in r["server"].items():
                 lines += [f"server {repo} refs {st.get('refs')}", f"server {repo} objects {len(st.get('objects', {}))}",
@@ -173,7 +185,7 @@ class Row:
 def same(out):
     """Every compared field equal through both clients."""
     b, s = out["burrow"], out["ssh"]
-    for field in ("exit", "stdout", "stderr", "protocol", "local", "server"):
+    for field in ("exit", "stdout", "stderr", "protocol", "command", "local", "server"):
         if b[field] != s[field]:
             bv, sv = b[field], s[field]
             if field in ("stdout", "stderr"):
@@ -403,6 +415,65 @@ def den_v0_refusal():
         return f"exit {r['exit']}, refused by den alike"
 
 
+# ---- the command den sends --------------------------------------------------------
+def sh_quote(text):
+    return "'" + text.replace("'", "'\\''") + "'"
+
+
+def command_row(name, service, program=None):
+    """The command sshd is sent (SSH_ORIGINAL_COMMAND, through the row's
+    recorder): git's form, the program word bare when it is plain and quoted
+    when it is not, the path quoted. `program` is a `--upload-pack=` value,
+    or None for git's default word."""
+    with Row(name, record_command=True) as w:
+        if service == "upload":
+            head, _ = w.fx.seed()
+            repo, word = "plain.git", "git-upload-pack"
+            override = ["--upload-pack=" + program(w)] if program else []
+            r = w.pair(["clone", "-q", "--bare", *override, lambda w: w.uri(repo), str(w.local)], repos=(repo,))
+        else:
+            _, head, prep = source_repo(w)
+            w.fx.empty("push.git")
+            repo, word = "push.git", "git-receive-pack"
+            r = w.pair(["push", "-q", lambda w: w.uri(repo), "HEAD:refs/heads/main"], prepare=prep, repos=(repo,),
+                       cwd_local=True)
+        quiet(r)
+        v2(r, service)
+        if program:
+            word = program(w)
+            if any(not (c.isascii() and (c.isalnum() or c in "._/+-")) for c in word):
+                word = sh_quote(word)
+        want = f"{word} {sh_quote(w.fx.served(repo))}\n"
+        check(r["command"] == want, f"sshd was sent {r['command']!r}, git's form is {want!r}")
+        st = r["server"][repo]
+        check(f"refs/heads/main {head}" in st["refs"], f"server refs {st['refs']}")
+        return f"sshd was sent {r['command'].strip()!r}, both clients alike"
+
+
+@row
+def den_command_upload():
+    """clone, no --upload-pack=: `git-upload-pack 'PATH'`."""
+    return command_row("den-command-upload", "upload")
+
+
+@row
+def den_command_receive():
+    """push, no --receive-pack=: `git-receive-pack 'PATH'`."""
+    return command_row("den-command-receive", "receive")
+
+
+@row
+def den_command_override():
+    """--upload-pack= a plain path: sent bare."""
+    return command_row("den-command-override", "upload", program=lambda w: w.fx.upload)
+
+
+@row
+def den_command_override_quoted():
+    """--upload-pack= a path holding a space: quoted, a literal executable."""
+    return command_row("den-command-override-quoted", "upload", program=lambda w: w.fx.upload_spaced)
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"den-{tier}"
     if out.exists():
@@ -410,7 +481,7 @@ def keep_evidence(tier):
     out.mkdir(parents=True)
     kept = 0
     for d in sorted(p for p in WORK.iterdir() if p.is_dir()):
-        for rel in ("sshd/sshd.log", "compare.txt", "fixture/protocol.log"):
+        for rel in ("sshd/sshd.log", "compare.txt", "fixture/protocol.log", "fixture/command.log"):
             src = d / rel
             if src.is_file():
                 dst = out / d.name / src.name
