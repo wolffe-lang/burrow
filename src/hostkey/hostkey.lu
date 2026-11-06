@@ -7,26 +7,35 @@
 //! **Strict by default.** A host key is accepted only when a known_hosts
 //! file names this host with exactly this `ssh-ed25519` key. No entry
 //! for the host is `host_key_unknown`; an `ssh-ed25519` entry for the
-//! host with another key, or a `@revoked` line naming this key, is
-//! `host_key_changed`. Both disconnect with
-//! SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE.
+//! host with another key is `host_key_changed`; a `@revoked` line holding
+//! this key, whatever its host patterns, is `host_key_revoked`. All three
+//! disconnect with SSH_DISCONNECT_HOST_KEY_NOT_VERIFIABLE.
 //!
-//! **The known_hosts lines read here** are the plain form: optional
-//! marker (`@revoked`; `@cert-authority` lines are skipped, as burrow
-//! accepts no certificates), a comma-separated host pattern list, the
-//! key type, the base64 key blob, an optional comment. A host is looked
-//! up as `host` on port 22 and `[host]:port` otherwise. Patterns take
-//! `*` and `?` wildcards and a leading `!` negation. Hashed `|1|` names
-//! need HMAC-SHA1, which wolf-std does not carry: they are skipped here
-//! and arrive with milestone B2.
+//! **The known_hosts lines read here** (`sshd(8)`, SSH_KNOWN_HOSTS FILE
+//! FORMAT): an optional marker, a comma-separated host pattern list or one
+//! hashed name, the key type, the base64 key blob, an optional comment. A
+//! host is looked up as `host` on port 22 and `[host]:port` otherwise (or
+//! as its `HostKeyAlias`). Patterns take `*` and `?` wildcards and a
+//! leading `!` negation. A hashed name `|1|salt|hash` matches when
+//! HMAC-SHA1 keyed by the decoded salt over the looked-up name is the
+//! decoded hash (`src/sha1`; the construction was measured against the
+//! pinned `ssh-keygen -H`, since no allowed text spells it out). A
+//! `@cert-authority` line vouches for nothing: burrow takes no
+//! certificates, so it is skipped.
+//!
+//! **Appending** (`entry_line`): the line the pinned `ssh` appends under
+//! `StrictHostKeyChecking=accept-new` or `no`, plain or hashed
+//! (`HashKnownHosts`), with no comment.
 //!
 //! ct: everything here is public data (a host key, a signature, an
-//! exchange hash the server signed); `curve25519.verify` is std's.
+//! exchange hash the server signed, a host name); `curve25519.verify` is
+//! std's. The hashed-name comparison uses `wire.ct_eq` all the same.
 
 use std.base64
 use std.x.crypto.curve25519
 use std.x.crypto.sha2
 use refuse
+use sha1
 use wire
 
 /// The 32-byte Ed25519 key inside an `ssh-ed25519` key blob K_S.
@@ -131,6 +140,18 @@ pub fn hosts_match(patterns: str, name: str) -> bool {
     hit
 }
 
+/// Whether the hashed name `field` (`|1|base64 salt|base64 hash`) is
+/// `name`. A field of another shape names nothing.
+pub fn hashed_match(field: str, name: str) -> bool {
+    let parts = field.split("|")
+    if parts.len != 4 || parts[0] != "" || parts[1] != "1" {
+        return false
+    }
+    let salt = base64.decode(parts[2]) else { return false }
+    let want = base64.decode(parts[3]) else { return false }
+    wire.ct_eq(sha1.hmac(salt, wire.bytes_of(name)), want)
+}
+
 /// What known_hosts text says of `name` and the blob `k_s`.
 pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal {
     let want = base64.encode(k_s)
@@ -146,33 +167,27 @@ pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal 
             (mut fields).push(w)
         }
         var at = 0
-        var revoked = false
+        var marker = ""
         if fields[0].starts_with("@") {
-            if fields[0] == "@revoked" {
-                revoked = true
-            } else {
-                continue
-            }
+            marker = fields[0]
             at = 1
         }
-        if fields.len < at + 3 {
-            continue
-        }
-        let hosts = fields[at]
-        if hosts.starts_with("|") {
-            continue
-        }
-        if fields[at + 1] != "ssh-ed25519" {
+        if fields.len < at + 3 || fields[at + 1] != "ssh-ed25519" {
             continue
         }
         let same = fields[at + 2] == want
-        if revoked {
+        if marker == "@revoked" {
             if same {
-                return host_key_changed
+                return host_key_revoked
             }
             continue
         }
-        if !hosts_match(hosts, name) {
+        if marker != "" {
+            continue
+        }
+        let hosts = fields[at]
+        let names = if hosts.starts_with("|") then hashed_match(hosts, name) else hosts_match(hosts, name)
+        if !names {
             continue
         }
         if same {
@@ -190,10 +205,14 @@ pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal 
     host_key_unknown
 }
 
-/// The line to append for `name` and the blob `k_s` (a stub until B2's
-/// known_hosts lands).
+/// The line the pinned `ssh` appends for `name` and the blob `k_s`: the
+/// name, or its hashed form under `salt` (20 bytes) when `hashed`, then
+/// `ssh-ed25519` and the base64 blob.
 pub fn entry_line(name: str, k_s: List[byte], hashed: bool, salt: List[byte]) -> str {
-    let _ = hashed
-    let _ = salt.len
-    "{name} {k_s.len}\n"
+    let tail = " ssh-ed25519 " + base64.encode(k_s) + "\n"
+    if !hashed {
+        return name + tail
+    }
+    let mac = sha1.hmac(salt, wire.bytes_of(name))
+    "|1|" + base64.encode(salt) + "|" + base64.encode(mac) + tail
 }
