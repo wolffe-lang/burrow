@@ -127,12 +127,17 @@ fetch; push over both forms; `--force-with-lease` stale and matching;
 `--atomic` accepted and refused; a push den rejects and one the server
 rejects; and the v0 refusal. Each compares den's exit code, stdout and
 stderr byte for byte, the local and server repositories (refs, objects,
-fsck) and what each service received. `tools/check-github` holds burrow
+fsck) and what each service received. Four more rows record the command
+`sshd` is sent (an `authorized_keys` `command=`, which sees it in
+`SSH_ORIGINAL_COMMAND`) and hold it to git's form, `git-upload-pack
+'PATH'`: the program word bare when it is plain and quoted when it is not,
+which is what GitHub's ssh service accepts. `tools/check-github` holds burrow
 to the pinned `ssh` against GitHub's real server, read only and with no
 key: GitHub's published host key, and the same refusal. `tools/check-live`
 pushes to a live fixture and clones it back through both clients, from
 `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone (it never prints
-either), and runs the same steps against a loopback `sshd` as a self-test.
+either, and removes its work files, whose clones name the URL, when it
+ends), and runs the same steps against a loopback `sshd` as a self-test.
 `tools/check-static` holds the static binaries' shape and runs den rows
 through the static `burrow`; `tools/measure-den` compares den's clone through
 burrow with its clone through the pinned `ssh`.
@@ -160,7 +165,7 @@ protocol notes, which are specifications rather than code: `PROTOCOL`,
 `PROTOCOL.chacha20poly1305`, `PROTOCOL.key`, `PROTOCOL.agent` (for reading)
 and `PROTOCOL.certkeys` (to refuse its names), read from a release
 tarball's top level; the man pages `ssh(1)`, `ssh-keygen(1)`,
-`ssh_config(5)` and `sshd(8)`'s known_hosts section; and, for hashed
+`ssh_config(5)` and `sshd(8)`'s known_hosts and authorized_keys sections; and, for hashed
 known_hosts names, FIPS 180-4 and RFC 2104 with NIST's published vectors.
 No SHA-1 or HMAC library's source is read.
 
