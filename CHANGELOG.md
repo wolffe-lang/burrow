@@ -43,3 +43,7 @@
   a loopback self-test; the static build's check for PAX
   (`tools/check-static`); den's clone through burrow measured against the
   pinned `ssh` (`tools/measure-den`).
+- den pinned at `ac2332b`, which sends git's command form (the program word
+  bare when it is plain), so den's push through burrow reaches GitHub's
+  receive-pack; rows hold the command `sshd` is sent to that form
+  (`den-command-*`), and the live row removes its work files when it ends.
