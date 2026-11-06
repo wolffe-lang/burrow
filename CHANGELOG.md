@@ -31,3 +31,15 @@
   `option_unknown`); the downgrade row's waiver moves to a row program,
   `rows/kexprobe`, never installed. Rows hold each test option inert for
   security.
+- B4, den over burrow: den's clone, fetch and push over `ssh://` and
+  scp-like URLs, with burrow linked as `ssh`, held byte for byte to the
+  pinned OpenSSH client against the pinned `sshd` (`tools/check-den`, den
+  pinned in `burrow-den.toml` and built by its own tools).
+- With no command, burrow now logs in before it refuses
+  (`shell_unsupported`), so a keyless `ssh -T git@github.com` is refused
+  authentication as `ssh` refuses it; GitHub's real server, read only,
+  against its published host key (`tools/check-github`).
+- The live push row (`tools/check-live`), from its two variables only, with
+  a loopback self-test; the static build's check for PAX
+  (`tools/check-static`); den's clone through burrow measured against the
+  pinned `ssh` (`tools/measure-den`).
