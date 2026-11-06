@@ -1,0 +1,157 @@
+//! member: true
+//!
+//! burrow.channel — one `session` channel (RFC 4254 §5, §6) as a state
+//! machine with no I/O: messages in, steps out. `src/session` drives it.
+//!
+//! A stub until its implementation lands.
+
+use refuse
+
+/// burrow's channel number, initial window and maximum packet.
+pub fn local_id() -> int {
+    0
+}
+
+/// The initial window burrow offers: 2 MiB.
+pub fn local_window() -> int {
+    2097152
+}
+
+/// The largest data burrow accepts in one message.
+pub fn local_max() -> int {
+    32768
+}
+
+/// One session channel.
+pub struct Chan {
+    window: int,
+    max: int,
+    peer: int,
+    opened: bool,
+    rwin: int,
+    rmax: int,
+    lwin: int,
+    consumed: int,
+    exec_wanted: bool,
+    exec_ok: bool,
+    sent_eof: bool,
+    got_eof: bool,
+    sent_close: bool,
+    got_close: bool,
+    status: int,
+    signal: List[byte],
+    core: bool,
+    eow: bool,
+    refused_opens: int,
+    detail: List[byte],
+}
+
+/// A channel before it is opened, with burrow's window and maximum packet.
+pub fn new() -> Chan {
+    sized(local_window(), local_max())
+}
+
+/// A channel whose own window is `window` and maximum packet `max` (the
+/// unit rows and `--test-window` use small ones).
+pub fn sized(window: int, max: int) -> Chan {
+    Chan {
+        window: window,
+        max: max,
+        peer: -1,
+        opened: false,
+        rwin: 0,
+        rmax: 0,
+        lwin: window,
+        consumed: 0,
+        exec_wanted: false,
+        exec_ok: false,
+        sent_eof: false,
+        got_eof: false,
+        sent_close: false,
+        got_close: false,
+        status: -1,
+        signal: List[byte](),
+        core: false,
+        eow: false,
+        refused_opens: 0,
+        detail: List[byte](),
+    }
+}
+
+/// The sentence that explains the last refusal.
+pub fn detail(ch: Chan) -> str {
+    str_from_utf8(ch.detail) else ""
+}
+
+/// `CHANNEL_OPEN "session"` (stub).
+pub fn open_msg(ch: Chan) -> List[byte] {
+    let _ = ch.window
+    List[byte]()
+}
+
+/// An `env` request (stub).
+pub fn env_msg(ch: Chan, name: str, value: str) -> List[byte] {
+    let _ = ch.peer + name.len + value.len
+    List[byte]()
+}
+
+/// The `exec` request (stub).
+pub fn exec_msg(mut ch: Chan, command: List[byte]) -> List[byte] {
+    ch.exec_wanted = command.len > 0
+    List[byte]()
+}
+
+/// How many bytes burrow may send now (stub).
+pub fn room(ch: Chan) -> int {
+    let _ = ch.rwin
+    0
+}
+
+/// A `CHANNEL_DATA` message (stub).
+pub fn data_msg(mut ch: Chan, data: List[byte]) -> List[byte] {
+    ch.rwin -= data.len
+    List[byte]()
+}
+
+/// `CHANNEL_EOF` (stub).
+pub fn eof_msg(mut ch: Chan) -> List[byte] {
+    ch.sent_eof = true
+    List[byte]()
+}
+
+/// `CHANNEL_CLOSE` (stub).
+pub fn close_msg(mut ch: Chan) -> List[byte] {
+    ch.sent_close = true
+    List[byte]()
+}
+
+/// The `WINDOW_ADJUST` due now (stub).
+pub fn adjust_msg(mut ch: Chan) -> List[byte] {
+    ch.consumed = 0
+    List[byte]()
+}
+
+/// Whether both sides have closed.
+pub fn done(ch: Chan) -> bool {
+    ch.got_close && ch.sent_close
+}
+
+/// The exit code `ssh` would give (stub).
+pub fn exit_code(ch: Chan) -> int {
+    let _ = ch.status
+    255
+}
+
+/// What a message asks of the session.
+pub struct Step {
+    out: List[byte],
+    err: List[byte],
+    reply: List[byte],
+    info: str,
+}
+
+/// Handles one message (stub: refused).
+pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
+    ch.consumed += p.len
+    message_unexpected
+}

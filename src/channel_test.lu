@@ -1,0 +1,212 @@
+//! member: false
+
+// The session channel (RFC 4254 §5, §6) message by message: its messages
+// held to tools/vectorgen.py's independent vectors, both windows, EOF and
+// CLOSE in both orders, the exit mapping, server-opened channels refused,
+// and every channel refusal by name.
+use channel
+use kexvec
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn msg(t: int, id: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, t)
+    wire.put_u32(mut p, id)
+    p
+}
+
+fn confirm(rwin: int, rmax: int) -> List[byte] {
+    var p = msg(91, 0)
+    wire.put_u32(mut p, 7)
+    wire.put_u32(mut p, rwin)
+    wire.put_u32(mut p, rmax)
+    p
+}
+
+fn data(id: int, n: int) -> List[byte] {
+    var p = msg(94, id)
+    var d = List[byte]()
+    var i = 0
+    while i < n {
+        (mut d).push((i % 256) as byte)
+        i += 1
+    }
+    wire.put_string(mut p, d)
+    p
+}
+
+fn request(id: int, kind: str, want: bool) -> List[byte] {
+    var p = msg(98, id)
+    wire.put_text(mut p, kind)
+    wire.put_bool(mut p, want)
+    p
+}
+
+fn status(id: int, code: int) -> List[byte] {
+    var p = request(id, "exit-status", false)
+    wire.put_u32(mut p, code)
+    p
+}
+
+fn opened() -> channel.Chan {
+    var ch = channel.new()
+    let _ = channel.on(mut ch, confirm(0, 32768)) else channel.Step {
+        out: List[byte](),
+        err: List[byte](),
+        reply: List[byte](),
+        info: "",
+    }
+    ch
+}
+
+// A 4 KiB window and 1 KiB maximum packet, opened.
+fn sized() -> channel.Chan {
+    var ch = channel.sized(4096, 1024)
+    let _ = channel.on(mut ch, confirm(0, 32768)) else channel.Step {
+        out: List[byte](),
+        err: List[byte](),
+        reply: List[byte](),
+        info: "",
+    }
+    ch
+}
+
+fn why(mut ch: channel.Chan, p: List[byte]) -> str {
+    let _ = channel.on(mut ch, p) else |e| {
+        return "{e}"
+    }
+    "ok"
+}
+
+fn step(mut ch: channel.Chan, p: List[byte]) -> channel.Step {
+    channel.on(mut ch, p) else channel.Step {
+        out: List[byte](),
+        err: List[byte](),
+        reply: wire.bytes_of("refused"),
+        info: "",
+    }
+}
+
+fn main() {
+    assert(wire.hex(channel.open_msg(channel.new())) == kexvec.chan_open_session())
+    var ch = opened()
+    assert(ch.opened && ch.peer == 7 && ch.rwin == 0 && channel.room(ch) == 0)
+    assert(wire.hex(channel.env_msg(ch, "GIT_PROTOCOL", "version=2")) == kexvec.chan_env_git())
+    let exec = channel.exec_msg(mut ch, wire.bytes_of("'git-upload-pack' '/srv/a b.git'"))
+    assert(wire.hex(exec) == kexvec.chan_exec())
+    // The exec reply; then the server's window opens.
+    assert(why(mut ch, msg(99, 0)) == "ok" && ch.exec_ok)
+    assert(why(mut ch, msg(99, 0)) == "message_unexpected")
+    var adj = msg(93, 0)
+    wire.put_u32(mut adj, 2097152)
+    assert(why(mut ch, adj) == "ok" && ch.rwin == 2097152 && channel.room(ch) == 32768)
+    let d = channel.data_msg(mut ch, x("00ff0ac328"))
+    assert(wire.hex(d) == kexvec.chan_data() && ch.rwin == 2097147)
+    var big = msg(93, 0)
+    wire.put_u32(mut big, 4294967295)
+    assert(why(mut ch, big) == "window_overflow")
+    // burrow's own window (a 4 KiB one, 1 KiB pieces): the adjustment once
+    // half is written out, nothing past the window or the maximum packet.
+    var w = sized()
+    var got = 0
+    var i = 0
+    while i < 2 {
+        let s = step(mut w, data(0, 1024))
+        got += s.out.len
+        i += 1
+    }
+    assert(got == 2048 && w.lwin == 2048)
+    assert(wire.hex(channel.adjust_msg(mut w)) == kexvec.chan_window_adjust())
+    assert(w.lwin == 4096 && channel.adjust_msg(mut w).len == 0)
+    assert(why(mut w, data(0, 1025)) == "channel_packet_too_large")
+    var full = sized()
+    i = 0
+    while i < 4 {
+        let _ = step(mut full, data(0, 1024))
+        i += 1
+    }
+    assert(full.lwin == 0 && why(mut full, data(0, 1)) == "window_exceeded")
+    var dflt = channel.new()
+    assert(dflt.window == 2097152 && dflt.max == 32768)
+    // stderr as extended data type 1; another type is dropped but counted.
+    var e = opened()
+    var ext = msg(95, 0)
+    wire.put_u32(mut ext, 1)
+    wire.put_string(mut ext, x("ff00"))
+    assert(wire.hex(step(mut e, ext).err) == "ff00")
+    var ext2 = msg(95, 0)
+    wire.put_u32(mut ext2, 2)
+    wire.put_string(mut ext2, x("0102"))
+    let s2 = step(mut e, ext2)
+    assert(s2.err.len == 0 && s2.out.len == 0 && e.lwin == 2097148 && e.consumed == 4)
+    // EOF then CLOSE: CLOSE is answered once; the exit status is the code.
+    var a = opened()
+    assert(why(mut a, status(0, 1)) == "ok" && why(mut a, msg(96, 0)) == "ok")
+    let c1 = step(mut a, msg(97, 0))
+    assert(
+        wire.hex(c1.reply) == kexvec.chan_close() && channel.done(a) && channel.exit_code(a) == 1,
+    )
+    assert(why(mut a, data(0, 1)) == "channel_closed")
+    // CLOSE without EOF; and burrow's own EOF and CLOSE first.
+    var b = opened()
+    assert(wire.hex(channel.eof_msg(mut b)) == kexvec.chan_eof())
+    assert(wire.hex(channel.close_msg(mut b)) == kexvec.chan_close() && !channel.done(b))
+    let c2 = step(mut b, msg(97, 0))
+    assert(c2.reply.len == 0 && channel.done(b) && channel.exit_code(b) == 255)
+    // Data after the server's EOF is refused, never written.
+    var f = opened()
+    assert(why(mut f, msg(96, 0)) == "ok" && why(mut f, data(0, 3)) == "channel_closed")
+    // Exit codes 0 and 255, and a signal.
+    var z = opened()
+    assert(why(mut z, status(0, 0)) == "ok" && channel.exit_code(z) == 0)
+    var n = opened()
+    assert(why(mut n, status(0, 255)) == "ok" && channel.exit_code(n) == 255)
+    var sig = opened()
+    var ks = request(0, "exit-signal", false)
+    wire.put_text(mut ks, "KILL")
+    wire.put_bool(mut ks, false)
+    wire.put_text(mut ks, "")
+    wire.put_text(mut ks, "")
+    assert(why(mut sig, ks) == "ok" && channel.exit_code(sig) == 255)
+    assert((str_from_utf8(sig.signal) else "") == "KILL")
+    // Another channel's messages, and the server's own opens.
+    var u = opened()
+    assert(why(mut u, status(3, 0)) == "channel_unknown")
+    assert(why(mut u, data(1, 4)) == "channel_unknown")
+    for kind in ["x11", "auth-agent@openssh.com"] {
+        var op = List[byte]()
+        wire.put_u8(mut op, 90)
+        wire.put_text(mut op, kind)
+        wire.put_u32(mut op, 5)
+        wire.put_u32(mut op, 65536)
+        wire.put_u32(mut op, 16384)
+        let r = step(mut u, op)
+        assert(wire.hex(r.reply).starts_with("5c0000000500000001"))
+        assert(r.info.starts_with("channel_open_refused"))
+    }
+    assert(u.refused_opens == 2)
+    // Requests that want a reply are declined.
+    var g = List[byte]()
+    wire.put_u8(mut g, 80)
+    wire.put_text(mut g, "keepalive@openssh.com")
+    wire.put_bool(mut g, true)
+    assert(wire.hex(step(mut u, g).reply) == "52")
+    assert(wire.hex(step(mut u, request(0, "keepalive@openssh.com", true)).reply) == "6400000007")
+    // Refusals before and around the open.
+    var o = channel.new()
+    assert(why(mut o, data(0, 1)) == "message_unexpected")
+    var fail = msg(92, 0)
+    wire.put_u32(mut fail, 1)
+    wire.put_text(mut fail, "no")
+    wire.put_text(mut fail, "")
+    assert(why(mut o, fail) == "channel_open_failed")
+    var x2 = opened()
+    let _ = channel.exec_msg(mut x2, wire.bytes_of("true"))
+    assert(why(mut x2, msg(100, 0)) == "exec_refused")
+    assert(why(mut x2, msg(50, 0)) == "message_unexpected")
+    print("channel: vectorgen's messages, both windows, both close orders, exits, 9 refusals")
+}
