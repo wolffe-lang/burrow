@@ -5,9 +5,13 @@ against through the pinned ssh, interleaved, as a ratio with margins (B4).
     tools/in-container python3 -I tools/measure-den --bin target/release/burrow [--rounds 5]
 
 The fixture is made by the pinned git from a fixed seed, so every run has
-the same objects: 300 commits over 200 text files in 10 directories (each
-commit appends a deterministic 2 KiB to four of them), plus 40
-incompressible 256 KiB files in the first commit, repacked once. It is
+the same objects: 60 commits over 200 text files in 10 directories (each
+commit appends a deterministic 2 KiB to four of them), plus 8
+incompressible 256 KiB files in the first commit, repacked once. The size
+is den's, not burrow's: den's clone holds the whole history in memory, and
+its peak RSS grows faster than the history (measured through the pinned
+ssh at 30, 60, 120 and 300 commits: 348 MiB, 954 MiB, 3.3 GiB and the
+container's 12 GiB cap), so a 300-commit fixture is SIGKILLed. It is
 served by the row's own sshd through den's fixture wrappers, and den
 (`clone -q --bare`) runs through each client in turn, ROUNDS times each,
 interleaved. Timed: den's wall time, and its CPU from `wait4`, which
@@ -66,7 +70,7 @@ def text_chunk(gen, size=2048):
     return (" ".join(words) + "\n").encode()
 
 
-def fixture_stream(commits=300, binaries=40):
+def fixture_stream(commits=60, binaries=8):
     """A `git fast-import` stream: the fixed repository."""
     gen = stream()
     out = []
@@ -115,8 +119,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", required=True)
     ap.add_argument("--rounds", type=int, default=5)
-    ap.add_argument("--commits", type=int, default=300)
-    ap.add_argument("--binaries", type=int, default=40)
+    ap.add_argument("--commits", type=int, default=60)
+    ap.add_argument("--binaries", type=int, default=8)
     ap.add_argument("--clients", nargs="+", default=["burrow", "ssh"])
     a = ap.parse_args()
     burrow = pathlib.Path(a.bin).resolve()
