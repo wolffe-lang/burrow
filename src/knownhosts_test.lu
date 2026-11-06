@@ -42,7 +42,9 @@ fn main() {
     // name; @cert-authority vouches for nothing (burrow takes no
     // certificates), so a host known only through one is unknown.
     assert(verdict("@revoked * ssh-ed25519 {blob}\n", name, k_s) == "host_key_revoked")
-    assert(verdict("@revoked * ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(
+        verdict("@revoked * ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok",
+    )
     assert(verdict("@cert-authority * ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
     // Several names, ports, wildcards and negation in one line.
     assert(verdict("a.example,{name},b.example ssh-ed25519 {blob}\n", name, k_s) == "ok")
@@ -52,7 +54,10 @@ fn main() {
     assert(verdict("{name} ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok")
     // Appended lines, as the pinned ssh appends them.
     assert(hostkey.entry_line(name, k_s, false, List[byte]()) == "{name} ssh-ed25519 {blob}\n")
-    assert(hostkey.entry_line("alias.example", k_s, false, List[byte]()) == "alias.example ssh-ed25519 {blob}\n")
+    assert(
+        hostkey.entry_line("alias.example", k_s, false, List[byte]()) ==
+            "alias.example ssh-ed25519 {blob}\n",
+    )
     let line = hostkey.entry_line(name, k_s, true, x(kexvec.kh_salt()))
     assert(line == "{hashed} ssh-ed25519 {blob}\n")
     assert(verdict(line, name, k_s) == "ok")

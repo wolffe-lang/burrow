@@ -186,7 +186,11 @@ pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal 
             continue
         }
         let hosts = fields[at]
-        let names = if hosts.starts_with("|") then hashed_match(hosts, name) else hosts_match(hosts, name)
+        let names = if hosts.starts_with("|") {
+            hashed_match(hosts, name)
+        } else {
+            hosts_match(hosts, name)
+        }
         if !names {
             continue
         }

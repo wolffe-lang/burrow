@@ -73,6 +73,15 @@ def extract(d):
     sys.stdout.write("\n".join(out))
 
 
+def push(s):
+    """One push, in `wolf fmt`'s canonical shape: a call past 100 columns
+    takes its argument on a line of its own."""
+    line = f'    (mut v).push("{s}")'
+    if len(line) <= 100:
+        return line
+    return f'    (mut v).push(\n        "{s}",\n    )'
+
+
 def module(path):
     sha, mac = [], []
     for text, md in FIPS_EXAMPLES:
@@ -95,12 +104,12 @@ def module(path):
            "/// `msg_hex md_hex` per vector: FIPS 180-4's examples, then the CAVP records.",
            "pub fn sha1() -> List[str] {",
            "    var v = List[str]()"]
-    out += [f'    (mut v).push("{s}")' for s in sha]
+    out += [push(s) for s in sha]
     out += ["    v", "}", "",
             "/// `key_hex msg_hex mac_hex` per vector; a short `mac_hex` is a truncated tag.",
             "pub fn hmac() -> List[str] {",
             "    var v = List[str]()"]
-    out += [f'    (mut v).push("{s}")' for s in mac]
+    out += [push(s) for s in mac]
     out += ["    v", "}", ""]
     return "\n".join(out)
 

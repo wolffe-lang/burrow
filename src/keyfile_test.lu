@@ -127,8 +127,14 @@ fn main() {
     let pad = build("none", "none", 1, "ssh-ed25519", 7, 7, "ssh-ed25519", pub1(), sk, 2)
     assert(verdict(keyfile.armor(pad)) == "key_malformed")
     assert(verdict(keyfile.armor(good[0..good.len - 3])) == "key_malformed")
-    assert(verdict("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n") == "key_unsupported")
+    assert(
+        verdict("-----BEGIN RSA PRIVATE KEY-----\nAAAA\n-----END RSA PRIVATE KEY-----\n") ==
+            "key_unsupported",
+    )
     assert(verdict("not a key\n") == "key_malformed")
-    assert(verdict("-----BEGIN OPENSSH PRIVATE KEY-----\n!!!!\n-----END OPENSSH PRIVATE KEY-----\n") == "key_malformed")
+    assert(
+        verdict("-----BEGIN OPENSSH PRIVATE KEY-----\n!!!!\n-----END OPENSSH PRIVATE KEY-----\n") ==
+            "key_malformed",
+    )
     print("keyfile: TEST 1's file and public line, a round trip, ten refusals by name")
 }
