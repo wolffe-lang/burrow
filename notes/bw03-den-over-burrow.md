@@ -268,7 +268,8 @@ that trunk, its CHANGELOG and `notes/vc22-the-smart-http-transport.md`.
 - **The live row:** green. The base push creates `burrow-live-base` once;
   the per-run pushes are alike through both clients, cloned back alike,
   then deleted.
-- **`measure-den`:** inside its 2x margins, CPU near 1.0x.
+- **`measure-den`:** inside its 2x margins, CPU near 1.0x. (Missed on wall
+  in the first final take; R-bw03-8.)
 - **burrow's `src/`:** unchanged.
 
 ## Forbidden
@@ -505,11 +506,38 @@ difference of the minima, about 0.07 s of CPU for 3 MiB, in line with
 bw02's `cat` rate. The final record's `measure-den` step, in the PR body,
 is the merge's number.
 
+**The first final take, void** (at `a7d00a0`, the whole gauntlet with the
+live variables, on a quiet block with its light lock held): every step
+green but `measure-den`, red on wall alone:
+
+```text
+measure-den: through burrow wall 10.664 s, cpu 1.484 s (den and the ssh it waits for)
+measure-den: through ssh    wall 5.302 s, cpu 1.527 s (den and the ssh it waits for)
+measure-den: burrow / ssh: wall 2.01x (margin 2.0x); cpu 0.97x (margin 2.0x)
+FAIL measure-den wall ratio 2.01x over 2.0x
+```
+
+Nine of the ten rounds ran 10.7–14.6 s of wall through either client; the
+fifth round through `ssh` ran 5.3 s with the same CPU as every other
+(1.53 s). den's wall time is mostly its own wait on local I/O (den#62),
+so the minimum of wall times measures the host, not the ssh client, and
+one fast round moved it by 2x. The record was voided (kept as
+`*.void-measure-wall` with a `VOID.txt` beside it), and the row now gates
+CPU only (R-bw03-8, `14f58dc`).
+
 **Where constant time matters.** Unchanged from bw02: the Poly1305 tag
 check through `wire.ct_eq`; the user key's signature is not constant time
 (wolf-std's `curve25519.sign`). B4 adds no comparison of secret data.
 
 **Rulings.**
+
+- **R-bw03-8, measure-den's wall margin.** The first final take was red on
+  wall alone, 2.01x, from one fast round through `ssh`, CPU 0.97x (above).
+  (a) Gate CPU only, at 2x, and report wall (implemented: the timed-rows
+  rule times the child's CPU from rusage and takes the minimum of
+  interleaved runs, and den's wall is den's I/O wait, den#62); (b) keep
+  the wall margin and widen it; (c) keep it and retake until a take is
+  green (no: that measures luck). Recommended: (a).
 
 - **R-bw03-1, no command.** burrow refused `shell_unsupported` before it
   connected, so a keyless `ssh -T git@github.com` never reached GitHub.
@@ -628,8 +656,8 @@ What it needs from here:
   to git's by the `den-command-*` rows, red first at `ef0bb0c`.
 - [x] For PAX: `tools/build --static`, its shape and digests, and the px
   lane's first items (above).
-- [x] Measured: den's clone through burrow against the pinned `ssh`, with
-  margins: CPU 1.04x, wall 0.83x, each held to 2x (the final record's
-  `measure-den` step is in the PR body).
+- [x] Measured: den's clone through burrow against the pinned `ssh`: CPU
+  1.04x, held to 2x, and wall 0.83x, reported (R-bw03-8; the final
+  record's `measure-den` step is in the PR body).
 - [ ] The final-head gauntlet record, the plant record and the audit: in the
   PR body.
