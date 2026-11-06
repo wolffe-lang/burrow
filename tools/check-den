@@ -575,9 +575,9 @@ def den_push_rejected():
         r = w.pair(["push", "-q", "--receive-pack=" + w.fx.receive, lambda w: w.uri("plain.git"), "HEAD:refs/heads/main"],
                    prepare=prep, repos=("plain.git",), cwd_local=True)
         st = r["server"]["plain.git"]
-        check(r["exit"] != 0 and r["stderr"] != b"", f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(r["exit"] != 0 and b"! [rejected]" in r["stderr"], f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
         check(st["refs"] == [f"refs/heads/main {second}"], f"server refs changed: {st['refs']}")
-        return f"exit {r['exit']}: {tail(r['stderr'], 120)}"
+        return f"exit {r['exit']}, rejected by den before any pack, alike"
 
 
 @row
@@ -590,9 +590,10 @@ def den_push_server_rejected():
                     "HEAD:refs/heads/main"],
                    prepare=prep, repos=("plain.git",), cwd_local=True)
         st = r["server"]["plain.git"]
-        check(r["exit"] != 0 and r["stderr"] != b"", f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(r["exit"] != 0 and b"! [remote rejected]" in r["stderr"] and b"error: denying non-fast-forward" in r["stderr"],
+              f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
         check(f"refs/heads/main {second}" in st["refs"], f"server refs changed: {st['refs']}")
-        return f"exit {r['exit']}: {tail(r['stderr'], 120)}"
+        return f"exit {r['exit']}, the server's refusal (its stderr through the channel) alike"
 
 
 @row
