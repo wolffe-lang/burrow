@@ -5,7 +5,9 @@
     tools/in-container python3 -I tools/check-github --probe
 
 burrow as `ssh` and the pinned ssh each run `ssh -T git@github.com` from a
-HOME with no identity at all and a known_hosts holding only GitHub's
+home with no identity at all (the container user's, which the pinned ssh
+reads from the passwd entry and burrow from $HOME) and a known_hosts
+holding only GitHub's
 published ed25519 line (ci/github-known-hosts, from api.github.com/meta;
 docs/SOURCES.md), checked strictly. No account and no key is used, and
 nothing is sent but the handshake and RFC 4252's `none` request.
@@ -22,7 +24,9 @@ SKIP by name then. A row prints `PASS <row>` or `FAIL <row> <why>` at
 column 0; the exit status is the number of failures.
 """
 import argparse
+import os
 import pathlib
+import pwd
 import re
 import shutil
 import socket
@@ -69,12 +73,26 @@ def probe():
     return ""
 
 
+# The pinned ssh reads ~/.ssh from the passwd entry, never $HOME (measured);
+# burrow reads $HOME. Both get the container user's own home, holding only
+# the published known_hosts line. Only ever inside the pinned container.
+PW_HOME = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
+
+
 def home(name):
+    if os.environ.get("BURROW_IN_CONTAINER") != "1":
+        raise SystemExit("check-github: refusing to replace ~/.ssh outside the pinned container")
     d = WORK / name
     if d.exists():
         shutil.rmtree(d)
-    (d / "home" / ".ssh").mkdir(parents=True, mode=0o700)
-    shutil.copyfile(KNOWN, d / "home" / ".ssh" / "known_hosts")
+    d.mkdir(parents=True)
+    ssh_dir = PW_HOME / ".ssh"
+    if ssh_dir.is_symlink() or ssh_dir.is_file():
+        ssh_dir.unlink()
+    elif ssh_dir.exists():
+        shutil.rmtree(ssh_dir)
+    ssh_dir.mkdir(mode=0o700)
+    shutil.copyfile(KNOWN, ssh_dir / "known_hosts")
     (d / "bin").mkdir()
     (d / "bin" / "ssh").symlink_to(BIN)
     return d
@@ -82,7 +100,7 @@ def home(name):
 
 def client(d, which, args):
     exe = str(d / "bin" / "ssh") if which == "burrow" else str(oraclelib.SSH)
-    env = {"PATH": "/usr/bin:/bin", "HOME": str(d / "home"), "LC_ALL": "C"}
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C"}
     try:
         p = subprocess.run([exe, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
     except subprocess.TimeoutExpired:
@@ -98,6 +116,8 @@ def github_host_key():
     rs = client(d, "ssh", ["-v", "-T", DEST])
     want = f"debug1: Server host key: ssh-ed25519 {PUBLISHED}"
     check(want in lines(rs[2]), f"the pinned ssh did not print {want!r}: {tail(rs[2])}")
+    known = "debug1: Host 'github.com' is known and matches the ED25519 host key."
+    check(known in lines(rs[2]), f"the pinned ssh did not accept the published line: {tail(rs[2])}")
     check(want in lines(rb[2]), f"burrow did not print {want!r}: exit {rb[0]}, {tail(rb[2])}")
     check(not any("host_key_" in x for x in lines(rb[2])), f"burrow refused the host key: {tail(rb[2])}")
     return f"{PUBLISHED} from the published line, both clients"
