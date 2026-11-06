@@ -4,8 +4,8 @@ oracle by digest, into .den/ (bw03, B4).
 
     tools/in-container tools/fetch-den
 
-- `.den/den`: den cloned from burrow-den.toml's URL and checked out at its
-  pinned rev, detached; refused unless HEAD is the rev and the tree is
+- `.den/den`: den's pinned commit fetched alone (depth 1) from
+  burrow-den.toml's URL and checked out, detached; refused unless HEAD is the rev and the tree is
   clean (den is never edited). Its toolchain comes from its own
   `tools/fetch-toolchain` (its own wolf-toolchain.toml), and the binary from
   its own `tools/build --native`: `.den/den/target/native/den`.
@@ -56,12 +56,18 @@ def git(*args, cwd=None):
 
 def stage_den():
     rev = PIN["den"]["rev"]
-    if not DEN.exists():
-        DEN.parent.mkdir(parents=True, exist_ok=True)
-        say(f"cloning {PIN['den']['url']}")
-        subprocess.run(["git", "clone", "-q", "--no-checkout", PIN["den"]["url"], str(DEN)], check=True)
+    if not (DEN / ".git").exists():
+        # The pinned commit alone (GitHub serves a reachable commit by id):
+        # den's history is not needed, only its tree at the pin.
+        DEN.mkdir(parents=True, exist_ok=True)
+        say(f"fetching {rev} from {PIN['den']['url']}")
+        git("init", "-q", cwd=DEN)
+        git("remote", "add", "origin", PIN["den"]["url"], cwd=DEN)
+        git("fetch", "-q", "--depth", "1", "origin", rev, cwd=DEN)
+        git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD", cwd=DEN)
     if git("rev-parse", "HEAD", cwd=DEN) != rev:
-        git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", rev, cwd=DEN)
+        git("fetch", "-q", "--depth", "1", "origin", rev, cwd=DEN)
+        git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", "FETCH_HEAD", cwd=DEN)
     head = git("rev-parse", "HEAD", cwd=DEN)
     if head != rev:
         refuse(f"den HEAD {head}, pin {rev}")
