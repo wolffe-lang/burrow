@@ -1,6 +1,6 @@
 #!/bin/sh
 # Adapted from wolffe-lang/scent eb888dfc tools/build (aspen 476edee3's); own code.
-# build — compile burrow on one tier or both (lope's tools/build shape).
+# build — compile burrow and burrow-keygen on one tier or both (lope's tools/build shape).
 #
 # The program is `src/burrow.lu` (marked `//! member: false`) over the
 # modules under `src/`, with the manifest `src/wolf.pkg` beside it.
@@ -34,6 +34,7 @@ case "${1:-}" in
     ;;
 esac
 
+# Two programs: burrow (src/burrow.lu) and burrow-keygen (src/keygen.lu).
 for tier in $tiers; do
     mkdir -p "target/$tier"
     if [ "$tier" = static ]; then
@@ -43,10 +44,14 @@ for tier in $tiers; do
         chmod +x target/static/bin/cc
         PATH="$BURROW_ROOT/target/static/bin:$PATH" \
             "$WOLF" build --release --no-cache --deny-warnings src/burrow.lu -o target/static/burrow
+        PATH="$BURROW_ROOT/target/static/bin:$PATH" \
+            "$WOLF" build --release --no-cache --deny-warnings src/keygen.lu -o target/static/burrow-keygen
     elif [ "$tier" = release ]; then
         "$WOLF" build --release --deny-warnings src/burrow.lu -o "target/$tier/burrow"
+        "$WOLF" build --release --deny-warnings src/keygen.lu -o "target/$tier/burrow-keygen"
     else
         "$WOLF" build --deny-warnings src/burrow.lu -o "target/$tier/burrow"
+        "$WOLF" build --deny-warnings src/keygen.lu -o "target/$tier/burrow-keygen"
     fi
-    echo "build: target/$tier/burrow"
+    echo "build: target/$tier/burrow target/$tier/burrow-keygen"
 done

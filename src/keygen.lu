@@ -1,0 +1,7 @@
+//! member: false
+
+// burrow-keygen — a stub until its implementation lands.
+fn main() -> int {
+    eprint("burrow-keygen: not yet implemented (B2)")
+    1
+}
