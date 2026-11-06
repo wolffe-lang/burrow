@@ -17,7 +17,9 @@ pass on only the GIT_PROTOCOL that arrived and log it, so every v2 row
 proves `SendEnv`, the `env` request and `AcceptEnv` carried it.
 
 Each row runs den twice, with PATH's `ssh` a link to burrow and then a
-link to the pinned ssh (one HOME, key and sshd; the server repositories
+link to the pinned ssh (one HOME, key and sshd: the row's .ssh installed as
+the container user's own, since the pinned ssh reads the passwd entry's
+home and burrow reads $HOME; the server repositories
 reset from one template, the local destination at the same path), and
 compares den's exit code, stdout and stderr byte for byte, the local
 repository (HEAD, refs, objects, worktree files), the server repository
@@ -54,6 +56,11 @@ GIT_BIN = GIT_ROOT / "opt" / "git" / "bin"
 GIT = GIT_BIN / "git"
 EXEC_PATH = GIT_ROOT / "opt" / "git" / "libexec" / "git-core"
 USER = "burrowtest"
+# The pinned ssh reads ~/.ssh from the passwd entry, never $HOME (measured,
+# bw03); burrow reads $HOME (R-bw02-4). The client is the container's own
+# user, so each row installs its .ssh there and sets HOME to it: both
+# clients read the same files. Only ever inside the pinned container.
+PW_HOME = pathlib.Path(pwd.getpwuid(os.getuid()).pw_dir)
 ROWS = []
 WORK = None
 BIN = KEYGEN_BIN = None
@@ -92,6 +99,26 @@ def require_den():
     lines = stamp.read_text().split("\n")
     if lines[0] != f"den {PIN['den']['rev']} {sha(DEN)}":
         raise SystemExit("check-den: .den/STAMP does not name this den binary at the pin: run tools/fetch-den")
+
+
+def install_home(src):
+    """The row's ~/.ssh and ~/.gitconfig as the container user's own."""
+    if os.environ.get("BURROW_IN_CONTAINER") != "1":
+        raise SystemExit("check-den: refusing to install a row's ~/.ssh outside the pinned container")
+    clear_home()
+    shutil.copytree(src / ".ssh", PW_HOME / ".ssh", symlinks=True)
+    shutil.copy2(src / ".gitconfig", PW_HOME / ".gitconfig")
+
+
+def clear_home():
+    if os.environ.get("BURROW_IN_CONTAINER") != "1":
+        return
+    for name in (".ssh", ".gitconfig"):
+        p = PW_HOME / name
+        if p.is_symlink() or p.is_file():
+            p.unlink()
+        elif p.exists():
+            shutil.rmtree(p)
 
 
 def ids():
@@ -282,9 +309,11 @@ class Row:
         cfg = self.home / ".ssh" / "config"
         cfg.write_text(f"Host fixture\n    HostName 127.0.0.1\n    Port {self.server.port}\n    User {USER}\n")
         os.chmod(cfg, 0o600)
+        install_home(self.home)
         return self
 
     def __exit__(self, *e):
+        clear_home()
         self.server.__exit__(*e)
 
     def uri(self, repo, user=True, alias=False):
@@ -296,7 +325,7 @@ class Row:
         return f"{USER + '@' if user else ''}fixture:{self.fx.served(repo)}"
 
     def den(self, client, args, cwd):
-        env = {"PATH": f"{self.d / ('via-' + client)}:/usr/bin:/bin", "HOME": str(self.home), "LC_ALL": "C", "TZ": "UTC",
+        env = {"PATH": f"{self.d / ('via-' + client)}:/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C", "TZ": "UTC",
                "TMPDIR": str(self.d / "tmp")}
         (self.d / "tmp").mkdir(exist_ok=True)
         try:
