@@ -94,7 +94,7 @@ first), and nothing else from it:
 | `ssh.1` | `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea` | SYNOPSIS, DESCRIPTION (the destination forms, the command joined by spaces), `-F -i -l -o -p -T -v`, EXIT STATUS |
 | `ssh-keygen.1` | `d4053a38a1616d22eb6ea875696029c0ea1351b4d9218b94c48830c3eb206bf7` | DESCRIPTION, `-C -f -H -l -N -q -t -y`, FILES |
 | `ssh_config.5` | `5b196bcd9b4f49f94ee903fede196e02035521fb21f9060a51030d1fd2d4eb34` | DESCRIPTION (first value wins), `Host`, `Match`, PATTERNS, the keyword list, and the entries of every keyword burrow takes |
-| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` | SSH_KNOWN_HOSTS FILE FORMAT |
+| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` | SSH_KNOWN_HOSTS FILE FORMAT; for B4, AUTHORIZED_KEYS FILE FORMAT's `command="command"` (`SSH_ORIGINAL_COMMAND`) and LOGIN PROCESS |
 
 ## The oracle, as a black box
 
@@ -148,3 +148,12 @@ bounds", MAP's "SSH protocol boundary" and `notes/vc16-the-wire-porcelain.md`.
 den's git is used only as its pinned binary, a black box (no git source or
 documentation was needed). The destination forms and first-value-wins are
 `ssh(1)` and `ssh_config(5)` as bw02 read them; nothing new was read there.
+
+den moved to `ac2332b` (den#65, which sends a plain ssh program word bare).
+Read there, as the consumer's: `src/transport/ssh.lu` (`ssh_program`,
+`ssh_argv`), `src/transport/channel.lu`, `CHANGELOG.md`,
+`wolf-toolchain.toml` and `den-oracle.toml` (the git oracle's digest
+unchanged), and `notes/vc22-the-smart-http-transport.md`'s ssh program
+word section. The command `sshd` is sent is read through `sshd(8)`'s
+`command=` option, the same copy of the page as above (its sha256
+unchanged).
