@@ -1,216 +1,42 @@
 //! member: false
 
-// burrow — an ssh client. Milestone B1: the transport. It connects,
-// exchanges keys, verifies the host key against known_hosts, requests the
-// `ssh-userauth` service and stops there: user authentication is B2.
+// burrow — an ssh client: the transport (B1), publickey authentication
+// with Ed25519 keys (B2), and one command on a session channel (B3).
 //
-//   burrow [-v[v]] [-p port] [-l user] [-o Option=value]... [--no-strict-kex]
-//          [--test-auth-none] [--test-traffic=BYTES] [[user@]host] [command...]
+//   ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name]
+//       [-o option] [-p port] [--] destination [command [argument ...]]
 //
-// The two --test- options exist for the transport rows: --test-auth-none
-// sends RFC 4252 §5.2's `none` request for the user (the pinned sshd lets
-// no client re-exchange keys before user authentication, so the rekey rows
-// run after it), and --test-traffic sends IGNORE messages, then a PING.
+// It is the command line den's ssh transport passes (src/config). The exit
+// status is the remote command's, or 255 for every refusal, as ssh(1)
+// says; a refusal prints the pinned ssh's line for it where it has one,
+// then `burrow: <name>: <detail>`.
 //
-// Exit 255 on every refusal (OpenSSH's ssh does the same), after
-// `burrow: <name>: <detail>` on stderr; exit 2 once the transport is up,
-// with "not yet implemented: user authentication".
+// Options for the transport rows: --no-strict-kex waives strict kex;
+// --test-traffic=BYTES sends that many bytes of IGNORE messages after
+// authentication, then a PING, and stops (the rekey rows' load); and
+// --test-preauth sends that traffic before authentication instead; and
+// --test-window=BYTES makes the session channel's own window that small
+// (the hostile rows' window refusal).
 //
-// Clean room: RFCs 4250-4254, 4344, 8308, 8709, 8731 and OpenSSH's
-// PROTOCOL notes (docs/SOURCES.md); no ssh implementation's source.
+// Clean room: RFCs 4250-4254, 4344, 8308, 8709, 8731, FIPS 180-4, RFC 2104
+// and OpenSSH's PROTOCOL notes and man pages (docs/SOURCES.md); no ssh
+// implementation's source.
 use std.env
+use std.fs
+use auth
+use channel
+use config
+use keyfile
 use refuse
+use session
 use transport
 use wire
 
-struct Cli {
-    host: str,
-    user: str,
-    port: int,
-    verbose: int,
-    known_hosts: List[str],
-    allow_no_strict: bool,
-    rekey_bytes: int,
-    rekey_seconds: int,
-    traffic: int,
-    auth_none: bool,
-    error: str,
-}
-
-fn usage() -> str {
-    "usage: burrow [-v] [-p port] [-l user] [-o option] [--no-strict-kex] [--test-auth-none] [--test-traffic=BYTES] [user@]host [command ...]"
-}
-
-// A byte count with an optional K, M or G suffix (ssh_config's RekeyLimit).
-fn byte_count(s: str) -> int ! {bad_size} {
-    if s.len == 0 {
-        return bad_size
-    }
-    let last = s[s.len - 1..s.len]
-    var mult = 1
-    var digits = s
-    if last == "K" || last == "k" {
-        mult = 1024
-        digits = s[0..s.len - 1]
-    } else if last == "M" || last == "m" {
-        mult = 1048576
-        digits = s[0..s.len - 1]
-    } else if last == "G" || last == "g" {
-        mult = 1073741824
-        digits = s[0..s.len - 1]
-    }
-    let n = digits.to_int() else { return bad_size }
-    if n < 16 {
-        return bad_size
-    }
-    n * mult
-}
-
-fn option(mut cli: Cli, text: str) {
-    let eq = text.find("=") else -1
-    if eq < 0 {
-        cli.error = "burrow: -o {text}: expected Option=value"
-        return
-    }
-    let key = text[0..eq].lower()
-    let value = text[eq + 1..text.len]
-    if key == "userknownhostsfile" {
-        var files = List[str]()
-        for w in value.words() {
-            (mut files).push(w)
-        }
-        cli.known_hosts = files
-    } else if key == "stricthostkeychecking" {
-        if value.lower() != "yes" {
-            cli.error = "burrow: not yet implemented: StrictHostKeyChecking={value} (B2); only yes"
-        }
-    } else if key == "rekeylimit" {
-        let parts = value.words()
-        if parts.len > 0 && parts[0] != "default" {
-            cli.rekey_bytes = byte_count(parts[0]) else {
-                cli.error = "burrow: RekeyLimit {value}: not a size"
-                return
-            }
-        }
-        if parts.len > 1 {
-            cli.rekey_seconds = parts[1].to_int() else {
-                cli.error = "burrow: RekeyLimit {value}: not a number of seconds"
-                return
-            }
-        }
-    } else if key == "port" {
-        cli.port = value.to_int() else {
-            cli.error = "burrow: Port {value}: not a number"
-            return
-        }
-    } else if key == "user" {
-        cli.user = value
-    } else {
-        cli.error = "burrow: not yet implemented: -o {text}"
-    }
-}
-
-fn parse(args: List[str]) -> Cli {
-    let home = env.get("HOME") else ""
-    var known = List[str]()
-    if home.len > 0 {
-        (mut known).push(home + "/.ssh/known_hosts")
-    }
-    var cli = Cli {
-        host: "",
-        user: "",
-        port: 22,
-        verbose: 0,
-        known_hosts: known,
-        allow_no_strict: false,
-        rekey_bytes: 0,
-        rekey_seconds: 0,
-        traffic: 0,
-        auth_none: false,
-        error: "",
-    }
-    var i = 0
-    while i < args.len && cli.error == "" && cli.host == "" {
-        let a = args[i]
-        if a == "-v" || a == "-vv" || a == "-vvv" {
-            cli.verbose += a.len - 1
-        } else if a == "-p" || a == "-l" || a == "-o" {
-            if i + 1 >= args.len {
-                cli.error = "burrow: option requires an argument -- {a[1..2]}\n{usage()}"
-                return cli
-            }
-            let v = args[i + 1]
-            i += 1
-            if a == "-p" {
-                cli.port = v.to_int() else -1
-                if cli.port < 1 || cli.port > 65535 {
-                    cli.error = "burrow: Bad port '{v}'"
-                }
-            } else if a == "-l" {
-                cli.user = v
-            } else {
-                option(mut cli, v)
-            }
-        } else if a == "--no-strict-kex" {
-            cli.allow_no_strict = true
-        } else if a == "--test-auth-none" {
-            cli.auth_none = true
-        } else if a.starts_with("--test-traffic=") {
-            cli.traffic = byte_count(a[15..a.len]) else -1
-            if cli.traffic < 0 {
-                cli.error = "burrow: {a}: not a size"
-            }
-        } else if a == "-T" || a == "-N" {
-            // B3's flags; accepted, nothing to do before a channel exists.
-        } else if a.starts_with("-") {
-            cli.error = "burrow: not yet implemented: {a}\n{usage()}"
-        } else {
-            let at = a.rfind("@") else -1
-            if at >= 0 {
-                cli.user = a[0..at]
-                cli.host = a[at + 1..a.len]
-            } else {
-                cli.host = a
-            }
-        }
-        i += 1
-    }
-    if cli.error == "" && cli.host == "" {
-        cli.error = usage()
-    }
-    cli
-}
-
-// RFC 4252 §5.2: a `none` request for `user`, for the `ssh-connection`
-// service. SUCCESS means the server needs no authentication for this user;
-// FAILURE is `auth_refused`, with the methods that can continue.
-fn auth_none(mut c: transport.Conn, user: str) -> () ! refuse.Refusal {
-    var p = List[byte]()
-    wire.put_u8(mut p, refuse.msg_userauth_request())
-    wire.put_text(mut p, user)
-    wire.put_text(mut p, "ssh-connection")
-    wire.put_text(mut p, "none")
-    transport.send(mut c, p)?
-    loop {
-        let got = transport.next(mut c)?
-        let t = transport.kind(got)
-        if t == refuse.msg_userauth_success() {
-            if c.opts.verbose > 0 {
-                eprint("debug1: Authentication succeeded (none).")
-            }
-            return
-        }
-        if t == refuse.msg_userauth_failure() {
-            var r = wire.reader(got[1..got.len])
-            let methods = wire.read_utf8(mut r) else ""
-            transport.note(mut c, "the server refused `none` for {user}; methods that can continue: {methods}")
-            return auth_refused
-        }
-        if t != refuse.msg_userauth_banner() {
-            transport.note(mut c, "message {t} in answer to a userauth request")
-            return message_unexpected
-        }
-    }
+fn program() -> str {
+    let a = env.arg0()
+    let slash = a.rfind("/") else -1
+    let base = a[slash + 1..a.len]
+    if base.len == 0 then "burrow" else base
 }
 
 // Sends IGNORE messages carrying `total` bytes, then a PING, and waits for
@@ -224,10 +50,12 @@ fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
     }
     var sent = 0
     while sent < total {
-        var p = List[byte]()
-        wire.put_u8(mut p, refuse.msg_ignore())
-        wire.put_string(mut p, data)
-        transport.send(mut c, p)?
+        region turn {
+            var p = List[byte]()
+            wire.put_u8(mut p, refuse.msg_ignore())
+            wire.put_string(mut p, data)
+            transport.send(mut c, p)?
+        }
         sent += data.len
     }
     var ping = List[byte]()
@@ -237,8 +65,7 @@ fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
     var back = transport.next(mut c)?
     while transport.kind(back) == refuse.msg_global_request() {
         // The pinned sshd announces its host keys after a login
-        // (`hostkeys-00@openssh.com`, `PROTOCOL` §2.5). With no connection
-        // layer yet, a request that wants a reply is declined (RFC 4254 §4).
+        // (`hostkeys-00@openssh.com`, `PROTOCOL` §2.5); declined.
         var r = wire.reader(back[1..back.len])
         let name = wire.read_utf8(mut r) else ""
         let want = wire.read_bool(mut r) else false
@@ -262,23 +89,93 @@ fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
     )
 }
 
-fn run(cli: Cli) -> int {
-    var opts = transport.options(cli.host, cli.port)
-    opts.known_hosts = cli.known_hosts
-    opts.allow_no_strict = cli.allow_no_strict
-    opts.verbose = cli.verbose
-    if cli.rekey_bytes > 0 {
-        opts.rekey_bytes = cli.rekey_bytes
+fn refusal(name: str, detail: str) -> int {
+    eprint("burrow: {name}: {detail}")
+    255
+}
+
+// The identities to offer: each file that exists, loaded and checked. A
+// file named on the command line or in the config that cannot be used is
+// refused before any connection (its refusal's name in `refused`); the
+// default ~/.ssh/id_ed25519 is skipped when absent.
+struct Ids {
+    keys: List[keyfile.Key],
+    refused: str,
+}
+
+fn identities(s: config.Settings, explicit: bool) -> Ids {
+    var ids = Ids { keys: List[keyfile.Key](), refused: "" }
+    for path in s.identities {
+        if !fs.exists(path) {
+            if explicit {
+                eprint("Warning: Identity file {path} not accessible: No such file or directory.")
+            }
+            continue
+        }
+        var name = ""
+        let k = keyfile.load(path) else |e| {
+            name = "{e}"
+            keyfile.Key { seed: List[byte](), public: List[byte](), comment: "" }
+        }
+        if name != "" {
+            if name == "key_permissions" {
+                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+                eprint("@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @")
+                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
+                eprint("It is required that your private key files are NOT accessible by others.")
+            }
+            eprint("burrow: {name}: {path} (no key bytes are printed)")
+            ids.refused = name
+            return ids
+        }
+        (mut ids.keys).push(k)
     }
-    if cli.rekey_seconds > 0 {
-        opts.rekey_seconds = cli.rekey_seconds
+    ids
+}
+
+fn local_user() -> str {
+    let u = env.get("USER") else ""
+    if u != "" {
+        return u
     }
-    var c = transport.dial(opts) else |e| {
-        eprint("burrow: {e}: connect to host {cli.host} port {cli.port}")
+    env.get("LOGNAME") else ""
+}
+
+fn run(s: config.Settings) -> int {
+    let ids = identities(s, s.ids_explicit)
+    if ids.refused != "" {
         return 255
     }
-    var ok = true
+    let keys = ids.keys
     var why = ""
+    var opts = transport.options(s.hostname, s.port)
+    opts.known_hosts = copy s.known_hosts
+    opts.strict = s.strict
+    opts.hash_known = s.hash_known
+    opts.key_alias = s.key_alias
+    opts.allow_no_strict = s.no_strict_kex
+    opts.verbose = s.verbose
+    if s.rekey_bytes > 0 {
+        opts.rekey_bytes = s.rekey_bytes
+    }
+    if s.rekey_seconds > 0 {
+        opts.rekey_seconds = s.rekey_seconds
+    }
+    if s.connect_timeout > 0 {
+        opts.timeout_ms = s.connect_timeout * 1000
+    }
+    var c = transport.dial(opts) else |e| {
+        let name = "{e}"
+        if name == "connect_refused" {
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused")
+        } else if name == "timeout" {
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection timed out")
+        } else {
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: failed")
+        }
+        return refusal(name, "connect to host {s.hostname} port {s.port}")
+    }
+    var ok = true
     transport.start(mut c) else |e| {
         ok = false
         why = "{e}"
@@ -289,49 +186,97 @@ fn run(cli: Cli) -> int {
             why = "{e}"
         }
     }
-    var user = cli.user
-    if user == "" {
-        user = env.get("USER") else ""
-    }
-    if ok && cli.auth_none {
-        auth_none(mut c, user) else |e| {
+    if ok && s.preauth && s.traffic > 0 {
+        // The pre-authentication rekey row: traffic before the login, where
+        // the pinned sshd refuses a re-exchange.
+        traffic(mut c, s.traffic) else |e| {
             ok = false
             why = "{e}"
         }
     }
-    if ok && cli.traffic > 0 {
-        traffic(mut c, cli.traffic) else |e| {
+    if ok {
+        auth.login(mut c, s.user, s.hostname, keys) else |e| {
             ok = false
             why = "{e}"
+        }
+    }
+    var code = 0
+    var ch = if s.test_window > 0 {
+        channel.sized(s.test_window, channel.local_max())
+    } else {
+        channel.new()
+    }
+    if ok && s.traffic > 0 {
+        traffic(mut c, s.traffic) else |e| {
+            ok = false
+            why = "{e}"
+        }
+        if ok {
+            transport.disconnect(mut c, 11, "disconnected by user")
+        }
+    } else if ok {
+        var command = wire.bytes_of(config.remote_command(s))
+        var env_pairs = List[str]()
+        for entry in env.vars() {
+            let name = env.entry_key(entry)
+            for pat in s.send_env {
+                if config.env_match(pat, name) {
+                    (mut env_pairs).push("{name}={env.entry_value(entry)}")
+                    break
+                }
+            }
+        }
+        for kv in s.set_env {
+            (mut env_pairs).push(kv)
+        }
+        let plan = session.Plan { command: command, env: env_pairs, verbose: s.verbose }
+        code = session.run(mut c, mut ch, plan) else |e| {
+            ok = false
+            why = "{e}"
+            255
         }
     }
     if !ok {
         if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
             transport.disconnect(mut c, refuse.reason_of(why), why)
         }
-        eprint("burrow: {why}: {transport.detail(c)}")
+        let d = if channel.detail(ch) != "" then channel.detail(ch) else transport.detail(c)
         transport.close(take c)
-        return 255
+        return refusal(why, d)
     }
-    if cli.auth_none {
-        transport.disconnect(mut c, 11, "not yet implemented: channels")
-        transport.close(take c)
-        eprint("burrow: not yet implemented: channels (B3); {user} is authenticated on {cli.host}")
-        return 2
-    }
-    transport.disconnect(mut c, 11, "not yet implemented: user authentication")
     transport.close(take c)
-    eprint(
-        "burrow: not yet implemented: user authentication (B2); the transport to {cli.host} is up",
-    )
-    2
+    code
 }
 
 fn main() -> int {
-    let cli = parse(env.args())
-    if cli.error != "" {
-        eprint(cli.error)
-        return 255
+    var s = config.parse_args(env.args())
+    let home = env.get("HOME") else ""
+    if s.refusal == "" {
+        let file = if s.config_file != "" then s.config_file else home + "/.ssh/config"
+        if s.config_file.lower() != "none" && fs.exists(file) {
+            let text = fs.read_text(file) else {
+                eprint("burrow: config_unsupported: {file} cannot be read")
+                return 255
+            }
+            let shown = if s.config_file != "" then file else "~/.ssh/config"
+            config.apply_config(mut s, text, shown)
+        }
     }
-    run(cli)
+    if s.refusal == "" {
+        config.finish(mut s, home, local_user())
+        if s.command.len == 0 && s.traffic == 0 {
+            s.refusal = "shell_unsupported"
+            s.detail = "no command: burrow runs one command on a session channel; an interactive shell is not in B3"
+        }
+    }
+    if s.refusal != "" {
+        if s.line != "" {
+            eprint(s.line)
+        }
+        if s.refusal == "usage" || s.line.starts_with("unknown option") {
+            eprint(config.usage())
+        }
+        return refusal(s.refusal, s.detail)
+    }
+    run(s)
 }

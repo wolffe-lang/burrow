@@ -1,8 +1,9 @@
 // No dependency but wolf-std. A TCP connection, the environment, files
-// (known_hosts, /dev/urandom); no subprocesses.
+// (keys, known_hosts, ~/.ssh/config, /dev/urandom, the standard streams),
+// and `exec` for std.signal's wait on stdin (session); no subprocesses.
 pkg {
     name: "burrow",
     version: "0.0.0",
     edition: "1",
-    capabilities: [env, fs, net],
+    capabilities: [env, fs, net, exec],
 }
