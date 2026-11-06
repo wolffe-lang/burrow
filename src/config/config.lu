@@ -46,6 +46,7 @@ pub struct Settings {
     user: str,
     port: int,
     identities: List[str],
+    ids_explicit: bool,
     no_identities: bool,
     known_hosts: List[str],
     strict: str,
@@ -62,6 +63,8 @@ pub struct Settings {
     config_file: str,
     no_strict_kex: bool,
     traffic: int,
+    preauth: bool,
+    test_window: int,
     set: List[str],
     refusal: str,
     line: str,
@@ -76,30 +79,108 @@ pub fn usage() -> str {
 // ssh_config(5)'s keywords, lowercased, from the pinned 10.0p2's page.
 fn known_keyword(k: str) -> bool {
     for w in [
-        "addkeystoagent", "addressfamily", "batchmode", "bindaddress", "bindinterface",
-        "canonicaldomains", "canonicalizefallbacklocal", "canonicalizehostname",
-        "canonicalizemaxdots", "canonicalizepermittedcnames", "casignaturealgorithms",
-        "certificatefile", "channeltimeout", "checkhostip", "ciphers", "clearallforwardings",
-        "compression", "connectionattempts", "connecttimeout", "controlmaster", "controlpath",
-        "controlpersist", "dynamicforward", "enableescapecommandline", "enablesshkeysign",
-        "escapechar", "exitonforwardfailure", "fingerprinthash", "forkafterauthentication",
-        "forwardagent", "forwardx11", "forwardx11timeout", "forwardx11trusted", "gatewayports",
-        "globalknownhostsfile", "gssapiauthentication", "gssapidelegatecredentials",
-        "hashknownhosts", "host", "hostbasedacceptedalgorithms", "hostbasedauthentication",
-        "hostkeyalgorithms", "hostkeyalias", "hostname", "identitiesonly", "identityagent",
-        "identityfile", "ignoreunknown", "include", "ipqos", "kbdinteractiveauthentication",
-        "kbdinteractivedevices", "kexalgorithms", "knownhostscommand", "localcommand",
-        "localforward", "loglevel", "logverbose", "macs", "match",
-        "nohostauthenticationforlocalhost", "numberofpasswordprompts", "obscurekeystroketiming",
-        "passwordauthentication", "permitlocalcommand", "permitremoteopen", "pkcs11provider",
-        "port", "preferredauthentications", "proxycommand", "proxyjump", "proxyusefdpass",
-        "pubkeyacceptedalgorithms", "pubkeyauthentication", "rekeylimit", "remotecommand",
-        "remoteforward", "requesttty", "requiredrsasize", "revokedhostkeys",
-        "securitykeyprovider", "sendenv", "serveralivecountmax", "serveraliveinterval",
-        "sessiontype", "setenv", "stdinnull", "streamlocalbindmask", "streamlocalbindunlink",
-        "stricthostkeychecking", "syslogfacility", "tag", "tcpkeepalive", "tunnel",
-        "tunneldevice", "updatehostkeys", "user", "userknownhostsfile", "verifyhostkeydns",
-        "versionaddendum", "visualhostkey", "xauthlocation",
+        "addkeystoagent",
+        "addressfamily",
+        "batchmode",
+        "bindaddress",
+        "bindinterface",
+        "canonicaldomains",
+        "canonicalizefallbacklocal",
+        "canonicalizehostname",
+        "canonicalizemaxdots",
+        "canonicalizepermittedcnames",
+        "casignaturealgorithms",
+        "certificatefile",
+        "channeltimeout",
+        "checkhostip",
+        "ciphers",
+        "clearallforwardings",
+        "compression",
+        "connectionattempts",
+        "connecttimeout",
+        "controlmaster",
+        "controlpath",
+        "controlpersist",
+        "dynamicforward",
+        "enableescapecommandline",
+        "enablesshkeysign",
+        "escapechar",
+        "exitonforwardfailure",
+        "fingerprinthash",
+        "forkafterauthentication",
+        "forwardagent",
+        "forwardx11",
+        "forwardx11timeout",
+        "forwardx11trusted",
+        "gatewayports",
+        "globalknownhostsfile",
+        "gssapiauthentication",
+        "gssapidelegatecredentials",
+        "hashknownhosts",
+        "host",
+        "hostbasedacceptedalgorithms",
+        "hostbasedauthentication",
+        "hostkeyalgorithms",
+        "hostkeyalias",
+        "hostname",
+        "identitiesonly",
+        "identityagent",
+        "identityfile",
+        "ignoreunknown",
+        "include",
+        "ipqos",
+        "kbdinteractiveauthentication",
+        "kbdinteractivedevices",
+        "kexalgorithms",
+        "knownhostscommand",
+        "localcommand",
+        "localforward",
+        "loglevel",
+        "logverbose",
+        "macs",
+        "match",
+        "nohostauthenticationforlocalhost",
+        "numberofpasswordprompts",
+        "obscurekeystroketiming",
+        "passwordauthentication",
+        "permitlocalcommand",
+        "permitremoteopen",
+        "pkcs11provider",
+        "port",
+        "preferredauthentications",
+        "proxycommand",
+        "proxyjump",
+        "proxyusefdpass",
+        "pubkeyacceptedalgorithms",
+        "pubkeyauthentication",
+        "rekeylimit",
+        "remotecommand",
+        "remoteforward",
+        "requesttty",
+        "requiredrsasize",
+        "revokedhostkeys",
+        "securitykeyprovider",
+        "sendenv",
+        "serveralivecountmax",
+        "serveraliveinterval",
+        "sessiontype",
+        "setenv",
+        "stdinnull",
+        "streamlocalbindmask",
+        "streamlocalbindunlink",
+        "stricthostkeychecking",
+        "syslogfacility",
+        "tag",
+        "tcpkeepalive",
+        "tunnel",
+        "tunneldevice",
+        "updatehostkeys",
+        "user",
+        "userknownhostsfile",
+        "verifyhostkeydns",
+        "versionaddendum",
+        "visualhostkey",
+        "xauthlocation",
     ] {
         if w == k {
             return true
@@ -116,6 +197,7 @@ pub fn empty() -> Settings {
         user: "",
         port: 0,
         identities: List[str](),
+        ids_explicit: false,
         no_identities: false,
         known_hosts: List[str](),
         strict: "",
@@ -132,6 +214,8 @@ pub fn empty() -> Settings {
         config_file: "",
         no_strict_kex: false,
         traffic: 0,
+        preauth: false,
+        test_window: 0,
         set: List[str](),
         refusal: "",
         line: "",
@@ -186,7 +270,7 @@ fn byte_count(v: str) -> int {
         digits = v[0..v.len - 1]
     }
     let n = digits.to_int() else -1
-    if n < 16 {
+    if n < 0 || n * mult < 16 {
         return -1
     }
     n * mult
@@ -280,7 +364,12 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
     }
     let v = words[0]
     if has_token(value) {
-        refuse_as(mut s, refusal, "", "{key} {value}: burrow expands no % tokens or environment variables")
+        refuse_as(
+            mut s,
+            refusal,
+            "",
+            "{key} {value}: burrow expands no % tokens or environment variables",
+        )
         return
     }
     let first = !was_set(s, k)
@@ -312,10 +401,18 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
         return
     }
     (mut s.set).push(k)
-    if k == "batchmode" || k == "clearallforwardings" || k == "identitiesonly" || k == "hashknownhosts" {
+    if k == "batchmode" ||
+        k == "clearallforwardings" ||
+        k == "identitiesonly" ||
+        k == "hashknownhosts" {
         let b = yes_no(v)
         if b < 0 {
-            refuse_as(mut s, refusal, "{vline}: unsupported option \"{v}\".", "{key} takes yes or no")
+            refuse_as(
+                mut s,
+                refusal,
+                "{vline}: unsupported option \"{v}\".",
+                "{key} takes yes or no",
+            )
             return
         }
         if k == "batchmode" {
@@ -333,19 +430,39 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
         } else if l == "no" || l == "off" || l == "false" {
             s.strict = "no"
         } else {
-            refuse_as(mut s, refusal, "{vline}: unsupported option \"{v}\".", "StrictHostKeyChecking {v}")
+            refuse_as(
+                mut s,
+                refusal,
+                "{vline}: unsupported option \"{v}\".",
+                "StrictHostKeyChecking {v}",
+            )
         }
     } else if k == "controlmaster" {
         if v.lower() != "no" {
-            refuse_as(mut s, refusal, "", "ControlMaster {v}: burrow shares no connections (only no)")
+            refuse_as(
+                mut s,
+                refusal,
+                "",
+                "ControlMaster {v}: burrow shares no connections (only no)",
+            )
         }
     } else if k == "controlpath" {
         if v.lower() != "none" {
-            refuse_as(mut s, refusal, "", "ControlPath {v}: burrow shares no connections (only none)")
+            refuse_as(
+                mut s,
+                refusal,
+                "",
+                "ControlPath {v}: burrow shares no connections (only none)",
+            )
         }
     } else if k == "updatehostkeys" {
         if v.lower() != "no" {
-            refuse_as(mut s, refusal, "", "UpdateHostKeys {v}: burrow learns no host keys from the server (only no)")
+            refuse_as(
+                mut s,
+                refusal,
+                "",
+                "UpdateHostKeys {v}: burrow learns no host keys from the server (only no)",
+            )
         }
     } else if k == "connecttimeout" {
         let n = v.to_int() else -1
@@ -477,6 +594,13 @@ pub fn parse_args(args: List[str]) -> Settings {
         } else if a.starts_with("--") {
             if a == "--no-strict-kex" {
                 s.no_strict_kex = true
+            } else if a.starts_with("--test-window=") {
+                s.test_window = a[14..a.len].to_int() else -1
+                if s.test_window < 1 || s.test_window > 2097152 {
+                    refuse_as(mut s, "usage", "", "{a}: 1 to 2097152 bytes")
+                }
+            } else if a == "--test-preauth" {
+                s.preauth = true
             } else if a.starts_with("--test-traffic=") {
                 s.traffic = byte_count(a[15..a.len])
                 if s.traffic < 0 {
@@ -518,14 +642,24 @@ pub fn parse_args(args: List[str]) -> Settings {
                         if !has_token(v) {
                             (mut s.identities).push(v)
                         } else {
-                            refuse_as(mut s, "option_unsupported", "", "-i {v}: burrow expands no % tokens")
+                            refuse_as(
+                                mut s,
+                                "option_unsupported",
+                                "",
+                                "-i {v}: burrow expands no % tokens",
+                            )
                         }
                     } else {
                         s.config_file = v
                     }
                     j = a.len
                 } else if "46AaCfGgKkMNnqsttVXxYyBbcDEeIJLmOPQRSWw".contains(f) {
-                    refuse_as(mut s, "option_unsupported", "", "-{f}: an ssh(1) option burrow does not take")
+                    refuse_as(
+                        mut s,
+                        "option_unsupported",
+                        "",
+                        "-{f}: an ssh(1) option burrow does not take",
+                    )
                 } else {
                     refuse_as(mut s, "option_unknown", "unknown option -- {f}", "-{f}")
                 }
@@ -539,15 +673,17 @@ pub fn parse_args(args: List[str]) -> Settings {
         refuse_as(mut s, "usage", usage(), "no destination")
         return s
     }
-    // -p and -l apply where the destination named no port or user (an
-    // ssh:// port, user@host); the rows hold this to the pinned ssh.
+    // -p applies where the destination named no port (ssh://host:port);
+    // -l wins over user@host, as the pinned ssh measured (cli-user-precedence).
     if cli_port > 0 && !was_set(s, "port") {
         s.port = cli_port
         (mut s.set).push("port")
     }
-    if cli_user != "" && !was_set(s, "user") {
+    if cli_user != "" {
         s.user = cli_user
-        (mut s.set).push("user")
+        if !was_set(s, "user") {
+            (mut s.set).push("user")
+        }
     }
     while i < args.len {
         (mut s.command).push(args[i])
@@ -624,7 +760,12 @@ pub fn apply_config(mut s: Settings, text: str, file: str) {
                 let target = if s.hostname != "" then s.hostname else s.host
                 active = block_applies(words[1].split(","), target)
             } else {
-                refuse_as(mut s, "config_unsupported", "", "{src}: Match {value}: burrow takes Match host and Match all only")
+                refuse_as(
+                    mut s,
+                    "config_unsupported",
+                    "",
+                    "{src}: Match {value}: burrow takes Match host and Match all only",
+                )
             }
             continue
         }
@@ -668,6 +809,7 @@ pub fn finish(mut s: Settings, home: str, user: str) {
         s.strict = "yes"
     }
     var ids = List[str]()
+    s.ids_explicit = s.identities.len > 0
     if !s.no_identities {
         if s.identities.len == 0 {
             (mut ids).push(home + "/.ssh/id_ed25519")
