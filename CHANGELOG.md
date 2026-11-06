@@ -10,3 +10,20 @@
   with reason codes; every refusal by name.
 - Independent vectors from the RFCs, the transport rows against the pinned
   `sshd`, and tiered CI.
+- B2, authentication and keys: `publickey` with `ssh-ed25519` (the query,
+  then the signed request), `server-sig-algs` honoured, the banner shown as
+  `ssh` shows it; OpenSSH's private key format for unencrypted Ed25519 keys,
+  read and written; `burrow-keygen -t ed25519`, `-y` and `-l`; known_hosts
+  hashed names (with SHA-1 and HMAC-SHA1 from FIPS 180-4 and RFC 2104),
+  `@revoked` and `@cert-authority`, and lines appended under `accept-new`
+  and `no`.
+- B3, the session and the command line: one command on a session channel,
+  `env` and `exec`, stdin, stdout and stderr byte-clean, both windows, EOF
+  and CLOSE in either order, the exit status and signals mapped as `ssh`
+  maps them; the command line and `~/.ssh/config` den uses; every refusal
+  by name with `ssh`'s line beside it.
+- The transport writes its state in place, so a session runs each turn in a
+  region and a transfer of any size holds a packet's worth of memory; a
+  re-exchange no longer lets a later message overtake the ones it kept.
+- The session rows against the pinned OpenSSH, hostile-peer rows against a
+  scripted server, NIST's SHA-1 vectors, and the measurement against `ssh`.
