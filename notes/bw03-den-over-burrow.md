@@ -276,6 +276,8 @@ Commits, in order (the row first wherever a row exists):
   `9c881db` `27c8085` `tools/measure-den` and its size; `4aef680`
   `tools/check-static`; `2e0fa05` the gate's last steps; `13a8ef8` counts
   and flushes.
+- `a8acd52` `tools/diag-command-form`, the read-only probe of the fixture
+  server's command form (R-bw03-7).
 - `292e148` `9540a7d` README, `dd05cec` MAP, `c4a4dea` SOURCES, `4a27c96`
   CHANGELOG; and this note.
 
@@ -318,6 +320,41 @@ both tiers.
 | static binaries with no interpreter | hit: no `PT_INTERP`, no dynamic section; the static `burrow-keygen` also ran on a Linux host whose userland is not the image's (it made the deploy key) |
 | the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (den#63, R-bw03-4). The fixture is 60 commits and 8 large files |
 | CPU through burrow / through `ssh` between 1.02x and 1.3x, wall between 0.95x and 1.4x, margins 2x | CPU hit (1.04x); wall a miss low (0.83x): den's wall time is mostly I/O and swings 10–45 s between rounds on a shared host, so the wall minimum is noise-bound; both inside the margins |
+| the live push and its clone-back alike through both clients | **blocked, by den's command form**: GitHub accepted the deploy key and refused den's first push, `Invalid command: 'git-receive-pack' '<live>'`, through either client (below; R-bw03-7) |
+
+**The live row, first take** (`tools/check-live` at `3beaf84`, the fixture
+private and empty, the deploy key added with write access). `<live>` is the
+row's redaction of the repository path:
+
+```text
+FAIL live-push the base push: exit 128, Invalid command: 'git-receive-pack' '<live>' |   You appear to be using ssh to clone a git:// URL. |   Make sure your core.gitProxy config option and the |   GIT_PROXY_COMMAND environment variable are NOT set. | fatal: Could not read from remote repository. |  | Please make sure you have the correct access rights | and the repository exists.
+```
+
+The login succeeded: GitHub answers `Invalid command` only after
+authentication and an `exec` request. Its ssh service does not hand the
+command to a shell: it parses it, and it takes the program as a bare word,
+the form git sends (`git-receive-pack 'PATH'`). den quotes every remote word
+(`'git-receive-pack' 'PATH'`), which a POSIX shell accepts, so den's rows
+pass against the pinned `sshd`. `tools/diag-command-form` puts each form to
+the fixture once, read only (stdin empty: receive-pack advertises and
+stops, nothing is pushed). Its run at `a8acd52`:
+
+```text
+diag: ssh    den's form: exit 1, stdout 0 bytes (first pkt-len ''), stderr first line "Invalid command: 'git-receive-pack' '<live>'"
+diag: ssh    git's form: exit 0, stdout 296 bytes (first pkt-len '0124'), stderr first line ''
+diag: burrow git's form: exit 0, stdout 296 bytes (first pkt-len '0124'), stderr first line ''
+```
+
+So the pinned `ssh` fails den's form exactly as burrow does, and with git's
+form both clients reach GitHub's receive-pack advertisement byte for byte
+in size: key login, the session and `exec` work end to end between burrow
+and GitHub. (A first run of the same probe from the lane's copy, before the
+tool was committed, gave the same three verdicts, with the pinned `ssh`'s
+advertisement one byte longer: GitHub's advertisement varies per
+connection.) The change is den's (R-bw03-7); the live row waits on it, and
+nothing on the fixture changed: it is still empty. Every log, record and
+evidence file of these runs was scanned for the URL, the repository path
+and name, the key's path and private key text: none.
 
 **The measurement** (`tools/measure-den`, release burrow, at `292e148`, on a
 quiet block of the Linux x86-64 host with its light lock held, so nothing
@@ -389,6 +426,16 @@ check through `wire.ct_eq`; the user key's signature is not constant time
   burrow over UDP from `/etc/resolv.conf`; (c) wait for wolf-std#4's
   resolver. Recommended: (a) for the first PAX push, then (c); (b) only if
   std's resolver is far off, since it would be burrow's alone.
+- **R-bw03-7, den's command form for GitHub.** GitHub's ssh service parses
+  the command and refuses den's quoted program word (above). (a) den sends
+  the program bare when it is a plain word and quotes it otherwise, the path
+  always quoted, as git does; den's own rows are unchanged, since a shell
+  sees the same argv; (b) burrow rewrites the command (no: burrow passes
+  commands as `ssh` does, and the pinned `ssh` fails the same); (c) drop the
+  live row. Recommended and accepted: (a), as den's change in its transport
+  lane (vc22, red first: a plain service word sent bare, a non-plain
+  override still quoted). bw03 then moves `burrow-den.toml` to that den
+  commit, reruns den's rows and takes the live row.
 
 **Issues** (none filed by this lane):
 
@@ -443,8 +490,10 @@ What it needs from here:
   den unchanged.
 - [x] GitHub's real server, read only, with no key: the published host key,
   and the refusal held to the pinned `ssh` (R-bw03-1, red first).
-- [ ] The live push to the fixture and its clone-back, through both clients
-  (the row and its self-test are green; the fixture waits on R-bw03-2).
+- [ ] The live push to the fixture and its clone-back, through both clients.
+  The row and its self-test are green, the deploy key logs in, and git's
+  command form reaches GitHub's receive-pack through both clients; den's own
+  form is refused by GitHub, and the row waits on den's change (R-bw03-7).
 - [x] For PAX: `tools/build --static`, its shape and digests, and the px
   lane's first items (above).
 - [x] Measured: den's clone through burrow against the pinned `ssh`, with
