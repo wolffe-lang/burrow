@@ -347,11 +347,12 @@ def vectors():
     v["auth_signed_request"] = head + b"\x01" + string(b"ssh-ed25519") + string(blob1) + string(usig)
     v["auth_pk_ok"] = bytes([60]) + string(b"ssh-ed25519") + string(blob1)
     # ---- B3: the session channel's messages (RFC 4254 §5.1, §6.4, §6.5,
-    # §5.2), channel 0, window 2 MiB, maximum packet 32768.
+    # §5.2), channel 0, window 2 MiB, maximum packet 32768; the adjustment is
+    # a 4 KiB test window's, given back at half.
     v["chan_open_session"] = bytes([90]) + string(b"session") + u32(0) + u32(2097152) + u32(32768)
     v["chan_env_git"] = bytes([98]) + u32(7) + string(b"env") + b"\x00" + string(b"GIT_PROTOCOL") + string(b"version=2")
     v["chan_exec"] = bytes([98]) + u32(7) + string(b"exec") + b"\x01" + string(b"'git-upload-pack' '/srv/a b.git'")
-    v["chan_window_adjust"] = bytes([93]) + u32(7) + u32(1048576)
+    v["chan_window_adjust"] = bytes([93]) + u32(7) + u32(2048)
     v["chan_data"] = bytes([94]) + u32(7) + string(bytes([0, 255, 10, 0xc3, 0x28]))
     v["chan_eof"] = bytes([96]) + u32(7)
     v["chan_close"] = bytes([97]) + u32(7)

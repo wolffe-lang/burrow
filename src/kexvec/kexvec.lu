@@ -57,7 +57,7 @@ pub fn chan_open_session() -> str {
 
 /// The `chan_window_adjust` vector, as lowercase hex.
 pub fn chan_window_adjust() -> str {
-    "5d0000000700100000"
+    "5d0000000700000800"
 }
 
 /// The `client_secret` vector, as lowercase hex.
