@@ -410,3 +410,23 @@ What it needs from here:
 6. **The cost.** One handshake and one push timed on PAX against the same
    on Linux, as evidence (wolf-std's checked-`int` X25519 and Ed25519 run
    on PAX's CPU there).
+
+## Done-when
+
+- [x] The prediction, committed first (`0a0b2ba`).
+- [x] den's ssh rows through burrow-as-`ssh` against the pinned `sshd`, held
+  byte for byte to the pinned `ssh`: clone over both URL forms, a port, a
+  user, an alias, a checkout and three hard paths; incremental fetch; push
+  over both forms; both leases; `--atomic` accepted and refused; a push den
+  rejects and one the server rejects; the v0 refusal. 18 rows, both tiers;
+  den unchanged.
+- [x] GitHub's real server, read only, with no key: the published host key,
+  and the refusal held to the pinned `ssh` (R-bw03-1, red first).
+- [ ] The live push to the fixture and its clone-back, through both clients
+  (the row and its self-test are green; the fixture waits on R-bw03-2).
+- [x] For PAX: `tools/build --static`, its shape and digests, and the px
+  lane's first items (above).
+- [ ] Measured: den's clone through burrow against the pinned `ssh`, with
+  margins (in the PR body, from the final record's `measure-den` step).
+- [ ] The final-head gauntlet record, the plant record and the audit: in the
+  PR body.
