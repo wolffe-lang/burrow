@@ -316,7 +316,7 @@ both tiers.
 | GitHub's ed25519 fingerprint is the published `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` | hit, and both clients accepted the published line strictly |
 | with no identity both are refused `git@github.com: Permission denied (publickey).`, exit 255 | hit (burrow sent `none`, as RFC 4252 §5.2 names the methods) |
 | static binaries with no interpreter | hit: no `PT_INTERP`, no dynamic section; the static `burrow-keygen` also ran on a Linux host whose userland is not the image's (it made the deploy key) |
-| the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (R-bw03-4). The fixture is 60 commits and 8 large files |
+| the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (den#63, R-bw03-4). The fixture is 60 commits and 8 large files |
 
 **Where constant time matters.** Unchanged from bw02: the Poly1305 tag
 check through `wire.ct_eq`; the user key's signature is not constant time
@@ -373,9 +373,10 @@ check through `wire.ct_eq`; the user key's signature is not constant time
 
 **Issues** (none filed by this lane):
 
-- den#63, filed from this note: a clone's peak RSS grows faster than the history. Through the pinned
-  OpenSSH client, a bare clone of a fixed fixture peaked at 348 MiB (30
-  commits, about 500 objects), 954 MiB (60), 3.3 GiB (120) and 12.2 GiB
+- den#63, filed from this note: a clone's peak RSS grows faster than the
+  history. Through the pinned OpenSSH client, a bare clone of a fixed
+  fixture peaked at 348 MiB (30 commits, about 500 objects), 954 MiB (60),
+  3.3 GiB (120) and 12.2 GiB
   (300 commits, about 3,200 objects), so den's 10,000-object bound is out of
   reach in a 12 GiB container. Its wall time is also mostly not CPU (60
   commits: 21 s wall, 1.3 s CPU). The fixture is `tools/measure-den`'s
