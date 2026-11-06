@@ -66,18 +66,18 @@ def text_chunk(gen, size=2048):
     return (" ".join(words) + "\n").encode()
 
 
-def fixture_stream():
+def fixture_stream(commits=300, binaries=40):
     """A `git fast-import` stream: the fixed repository."""
     gen = stream()
     out = []
     files = {f"d{d:02}/f{f:02}.txt": text_chunk(gen) for d in range(10) for f in range(20)}
     blobs = {}
-    for i in range(40):
+    for i in range(binaries):
         data = b"".join(next(gen) for _ in range(256 * 1024 // 32))
         blobs[f"bin/b{i:02}.bin"] = data
     names = sorted(files)
     when = 1700000000
-    for c in range(300):
+    for c in range(commits):
         changed = {}
         if c == 0:
             changed.update(files)
@@ -108,13 +108,16 @@ def timed(argv, env, cwd):
     _, status, ru = os.wait4(p.pid, 0)
     wall = time.monotonic() - t0
     p.returncode = os.waitstatus_to_exitcode(status)
-    return p.returncode, wall, ru.ru_utime + ru.ru_stime, err
+    return p.returncode, wall, ru.ru_utime + ru.ru_stime, err, ru.ru_maxrss
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", required=True)
     ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--commits", type=int, default=300)
+    ap.add_argument("--binaries", type=int, default=40)
+    ap.add_argument("--clients", nargs="+", default=["burrow", "ssh"])
     a = ap.parse_args()
     burrow = pathlib.Path(a.bin).resolve()
     oraclelib.require_oracle()
@@ -127,7 +130,7 @@ def main():
     fx = Fixture(WORK)
     repo = fx.path("mid.git")
     git(fx, "init", "-q", "--bare", "-b", "main", repo)
-    p = subprocess.run([str(GIT), "--git-dir", str(repo), "fast-import", "--quiet"], input=fixture_stream(), env=git_env(fx),
+    p = subprocess.run([str(GIT), "--git-dir", str(repo), "fast-import", "--quiet"], input=fixture_stream(a.commits, a.binaries), env=git_env(fx),
                        capture_output=True, timeout=600)
     if p.returncode != 0:
         print(f"FAIL measure-den fast-import exited {p.returncode}: {p.stderr[-300:]!r}")
@@ -155,17 +158,17 @@ def main():
         url = f"ssh://{USER}@127.0.0.1:{s.port}{fx.served('mid.git')}"
         try:
             for rnd in range(a.rounds):
-                for client in (("burrow", "ssh") if rnd % 2 == 0 else ("ssh", "burrow")):
+                for client in (a.clients if rnd % 2 == 0 else a.clients[::-1]):
                     dest = WORK / "clone.git"
                     if dest.exists():
                         shutil.rmtree(dest)
                     env = {"PATH": f"{WORK / ('via-' + client)}:/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C",
                            "TZ": "UTC", "TMPDIR": str(WORK / "tmp")}
                     (WORK / "tmp").mkdir(exist_ok=True)
-                    rc, wall, cpu, err = timed([str(DEN), "clone", "-q", "--bare", "--upload-pack=" + fx.upload, url, str(dest)],
+                    rc, wall, cpu, err, rss = timed([str(DEN), "clone", "-q", "--bare", "--upload-pack=" + fx.upload, url, str(dest)],
                                                env, WORK)
                     if rc != 0:
-                        print(f"FAIL measure-den clone through {client} exited {rc}: {err[-300:]!r}")
+                        print(f"FAIL measure-den clone through {client} exited {rc} (max RSS {rss // 1024} MiB): {err[-300:]!r}")
                         sys.exit(1)
                     got = git(fx, "--git-dir", dest, "rev-list", "--objects", "--all").decode().split("\n")
                     got = sorted(x.split(" ", 1)[0] for x in got if x)
@@ -173,9 +176,12 @@ def main():
                         print(f"FAIL measure-den the clone through {client} holds {len(got)} objects, the server {len(want)}")
                         sys.exit(1)
                     times[client].append((wall, cpu))
-                    print(f"measure-den: round {rnd + 1} {client:6} wall {wall:7.3f} s cpu {cpu:7.3f} s", flush=True)
+                    print(f"measure-den: round {rnd + 1} {client:6} wall {wall:7.3f} s cpu {cpu:7.3f} s max RSS {rss // 1024} MiB",
+                          flush=True)
         finally:
             clear_home()
+    if a.clients != ["burrow", "ssh"]:
+        sys.exit(0)
     best = {c: (min(w for w, _ in t), min(u for _, u in t)) for c, t in times.items()}
     wall_ratio = best["burrow"][0] / best["ssh"][0]
     cpu_ratio = best["burrow"][1] / best["ssh"][1]
