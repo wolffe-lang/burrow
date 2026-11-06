@@ -12,18 +12,22 @@ speaks and refuses, and what is measured where. Sources are in
 | **B1** | the transport: version exchange, binary packet protocol, `curve25519-sha256`, `ssh-ed25519` host keys against known_hosts, `chacha20-poly1305@openssh.com`, strict kex, ext-info, rekeying, disconnect | done |
 | **B2** | auth and keys: `publickey` with `ssh-ed25519` (RFC 4252, 8709), the OpenSSH private key format (`PROTOCOL.key`), `burrow-keygen -t ed25519`, known_hosts appending and hashed `\|1\|` entries | done |
 | **B3** | channels and the CLI: a session channel, `exec` and `env`, byte-clean stdin/stdout/stderr, windows, EOF and close, exit status, the `ssh` options den uses | done |
-| **B4** | den over burrow: clone, fetch and push through burrow, then on PAX | not yet |
+| **B4** | den over burrow: clone, fetch and push through burrow against the pinned `sshd`, GitHub read only, the live push, the static build for PAX | done here; installing it on PAX is a px lane's |
 
 `burrow` logs in with an Ed25519 key, runs one command on a session channel
 with stdin, stdout and stderr as raw bytes, and exits with the command's
 status (255 for every refusal), taking the command line den passes. It
-starts no interactive shell (`shell_unsupported`).
+starts no interactive shell: with no command it logs in, then refuses
+(`shell_unsupported`), so a keyless probe is refused authentication as
+`ssh` refuses it. Linked as `ssh` on PATH, it carries den's
+clone, fetch and push byte for byte as the pinned `ssh` does
+(`tools/check-den`).
 
 ## Modules
 
 | module | what it is |
 |---|---|
-| `src/burrow.lu` | `ssh`: the command line, the identities, the login, the session, the refusal lines and exit status |
+| `src/burrow.lu` | `ssh`: the command line, the identities, the login, the session (or, with no command, the refusal after the login), the refusal lines and exit status |
 | `src/keygen.lu` | `burrow-keygen`: `-t ed25519`, `-y`, `-l` |
 | `src/kexprobe.lu` | a row program, never installed or built `--static`: the first exchange with strict kex waived through the transport's library option, for `downgrade-caught`; burrow's command line has no waiver on any tier |
 | `src/config` | the command line and `~/.ssh/config` (`Host`, `Match host`), first value wins, refusals by name |
@@ -95,7 +99,8 @@ the reason code below when the connection can still carry one, and exits 255.
 | `channel_unknown` | a message for a channel burrow did not open | 2 |
 | `channel_closed` | data after the server's EOF or CLOSE (never written out) | 2 |
 | `window_exceeded`, `channel_packet_too_large`, `window_overflow` | data past burrow's window or maximum packet, or an adjustment past 2^32 − 1 | 2 |
-| `option_unknown`, `option_unsupported`, `config_unsupported`, `usage`, `shell_unsupported` | the command line or `~/.ssh/config`: a flag or keyword `ssh` lacks (its "Bad configuration option" line), one burrow lacks, a value burrow does not take, a config construct burrow does not read, no destination, no command | (no connection) |
+| `option_unknown`, `option_unsupported`, `config_unsupported`, `usage` | the command line or `~/.ssh/config`: a flag or keyword `ssh` lacks (its "Bad configuration option" line), one burrow lacks, a value burrow does not take, a config construct burrow does not read, no destination | (no connection) |
+| `shell_unsupported` | no command: refused after the login, before any channel opens | 11 |
 
 Where the pinned `ssh` prints a line for the same failure, burrow prints that
 line first, with the program's own name where `ssh` prints its own
@@ -229,6 +234,13 @@ Three black-box findings shape B1:
 | `tools/check-hostile` | a scripted server that misbehaves (`tools/fakeserver.py`, built on `tools/vectorgen.py`'s primitives) |
 | `tools/nistvec.py` | NIST's SHA-1 and HMAC-SHA1 vectors (`ci/vectors/nist-sha1.rsp`), regenerated and compared |
 | `tools/measure-session` | login to first byte and `cat` throughput against the pinned `ssh`, held to stated margins |
+| `tools/fetch-den` | den at `burrow-den.toml`'s pin (its commit alone, a clean tree), its own toolchain and `tools/build --native`; den's git oracle held to its digest |
+| `tools/denlib.py` | den, its pinned git, and den's fixture shape: service wrappers that pass on only the `GIT_PROTOCOL` that arrived, and log it |
+| `tools/check-den` | den's ssh rows with burrow as `ssh`, each held byte for byte to the same den command through the pinned `ssh` |
+| `tools/check-github` | GitHub's real server, read only, no key: the published host key and the refusal, against the pinned `ssh` |
+| `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted; `--self-test` against a loopback `sshd` |
+| `tools/check-static` | the static binaries: no interpreter, no dynamic section, their digests; den rows through the static `burrow` |
+| `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved, held to 2x |
 
 ## Machines
 
@@ -237,6 +249,56 @@ Three black-box findings shape B1:
 | builds, unit rows | macOS arm64 workstation; Linux x86-64 in the pinned container |
 | oracle rows | Linux x86-64 laptop, 8 cores, in the pinned Ubuntu 24.04 container |
 | CI | GitHub `ubuntu-24.04` (the gate) and `macos-latest` (unit rows) |
+
+## den over burrow, measured (B4)
+
+den at `ef0bb0c` (`burrow-den.toml`), built by its own tools at its own
+toolchain pin, and its pinned git 2.56.0 as the server. Each den row runs
+through burrow-as-`ssh` and through the pinned `ssh` against one `sshd`
+(`AcceptEnv GIT_PROTOCOL`), and every compared field is equal: den's exit
+code, stdout and stderr, the local and server repositories, and the
+`GIT_PROTOCOL` each service received (`version=2` for upload-pack and
+receive-pack alike; nothing for the v0 wrapper). The black-box findings:
+
+- **The pinned `ssh` reads `~/.ssh` from the passwd entry, never `$HOME`;**
+  burrow reads `$HOME` (for PAX, which has no passwd database).
+  den passes neither `-F` nor `UserKnownHostsFile`, so the rows install
+  their `.ssh` as the container user's own, and both clients read the same
+  files.
+- den's argv is the one bw02 measured, for every URL form: `-p` only for
+  `ssh://host:port`, the user kept in the destination, the remote words
+  single-quoted, `GIT_PROTOCOL=version=2` sent by `SendEnv` for both services.
+- A remote's own stderr (`error: denying non-fast-forward …` from the
+  server's receive-pack) reaches den's stderr through either client byte for
+  byte.
+- den's clone holds the whole history in memory: through the pinned `ssh`,
+  its peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and
+  12 GiB (the container's cap, SIGKILLed with 40 more large files) at 300.
+  `tools/measure-den`'s fixture is sized to that.
+
+**GitHub, read only** (`tools/check-github`): its server offers
+`curve25519-sha256` (burrow's choice; the pinned `ssh` chooses
+`mlkem768x25519-sha256`), strict kex, an `ssh-ed25519` host key whose
+fingerprint is the published `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU`,
+`chacha20-poly1305@openssh.com`, and EXT_INFO naming `server-sig-algs` and
+`publickey-hostbound@openssh.com`. With no identity, both clients are
+refused with `git@github.com: Permission denied (publickey).` and exit 255.
+
+## PAX
+
+`tools/build --static` makes `target/static/burrow` and
+`target/static/burrow-keygen`: x86-64 ELF executables with no interpreter
+and no dynamic section (`tools/check-static`), which run on a Linux userland
+other than the one that built them. A PAX install puts them at `/bin/ssh` and
+`/bin/burrow-keygen`. What PAX must supply, and the workarounds:
+
+| need | state |
+|---|---|
+| a resolver | none on PAX (wolf-lang#831, wolf-std#4): `~/.ssh/config`'s `Host github.com` with `HostName` an address from `api.github.com/meta`'s `git` ranges and `HostKeyAlias github.com`, so den keeps `git@github.com:…` and the known_hosts line is GitHub's published one |
+| entropy | burrow reads `/dev/urandom`, refused by name (`entropy_unavailable`) where absent |
+| the network | the console kernel's network is a PAX gap of its own |
+| `$HOME` | `~/.ssh` is read from `$HOME`: PAX needs no passwd database |
+| a root store | not needed: ssh has no X.509 |
 
 ## Gaps, named
 
@@ -250,5 +312,8 @@ Three black-box findings shape B1:
   waits up to 5 ms on each in turn when idle (`src/session`).
 - No interactive shell, pty, agent, forwarding, certificates, or RSA and
   ECDSA keys; each is refused by name.
-- No resolver on PAX (wolf-lang#831, wolf-std#4): `HostKeyAlias` lets a row
-  connect to an address under a host name.
+- No resolver on PAX (wolf-lang#831, wolf-std#4): `HostName` and
+  `HostKeyAlias` let den's `git@github.com:…` reach an address under
+  GitHub's own host key (above).
+- den's ssh rows run in the local gauntlet only: den's git oracle is built
+  in den's own image, whose digest a CI runner is not held to reproduce.
