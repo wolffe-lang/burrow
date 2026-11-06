@@ -252,7 +252,7 @@ pub fn env_match(pat: str, name: str) -> bool {
 }
 
 fn has_token(v: str) -> bool {
-    v.contains("%") || v.contains("${")
+    v.contains("%") || v.contains("${{")
 }
 
 // One keyword and its value, from `-o` (`src` is "command-line") or the

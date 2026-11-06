@@ -129,7 +129,7 @@ fn main() {
     assert(refused(["h.test", "x"], "Match exec true\n  Port 1\n", "config_unsupported", ""))
     assert(refused(["h.test", "x"], "Include other\n", "config_unsupported", ""))
     assert(refused(["h.test", "x"], "Host *\n  IdentityFile ~/.ssh/%h\n", "config_unsupported", ""))
-    assert(refused(["h.test", "x"], "Host *\n  IdentityFile ${HOME}/k\n", "config_unsupported", ""))
+    assert(refused(["h.test", "x"], "Host *\n  IdentityFile ${{HOME}}/k\n", "config_unsupported", ""))
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
     print("config: den's argv shapes, ssh's flags, Host and Match host, 17 refusals")
