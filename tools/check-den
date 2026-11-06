@@ -107,7 +107,8 @@ def chown_tree(path):
             os.chown(os.path.join(dirpath, n), uid, gid, follow_symlinks=False)
 
 
-def git_env(fx):
+def git_env(fixture):
+    fx = fixture.fx
     return {"PATH": f"{GIT_BIN}:/usr/bin:/bin", "GIT_EXEC_PATH": str(EXEC_PATH), "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": str(fx / "gitconfig-root"), "HOME": str(fx / "root-home"), "LC_ALL": "C", "TZ": "UTC",
             "GIT_AUTHOR_NAME": "Den Tester", "GIT_AUTHOR_EMAIL": "den@example.invalid",
