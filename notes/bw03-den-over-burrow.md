@@ -358,6 +358,8 @@ Commits, in order (the row first wherever a row exists):
   leftovers check (red); `2bf1d0a` the work directories removed;
   `23689ab` README, `3f94c57` MAP, `827a3f2` SOURCES, `1f6ed05` CHANGELOG;
   and this note.
+- R-bw03-8: `14f58dc` measure-den gates CPU only, `3ab5d2d` the gate's
+  line, `55ae4fe` MAP; and this note.
 
 ## Evidence index
 
