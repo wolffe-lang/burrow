@@ -241,6 +241,7 @@ Three black-box findings shape B1:
 | `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted; `--self-test` against a loopback `sshd` |
 | `tools/check-static` | the static binaries: no interpreter, no dynamic section, their digests; den rows through the static `burrow` |
 | `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved, held to 2x |
+| `tools/diag-command-form` | a read-only probe, run by hand: the live fixture's answer to den's command form and git's, through both clients, redacted |
 
 ## Machines
 
@@ -283,6 +284,12 @@ fingerprint is the published `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
 `chacha20-poly1305@openssh.com`, and EXT_INFO naming `server-sig-algs` and
 `publickey-hostbound@openssh.com`. With no identity, both clients are
 refused with `git@github.com: Permission denied (publickey).` and exit 255.
+GitHub's ssh service does not hand a command to a shell: it parses it, and
+takes the program as a bare word, as git sends it (`git-receive-pack
+'PATH'`). den quotes every remote word, which a shell accepts and GitHub
+refuses (`Invalid command: …`) through either client; den's change to send
+a plain program word bare is den's own. `tools/diag-command-form` puts both
+forms to the live fixture, read only.
 
 ## PAX
 
