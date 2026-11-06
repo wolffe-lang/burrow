@@ -27,15 +27,25 @@
 #   den         den's ssh rows with burrow as `ssh`, each held byte for byte to
 #               the same den command through the pinned ssh, native
 #   den-release the same rows, release
+#   live-self-test  the live row's steps against a loopback sshd: den pushes,
+#               clones back and deletes through burrow and the pinned ssh
 #   github      GitHub's real server, read only, with no key: the published
 #               host key and the refusal, held to the pinned ssh (SKIP by
 #               name when github.com port 22 does not answer)
+#   live        the live push to the fixture (tools/check-live), from
+#               BURROW_LIVE_SSH_URL and BURROW_LIVE_SSH_KEY only (SKIP by name
+#               without both; the key's directory mounted at its own path)
+#   static      tools/build --static: static ELF binaries for PAX, their
+#               digests, and two den rows with the static burrow as ssh
 #   measure     login to first byte and cat throughput against the pinned ssh,
 #               release, held to the prediction's margins (a perf step: run
 #               the gauntlet with nothing beside it)
+#   measure-den den's clone of a mid-sized repository through release burrow
+#               against through the pinned ssh, interleaved, held to 2x (a
+#               perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release den-pin den den-release github measure"
+ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release den-pin den den-release live-self-test github live static measure measure-den"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -66,8 +76,12 @@ run() {
     den-pin) tools/in-container tools/fetch-den ;;
     den) tools/in-container python3 -I tools/check-den --bin target/native/burrow ;;
     den-release) tools/in-container python3 -I tools/check-den --bin target/release/burrow ;;
+    live-self-test) tools/in-container python3 -I tools/check-live --bin target/native/burrow --self-test ;;
     github) tools/in-container python3 -I tools/check-github --bin target/native/burrow ;;
+    live) tools/in-container python3 -I tools/check-live --bin target/native/burrow ;;
+    static) tools/in-container sh -c 'tools/build --static && python3 -I tools/check-static' ;;
     measure) tools/in-container python3 -I tools/measure-session --bin target/release/burrow ;;
+    measure-den) tools/in-container python3 -I tools/measure-den --bin target/release/burrow ;;
     *)
         echo "gate: no step $1 (steps: $ALL)"
         return 2
@@ -81,6 +95,8 @@ skip_reason() {
     case $1 in
     github) tools/in-container python3 -I tools/check-github --probe >/dev/null 2>&1 ||
         echo "github.com port 22 did not answer an SSH version line within 10 s" ;;
+    live) [ -n "${BURROW_LIVE_SSH_URL:-}" ] && [ -n "${BURROW_LIVE_SSH_KEY:-}" ] ||
+        echo "BURROW_LIVE_SSH_URL and BURROW_LIVE_SSH_KEY are not both set" ;;
     esac
 }
 
