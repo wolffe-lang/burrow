@@ -155,6 +155,9 @@ fn run(s: config.Settings) -> int {
     opts.hash_known = s.hash_known
     opts.key_alias = s.key_alias
     opts.verbose = s.verbose
+    if s.traffic > 0 || s.test_window > 0 {
+        opts.strict = "no"
+    }
     if s.rekey_bytes > 0 {
         opts.rekey_bytes = s.rekey_bytes
     }
