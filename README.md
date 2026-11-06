@@ -180,7 +180,7 @@ same pinned `sshd`, on loopback ports the test owns, with keys generated for
 that run. Two rows contact a real host, and say so: `tools/check-github`
 (GitHub, read only, no key) and `tools/check-live` (the live fixture, from
 its variables only). den's own sources are read as the consumer's, and git
-only through den's documentation and its pinned binary as a black box.
+is used only as den's pinned binary, a black box.
 
 ## Licence
 
