@@ -7,7 +7,8 @@ fixture shape under a row's directory: service wrappers `upload`,
 `receive` and `upload-v0` that `exec env -i` into the pinned git with a
 fixed environment, passing on only the GIT_PROTOCOL that arrived (and
 logging it), and the repositories they serve, owned by the image's
-`burrowtest`.
+`burrowtest`; and a recorder for an authorized_keys `command=` that logs
+the command sshd was sent.
 """
 import hashlib
 import os
@@ -150,15 +151,33 @@ class Fixture:
         self.upload = str(self.fx / "bin" / "upload")
         self.receive = str(self.fx / "bin" / "receive")
         self.upload_v0 = str(self.fx / "bin" / "upload-v0")
+        # The command recorder, for an authorized_keys `command=` (sshd(8),
+        # AUTHORIZED_KEYS FILE FORMAT: sshd runs it instead of the client's
+        # command and puts the client's in SSH_ORIGINAL_COMMAND). It logs the
+        # command as sshd received it and runs it under sh -c, with the
+        # wrappers as git's default program words first on PATH.
+        (self.fx / "svc").mkdir(exist_ok=True)
+        for word, wrapper in (("git-upload-pack", "upload"), ("git-receive-pack", "receive")):
+            (self.fx / "svc" / word).symlink_to(self.fx / "bin" / wrapper)
+        (self.fx / "bin" / "up load").symlink_to(self.fx / "bin" / "upload")
+        self.upload_spaced = str(self.fx / "bin" / "up load")
+        self.command_log = self.fx / "command.log"
+        self.recorder = self.fx / "bin" / "record-command"
+        self.recorder.write_text("#!/bin/sh\n"
+                                 f"printf '%s\\n' \"${{SSH_ORIGINAL_COMMAND-<none>}}\" >>'{self.command_log}'\n"
+                                 f"PATH='{self.fx / 'svc'}':/usr/bin:/bin\nexport PATH\n"
+                                 "exec /bin/sh -c \"$SSH_ORIGINAL_COMMAND\"\n")
+        self.recorder.chmod(0o755)
         for name in ("home", "tmp"):
             chown_tree(self.fx / name)
         self.reset_log()
 
     def reset_log(self):
-        self.log.write_text("")
         uid, gid = ids()
-        os.chown(self.log, uid, gid)
-        os.chmod(self.log, 0o644)
+        for log in (self.log, self.command_log):
+            log.write_text("")
+            os.chown(log, uid, gid)
+            os.chmod(log, 0o644)
 
     def path(self, repo):
         return self.fx / "template" / repo
