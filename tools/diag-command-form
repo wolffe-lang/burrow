@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+"""diag-command-form — one read-only probe of how the live fixture's server
+takes the command den sends (bw03, R-bw03-7).
+
+    tools/in-container python3 -I tools/diag-command-form --bin target/native/burrow
+
+The fixture's URL and the deploy key's path come from BURROW_LIVE_SSH_URL
+and BURROW_LIVE_SSH_KEY only (a job sets them from the lane's 0600 file, as
+for tools/check-live), and every printed line is redacted as there. It runs
+`git-receive-pack` on the fixture three times with an empty stdin, so the
+service advertises and stops and nothing is pushed:
+
+  - den's form, `'git-receive-pack' 'PATH'` (every word quoted), through the
+    pinned ssh;
+  - git's form, `git-receive-pack 'PATH'` (the program bare), through the
+    pinned ssh and through burrow as `ssh`.
+
+It prints each exit code, the advertisement's size and first pkt-line
+length, and the first stderr line. Run it once, by hand: it is evidence,
+not a gate step.
+"""
+import argparse
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+from denlib import PW_HOME, ROOT, clear_home  # noqa: E402
+
+KNOWN = ROOT / "ci" / "github-known-hosts"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    a = ap.parse_args()
+    url, key = os.environ.get("BURROW_LIVE_SSH_URL", ""), os.environ.get("BURROW_LIVE_SSH_KEY", "")
+    if not (url and key):
+        print("diag-command-form: BURROW_LIVE_SSH_URL and BURROW_LIVE_SSH_KEY are not both set")
+        sys.exit(2)
+    if os.environ.get("BURROW_IN_CONTAINER") != "1":
+        raise SystemExit("diag-command-form: refusing to replace ~/.ssh outside the pinned container")
+    m = re.match(r"^([^@/]+@)?([^:/]+):(.+)$", url) or re.match(r"^ssh://([^@/]+@)?([^/:]+)(/.+)$", url)
+    if not m:
+        raise SystemExit("diag-command-form: the URL is neither scp-like nor ssh://host/path")
+    dest, path = (m.group(1) or "") + m.group(2), m.group(3)
+    secrets = [s for s in {url, key, path, path.strip("/"), path.strip("/").removesuffix(".git"),
+                           path.rsplit("/", 1)[-1].removesuffix(".git")} if len(s) >= 6]
+
+    def redact(t):
+        for s in sorted(secrets, key=len, reverse=True):
+            t = t.replace(s, "<live>")
+        return t
+
+    clear_home()
+    (PW_HOME / ".ssh").mkdir(mode=0o700)
+    algo, blob = KNOWN.read_text().split()[1:3]
+    (PW_HOME / ".ssh" / "known_hosts").write_text(f"github.com {algo} {blob}\n[ssh.github.com]:443 {algo} {blob}\n")
+    cfg = PW_HOME / ".ssh" / "config"
+    cfg.write_text(f"Host *\n    IdentityFile {key}\n    IdentitiesOnly yes\n")
+    os.chmod(cfg, 0o600)
+    via = ROOT / "target" / "diag-command-form"
+    shutil.rmtree(via, ignore_errors=True)
+    via.mkdir(parents=True)
+    (via / "ssh").symlink_to(pathlib.Path(a.bin).resolve())
+    runs = [("ssh", str(oraclelib.SSH), "den's form", f"'git-receive-pack' '{path}'"),
+            ("ssh", str(oraclelib.SSH), "git's form", f"git-receive-pack '{path}'"),
+            ("burrow", str(via / "ssh"), "git's form", f"git-receive-pack '{path}'")]
+    try:
+        for client, exe, form, cmd in runs:
+            p = subprocess.run([exe, "-o", "BatchMode=yes", dest, cmd], stdin=subprocess.DEVNULL, capture_output=True,
+                               timeout=60, env={"PATH": "/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C"})
+            first = p.stdout[:4].decode("ascii", "replace")
+            err = redact(p.stderr.decode("utf-8", "replace")).strip().splitlines()
+            print(f"diag: {client:6} {form}: exit {p.returncode}, stdout {len(p.stdout)} bytes "
+                  f"(first pkt-len {first!r}), stderr first line {err[0] if err else ''!r}", flush=True)
+    finally:
+        clear_home()
+
+
+if __name__ == "__main__":
+    main()
