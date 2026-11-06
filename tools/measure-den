@@ -19,9 +19,11 @@ includes the `ssh` it waits for; den is the same binary both ways, so the
 ratio is the ssh client's. The minimum of each is compared. A perf step:
 run it on a quiet block with nothing beside it.
 
-Margins (the prediction): CPU and wall through burrow / through the
-pinned ssh, each at most 2x. Every clone is checked whole (its objects are
-the server's) before its time counts.
+The margin (the timed-rows rule, R-bw03-8): CPU through burrow / through
+the pinned ssh at most 2x. Wall time is reported, never gated: den's is
+mostly its own local I/O wait (den#62), and one fast round of either
+client moves its minimum by 2x on a shared host (measured). Every clone is
+checked whole (its objects are the server's) before its time counts.
 """
 import argparse
 import hashlib
@@ -49,7 +51,7 @@ from denlib import (  # noqa: E402
 )
 
 WORK = ROOT / "target" / "measure-den"
-CPU_MARGIN = WALL_MARGIN = 2.0
+CPU_MARGIN = 2.0
 
 
 def stream(seed=b"burrow-measure-den"):
@@ -192,11 +194,8 @@ def main():
     print(f"measure-den: fixture {count} objects, pack {size_kib} KiB; {a.rounds} interleaved rounds per client, minimum of each")
     for c in ("burrow", "ssh"):
         print(f"measure-den: through {c:6} wall {best[c][0]:.3f} s, cpu {best[c][1]:.3f} s (den and the ssh it waits for)")
-    print(f"measure-den: burrow / ssh: wall {wall_ratio:.2f}x (margin {WALL_MARGIN}x); cpu {cpu_ratio:.2f}x (margin {CPU_MARGIN}x)")
+    print(f"measure-den: burrow / ssh: wall {wall_ratio:.2f}x (reported, not gated); cpu {cpu_ratio:.2f}x (margin {CPU_MARGIN}x)")
     bad = 0
-    if wall_ratio > WALL_MARGIN:
-        print(f"FAIL measure-den wall ratio {wall_ratio:.2f}x over {WALL_MARGIN}x")
-        bad += 1
     if cpu_ratio > CPU_MARGIN:
         print(f"FAIL measure-den cpu ratio {cpu_ratio:.2f}x over {CPU_MARGIN}x")
         bad += 1
