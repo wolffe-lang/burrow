@@ -7,19 +7,27 @@ takes the command den sends (bw03, R-bw03-7).
 The fixture's URL and the deploy key's path come from BURROW_LIVE_SSH_URL
 and BURROW_LIVE_SSH_KEY only (a job sets them from the lane's 0600 file, as
 for tools/check-live), and every printed line is redacted as there. It runs
-`git-receive-pack` on the fixture three times with an empty stdin, so the
-service advertises and stops and nothing is pushed:
+`git-receive-pack` on the fixture with an empty stdin, so the service
+advertises and stops and nothing is pushed:
 
-  - den's form, `'git-receive-pack' 'PATH'` (every word quoted), through the
-    pinned ssh;
+  - den's old form, `'git-receive-pack' 'PATH'` (every word quoted, as den
+    sent it before R-bw03-7), through the pinned ssh: the control;
   - git's form, `git-receive-pack 'PATH'` (the program bare), through the
-    pinned ssh and through burrow as `ssh`.
+    pinned ssh and through burrow as `ssh`;
+  - den's own argv and GIT_PROTOCOL at burrow-den.toml's pin, through the
+    pinned ssh and through burrow as `ssh`. They are taken from den itself:
+    den pushes to the URL with a recording `ssh` first on PATH, which
+    prints its argv and GIT_PROTOCOL to den's stderr (held here in memory,
+    never written) and exits 255, so nothing connects.
 
 It prints each exit code, the advertisement's size and first pkt-line
-length, and the first stderr line. Run it once, by hand: it is evidence,
-not a gate step.
+length, and the first stderr line, then whether den's command is git's
+form. It exits 1 unless den's own argv is accepted through both clients and
+its command is git's form. Run it once, by hand: it is evidence, not a gate
+step.
 """
 import argparse
+import json
 import os
 import pathlib
 import re
@@ -29,9 +37,36 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import oraclelib  # noqa: E402
-from denlib import PW_HOME, ROOT, clear_home  # noqa: E402
+from denlib import DEN, PW_HOME, ROOT, Fixture, clear_home, require_den, tail, write_objects  # noqa: E402
 
 KNOWN = ROOT / "ci" / "github-known-hosts"
+WORK = ROOT / "target" / "diag-command-form"
+
+
+def den_argv(url, redact):
+    """den's ssh argv and GIT_PROTOCOL for a push to `url`, from den itself."""
+    scratch = WORK / "den"
+    scratch.mkdir(parents=True)
+    fx = Fixture(scratch)
+    first, _ = fx.seed()
+    local = scratch / "local.git"
+    write_objects(fx, local, fx.path("plain.git"), first)
+    rec = scratch / "rec"
+    rec.mkdir()
+    (rec / "ssh").write_text(f"#!{shutil.which('python3')} -I\nimport json, os, sys\n"
+                             "sys.stderr.write('diag-argv ' + json.dumps([sys.argv[1:], os.environ.get('GIT_PROTOCOL')]) + '\\n')\n"
+                             "sys.exit(255)\n")
+    os.chmod(rec / "ssh", 0o755)
+    (scratch / "tmp").mkdir()
+    p = subprocess.run([str(DEN), "push", "-q", url, "refs/heads/main:refs/heads/burrow-diag"], cwd=local,
+                       env={"PATH": f"{rec}:/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C", "TZ": "UTC",
+                            "TMPDIR": str(scratch / "tmp")},
+                       stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    for line in p.stderr.decode("utf-8", "replace").splitlines():
+        if line.startswith("diag-argv "):
+            argv, proto = json.loads(line[len("diag-argv "):])
+            return argv, proto
+    raise SystemExit(f"diag-command-form: den started no ssh (exit {p.returncode}: {redact(tail(p.stderr))})")
 
 
 def main():
@@ -56,6 +91,17 @@ def main():
             t = t.replace(s, "<live>")
         return t
 
+    require_den()
+    os.umask(0o022)
+    shutil.rmtree(WORK, ignore_errors=True)
+    WORK.mkdir(parents=True)
+    os.chmod(WORK, 0o700)
+    argv, proto = den_argv(url, redact)
+    sep = argv.index("--") if "--" in argv else -1
+    if sep < 0 or len(argv) < sep + 3:
+        raise SystemExit(f"diag-command-form: den's argv has no `-- HOST COMMAND`: {redact(' '.join(argv))}")
+    den_command = " ".join(argv[sep + 2:])
+    git_form = f"git-receive-pack '{path}'"
     clear_home()
     (PW_HOME / ".ssh").mkdir(mode=0o700)
     algo, blob = KNOWN.read_text().split()[1:3]
@@ -63,23 +109,37 @@ def main():
     cfg = PW_HOME / ".ssh" / "config"
     cfg.write_text(f"Host *\n    IdentityFile {key}\n    IdentitiesOnly yes\n")
     os.chmod(cfg, 0o600)
-    via = ROOT / "target" / "diag-command-form"
-    shutil.rmtree(via, ignore_errors=True)
-    via.mkdir(parents=True)
+    via = WORK / "via-burrow"
+    via.mkdir()
     (via / "ssh").symlink_to(pathlib.Path(a.bin).resolve())
-    runs = [("ssh", str(oraclelib.SSH), "den's form", f"'git-receive-pack' '{path}'"),
-            ("ssh", str(oraclelib.SSH), "git's form", f"git-receive-pack '{path}'"),
-            ("burrow", str(via / "ssh"), "git's form", f"git-receive-pack '{path}'")]
+    base = {"PATH": "/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C"}
+    den_env = dict(base, **({"GIT_PROTOCOL": proto} if proto is not None else {}))
+    runs = [("ssh", str(oraclelib.SSH), "den's old form", ["-o", "BatchMode=yes", dest, f"'git-receive-pack' '{path}'"], base),
+            ("ssh", str(oraclelib.SSH), "git's form", ["-o", "BatchMode=yes", dest, git_form], base),
+            ("burrow", str(via / "ssh"), "git's form", ["-o", "BatchMode=yes", dest, git_form], base),
+            ("ssh", str(oraclelib.SSH), "den's argv at the pin", argv, den_env),
+            ("burrow", str(via / "ssh"), "den's argv at the pin", argv, den_env)]
+    print(f"diag: den at the pin starts ssh with {len(argv)} words; its command {redact(den_command)!r}; "
+          f"GIT_PROTOCOL {proto!r}", flush=True)
+    accepted = []
     try:
-        for client, exe, form, cmd in runs:
-            p = subprocess.run([exe, "-o", "BatchMode=yes", dest, cmd], stdin=subprocess.DEVNULL, capture_output=True,
-                               timeout=60, env={"PATH": "/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C"})
+        for client, exe, form, args, env in runs:
+            p = subprocess.run([exe, *args], stdin=subprocess.DEVNULL, capture_output=True, timeout=60, env=env)
             first = p.stdout[:4].decode("ascii", "replace")
             err = redact(p.stderr.decode("utf-8", "replace")).strip().splitlines()
             print(f"diag: {client:6} {form}: exit {p.returncode}, stdout {len(p.stdout)} bytes "
                   f"(first pkt-len {first!r}), stderr first line {err[0] if err else ''!r}", flush=True)
+            if form == "den's argv at the pin":
+                accepted.append(p.returncode == 0 and re.fullmatch(rb"[0-9a-f]{4}", p.stdout[:4]) is not None)
     finally:
         clear_home()
+        shutil.rmtree(WORK, ignore_errors=True)
+    same = den_command == git_form
+    print(f"diag: den's command at the pin is git's form: {'yes' if same else 'no'}", flush=True)
+    if not (same and all(accepted) and len(accepted) == 2):
+        print("diag: FAIL den's argv at the pin is not accepted through both clients as git's form", flush=True)
+        sys.exit(1)
+    print("diag: den's argv at the pin accepted through both clients", flush=True)
 
 
 if __name__ == "__main__":
