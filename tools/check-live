@@ -30,6 +30,9 @@ through the pinned ssh where it says so:
 `--self-test` runs the same steps against a loopback sshd (oraclelib.Sshd)
 serving an empty repository through den's fixture wrappers, with that
 sshd's known_hosts line: the mechanics, before a fixture exists.
+
+When the row ends, no file it wrote outside its evidence may hold the URL,
+its names or the key's path (`leftovers`).
 """
 import argparse
 import hashlib
@@ -223,6 +226,22 @@ def keep_evidence():
     return len(bad)
 
 
+def leftovers(dirs):
+    """Nothing the row wrote outside its evidence keeps the URL, its names or
+    the key's path (den's clones name the URL in their config)."""
+    held = []
+    for d in dirs:
+        if d.exists():
+            for p in sorted(d.rglob("*")):
+                if p.is_file() and not p.is_symlink() and any(s.encode() in p.read_bytes() for s in SECRETS):
+                    held.append(str(p.relative_to(ROOT)))
+    for p in held:
+        print(f"FAIL leftovers {p} holds the fixture's URL, name or key path", flush=True)
+    if not held:
+        print("check-live: no work file left holding the fixture's URL, name or key path", flush=True)
+    return len(held)
+
+
 LIVE = None
 
 
@@ -286,6 +305,7 @@ def main():
         clear_home()
     print(f"check-live: 1 rows, {fails} failed, 0 SKIP")
     fails += keep_evidence()
+    fails += leftovers([WORK, ROOT / "target" / "live-self-test"])
     sys.exit(min(fails, 100))
 
 
