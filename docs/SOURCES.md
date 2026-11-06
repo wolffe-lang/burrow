@@ -122,3 +122,29 @@ burrow must take; wolf-lang's `spec/02-memory-model.md` for the region
 rules the session loop needs. The toolchain scripts and
 the CI planner are adapted from scent, whose own came from aspen; each file
 says so in its first lines.
+
+## B4: den over burrow, GitHub, PAX
+
+GitHub's published host keys, fetched on 2026-11-06 with curl (WebFetch
+was not available), for the known_hosts line the GitHub and live rows hold
+the server to (`ci/github-known-hosts`) and the published fingerprint:
+
+| document | URL | sha256 as fetched | read |
+|---|---|---|---|
+| GitHub's meta API | `https://api.github.com/meta` | `b1a715e946da41b50439595a1a304dc1f8b2e553c3d9412290cacda4c93e3c4d` | `ssh_keys` (the `ssh-ed25519` line), `ssh_key_fingerprints.SHA256_ED25519`, the `git` address ranges (for PAX's `HostName`) |
+| GitHub's SSH key fingerprints page | `https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints` | `cde337758c6d9dcfa0985f47f28057ff8cda84edae40e201a9ec6e53705ec3b4` | the published fingerprints and the `github.com ssh-ed25519` line, agreeing with the API |
+
+The page and the API answer can change; the row holds the server to the
+line committed here, and a changed key would fail it by name.
+
+den, the consumer, at `ef0bb0c` (`burrow-den.toml`), read as the consumer's
+code for the argv, the environment and the fixture shape burrow must meet:
+`src/transport/ssh.lu`, `src/transport/channel.lu`,
+`src/wiregit/command.lu` and `src/wiregit/service.lu` (how `--upload-pack=`
+and `DEN_UPLOAD_PACK` select a service), `tools/ssh-test.py`,
+`tools/ssh-peer.py` and `tools/check-ssh` (its ssh rows and their
+wrappers), `den-oracle.toml`, README's "Wire protocols and transport
+bounds", MAP's "SSH protocol boundary" and `notes/vc16-the-wire-porcelain.md`.
+den's git is used only as its pinned binary, a black box (no git source or
+documentation was needed). The destination forms and first-value-wins are
+`ssh(1)` and `ssh_config(5)` as bw02 read them; nothing new was read there.
