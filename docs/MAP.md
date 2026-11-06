@@ -25,6 +25,7 @@ starts no interactive shell (`shell_unsupported`).
 |---|---|
 | `src/burrow.lu` | `ssh`: the command line, the identities, the login, the session, the refusal lines and exit status |
 | `src/keygen.lu` | `burrow-keygen`: `-t ed25519`, `-y`, `-l` |
+| `src/kexprobe.lu` | a row program, never installed or built `--static`: the first exchange with strict kex waived through the transport's library option, for `downgrade-caught`; burrow's command line has no waiver on any tier |
 | `src/config` | the command line and `~/.ssh/config` (`Host`, `Match host`), first value wins, refusals by name |
 | `src/wire` | RFC 4251 §5's data types, read and written; `ct_eq`, the constant-time comparison |
 | `src/refuse` | every refusal by name (one error row), message numbers, disconnect reason codes |
@@ -72,7 +73,7 @@ the reason code below when the connection can still carry one, and exits 255.
 | `mac_mismatch` | a sealed packet whose Poly1305 tag does not verify | 5 |
 | `malformed`, `message_unexpected` | a message that does not parse, or arrives where it may not | 2 |
 | `no_common_kex`, `no_common_hostkey`, `no_common_cipher`, `no_common_compression` | negotiation finds no common algorithm; RSA, ECDSA, the finite-field and post-quantum hybrid methods, AES and every other name are refused this way | 3 |
-| `strict_kex_missing` | the server does not offer `kex-strict-s-v00@openssh.com` (waived by `--no-strict-kex`) | 3 |
+| `strict_kex_missing` | the server does not offer `kex-strict-s-v00@openssh.com` (never waived by burrow; `--no-strict-kex` is `option_unknown`) | 3 |
 | `strict_kex_violation` | under strict kex, any message the first exchange does not need, including one before the server's KEXINIT | 2 |
 | `kex_failed` | an all-zero X25519 output, a Q_S that is not 32 bytes, or a re-exchange the server answers with UNIMPLEMENTED | 3 |
 | `host_key_unsupported` | a host key or signature that is not `ssh-ed25519` | 3 |
