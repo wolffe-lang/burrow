@@ -189,3 +189,11 @@ pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal 
     }
     host_key_unknown
 }
+
+/// The line to append for `name` and the blob `k_s` (a stub until B2's
+/// known_hosts lands).
+pub fn entry_line(name: str, k_s: List[byte], hashed: bool, salt: List[byte]) -> str {
+    let _ = hashed
+    let _ = salt.len
+    "{name} {k_s.len}\n"
+}

@@ -104,7 +104,7 @@ fn main() {
             name,
             k_s,
         ) ==
-            "host_key_changed",
+            "host_key_revoked",
     )
     assert(
         verdict(

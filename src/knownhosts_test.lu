@@ -1,0 +1,60 @@
+//! member: false
+
+// known_hosts beyond B1's plain lines: hashed names (|1|salt|hash, HMAC-SHA1
+// keyed by the salt over the name, the construction measured against the
+// pinned ssh-keygen -H), @revoked and @cert-authority by name, and the
+// lines appended under accept-new and no, plain and hashed, held to
+// tools/vectorgen.py's independent vectors.
+use hostkey
+use kexvec
+use std.base64
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn verdict(text: str, name: str, k_s: List[byte]) -> str {
+    hostkey.check_text(text, name, k_s) else |e| {
+        return "{e}"
+    }
+    "ok"
+}
+
+fn main() {
+    let k_s = x(kexvec.k_s())
+    let blob = base64.encode(k_s)
+    let other = base64.encode(
+        x("0000000b7373682d6564323535313900000020" + "11" + kexvec.host_pub()[2..64]),
+    )
+    let name = "[127.0.0.1]:2222"
+    let hashed = str_from_utf8(x(kexvec.kh_hashed_name())) else ""
+    assert(hashed.starts_with("|1|"))
+    // A hashed name matches its own name only.
+    assert(verdict("{hashed} ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(verdict("{hashed} ssh-ed25519 {blob}\n", "[127.0.0.1]:2223", k_s) == "host_key_unknown")
+    assert(verdict("{hashed} ssh-ed25519 {other}\n", name, k_s) == "host_key_changed")
+    assert(verdict("@revoked {hashed} ssh-ed25519 {blob}\n", name, k_s) == "host_key_revoked")
+    // A broken hashed field names nothing (and is no crash).
+    assert(verdict("|1|!!!|x ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    assert(verdict("|2|c2FsdA==|aGFzaA== ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    // Markers: @revoked names a key for every host it matches, by its own
+    // name; @cert-authority vouches for nothing (burrow takes no
+    // certificates), so a host known only through one is unknown.
+    assert(verdict("@revoked * ssh-ed25519 {blob}\n", name, k_s) == "host_key_revoked")
+    assert(verdict("@revoked * ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(verdict("@cert-authority * ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    // Several names, ports, wildcards and negation in one line.
+    assert(verdict("a.example,{name},b.example ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(verdict("[127.0.0.1]:* ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    assert(verdict("*,!{name} ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
+    // A changed key and a matching one: the match wins (sshd(8): any line).
+    assert(verdict("{name} ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    // Appended lines, as the pinned ssh appends them.
+    assert(hostkey.entry_line(name, k_s, false, List[byte]()) == "{name} ssh-ed25519 {blob}\n")
+    assert(hostkey.entry_line("alias.example", k_s, false, List[byte]()) == "alias.example ssh-ed25519 {blob}\n")
+    let line = hostkey.entry_line(name, k_s, true, x(kexvec.kh_salt()))
+    assert(line == "{hashed} ssh-ed25519 {blob}\n")
+    assert(verdict(line, name, k_s) == "ok")
+    print("knownhosts: hashed names, markers, several names, appended lines")
+}
