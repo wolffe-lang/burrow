@@ -1,0 +1,127 @@
+//! member: true
+//!
+//! burrow.config — the `ssh` command line burrow takes and the
+//! `~/.ssh/config` it reads (`ssh(1)`, `ssh_config(5)` of the pinned
+//! 10.0p2).
+//!
+//! **The command line:** `ssh [-Tv] [-F configfile] [-i identity_file]
+//! [-l login_name] [-o option] [-p port] [--] destination [command
+//! [argument ...]]`, destination `[user@]host` or
+//! `ssh://[user@]host[:port]`. The arguments after the destination are the
+//! remote command, joined with single spaces (`ssh(1)`). It is what den's
+//! ssh transport passes (its argv shapes are in `src/config_test.lu`).
+//!
+//! **Keywords**, from `-o` and the config file alike: `BatchMode`,
+//! `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster` (`no` only),
+//! `ControlPath` (`none` only), `HashKnownHosts`, `HostKeyAlias`,
+//! `Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
+//! `SendEnv`, `SetEnv`, `StrictHostKeyChecking`, `UpdateHostKeys` (`no`
+//! only), `User`, `UserKnownHostsFile`. burrow has no agent, never prompts
+//! and never forwards, so `BatchMode`, `IdentitiesOnly` and
+//! `ClearAllForwardings` change nothing whatever their value.
+//!
+//! **First value wins** (`ssh_config(5)`): the command line, then the file;
+//! `IdentityFile` and `SendEnv` accumulate, and a `SendEnv` pattern written
+//! `-pattern` drops the patterns before it that it names.
+//!
+//! **The file:** `Host` blocks (patterns with `*`, `?`, `!`) and `Match
+//! host` / `Match all`; `=` or whitespace between keyword and value; double
+//! quotes around a value with spaces; `~/` for the home directory.
+//!
+//! **Refused by name, never ignored:** `option_unknown` (a flag `ssh` does
+//! not have, or a keyword `ssh_config(5)` does not list: the pinned `ssh`
+//! says "Bad configuration option"), `option_unsupported` (a flag or
+//! keyword `ssh` has and burrow does not, or a value burrow does not take),
+//! `config_unsupported` (the same in a config block that applies, another
+//! `Match` criterion, `Include`, a `%` token or `${…}` variable), and
+//! `usage`. Each refusal carries, in `line`, the line the pinned `ssh`
+//! prints for it where it prints one.
+
+
+/// Everything a run is configured with.
+pub struct Settings {
+    host: str,
+    hostname: str,
+    user: str,
+    port: int,
+    identities: List[str],
+    no_identities: bool,
+    known_hosts: List[str],
+    strict: str,
+    hash_known: bool,
+    key_alias: str,
+    send_env: List[str],
+    set_env: List[str],
+    connect_timeout: int,
+    rekey_bytes: int,
+    rekey_seconds: int,
+    batch: bool,
+    verbose: int,
+    command: List[str],
+    config_file: str,
+    no_strict_kex: bool,
+    traffic: int,
+    set: List[str],
+    refusal: str,
+    line: str,
+    detail: str,
+}
+
+/// The usage line, as the pinned `ssh` begins its own.
+pub fn usage() -> str {
+    "usage: ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
+}
+
+/// A fresh run, nothing set.
+pub fn empty() -> Settings {
+    Settings {
+        host: "",
+        hostname: "",
+        user: "",
+        port: 0,
+        identities: List[str](),
+        no_identities: false,
+        known_hosts: List[str](),
+        strict: "",
+        hash_known: false,
+        key_alias: "",
+        send_env: List[str](),
+        set_env: List[str](),
+        connect_timeout: 0,
+        rekey_bytes: 0,
+        rekey_seconds: 0,
+        batch: false,
+        verbose: 0,
+        command: List[str](),
+        config_file: "",
+        no_strict_kex: false,
+        traffic: 0,
+        set: List[str](),
+        refusal: "",
+        line: "",
+        detail: "",
+    }
+}
+
+/// The command line (a stub until the CLI lands).
+pub fn parse_args(args: List[str]) -> Settings {
+    var s = empty()
+    s.refusal = "usage"
+    s.detail = "{args.len} arguments"
+    s
+}
+
+/// A config file's text (a stub).
+pub fn apply_config(mut s: Settings, text: str, file: str) {
+    s.detail = "{text.len} {file}"
+}
+
+/// The defaults (a stub).
+pub fn finish(mut s: Settings, home: str, user: str) {
+    s.detail = home + user
+}
+
+/// The remote command (a stub).
+pub fn remote_command(s: Settings) -> str {
+    s.host
+}
