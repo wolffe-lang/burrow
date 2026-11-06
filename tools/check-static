@@ -24,7 +24,7 @@ def main():
     for name in ("burrow", "burrow-keygen"):
         p = STATIC / name
         if not p.exists():
-            print(f"FAIL static-{name} no binary at target/static/{name}: run tools/build --static")
+            print(f"FAIL static-{name} no binary at target/static/{name}: run tools/build --static", flush=True)
             fails += 1
             continue
         head = subprocess.run(["readelf", "-h", str(p)], capture_output=True, text=True).stdout
@@ -39,11 +39,11 @@ def main():
             why.append("has a dynamic section")
         digest = hashlib.sha256(p.read_bytes()).hexdigest()
         if why:
-            print(f"FAIL static-{name} {'; '.join(why)}")
+            print(f"FAIL static-{name} {'; '.join(why)}", flush=True)
             fails += 1
         else:
             kind = "EXEC" if "EXEC" in head else "DYN (static-pie)"
-            print(f"PASS static-{name} (sha256 {digest}, {p.stat().st_size} bytes, ELF {kind}, no interpreter, no dynamic section)")
+            print(f"PASS static-{name} (sha256 {digest}, {p.stat().st_size} bytes, ELF {kind}, no interpreter, no dynamic section)", flush=True)
     if fails:
         sys.exit(fails)
     r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-den"), "--bin", str(STATIC / "burrow"),

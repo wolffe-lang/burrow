@@ -190,7 +190,7 @@ class Live:
             _, got = self.clone(client, dest)
             for c, ref in refs.items():
                 check(got.get(ref) == commit, f"through {client}, {ref[len(prefix):]} is {got.get(ref, 'absent')}")
-            objects = git(self.fx, "--git-dir", dest, "rev-list", "--objects", commit).decode().split()
+            objects = [x.split(" ", 1)[0] for x in git(self.fx, "--git-dir", dest, "rev-list", "--objects", commit).decode().splitlines()]
             back[client] = ({k: v for k, v in got.items() if k.startswith(prefix)}, sorted(objects))
         check(back["burrow"] == back["ssh"], "the two clones differ on the pushed refs or objects")
         # 4. both refs deleted through burrow, and gone
