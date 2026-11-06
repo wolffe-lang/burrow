@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""measure-session — burrow against the pinned ssh on the same host: login to
+first byte, and `cat` throughput, as ratios with stated margins.
+
+    tools/in-container python3 -I tools/measure-session --bin target/release/burrow [--runs N]
+
+One row-owned sshd authorizes a key made for this run. Each round runs
+burrow and the pinned ssh, interleaved: `echo x` (the wall time from start to
+the first byte of output), then `cat` of 4 MiB and of 16 MiB (the client's
+own CPU time, user + system, from wait4's rusage, and the wall time). Every
+figure is the minimum over the rounds. The margins, stated in the
+prediction (notes/bw02-auth-and-channels.md) and held here:
+
+    login to first byte, wall, burrow / ssh     at most 8x
+    cat 16 MiB, client CPU, burrow / ssh        at most 200x
+    burrow's CPU for 16 MiB / for 4 MiB         at most 6x (no quadratic)
+
+A perf job: run it with nothing beside it (a block's light lock held too).
+Prints `FAIL measure <what>` at column 0 for a margin missed; exit 1 then.
+"""
+import argparse
+import json
+import os
+import pathlib
+import select
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+
+def first_byte(argv, env):
+    t0 = time.monotonic()
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+    select.select([p.stdout], [], [], 60)
+    got = os.read(p.stdout.fileno(), 1)
+    t1 = time.monotonic()
+    p.stdout.read()
+    _, status, ru = os.wait4(p.pid, 0)
+    if os.waitstatus_to_exitcode(status) != 0 or got != b"x":
+        raise SystemExit(f"measure-session: {argv[0]} echo: exit {status}, first byte {got!r}")
+    return t1 - t0
+
+
+def cat(argv, src, env):
+    with open(src, "rb") as fi, open(os.devnull, "wb") as fo:
+        t0 = time.monotonic()
+        p = subprocess.Popen(argv, stdin=fi, stdout=fo, stderr=subprocess.DEVNULL, env=env)
+        _, status, ru = os.wait4(p.pid, 0)
+    if os.waitstatus_to_exitcode(status) != 0:
+        raise SystemExit(f"measure-session: {argv[0]} cat exit {status}")
+    return ru.ru_utime + ru.ru_stime, time.monotonic() - t0
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--runs", type=int, default=5)
+    a = ap.parse_args()
+    out = oraclelib.ROOT / "target" / "measure-session"
+    out.mkdir(parents=True, exist_ok=True)
+    os.chmod(out, 0o711)
+    key = out / "id_client"
+    for f in (key, out / "id_client.pub"):
+        if f.exists():
+            f.unlink()
+    oraclelib.keygen(key, "ed25519", comment="burrow-measure")
+    srcs = {}
+    for mib in (4, 16):
+        srcs[mib] = out / f"in-{mib}.bin"
+        srcs[mib].write_bytes(os.urandom(mib << 20))
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(out), "LC_ALL": "C"}
+    res = {"burrow": {"login": [], 4: [], 16: []}, "ssh": {"login": [], 4: [], 16: []}}
+    with oraclelib.Sshd(out / "sshd", log_level="INFO", authorized=[str(key) + ".pub"]) as s:
+        kh = out / "known_hosts"
+        kh.write_text(s.known_hosts_line())
+        common = ["-F", "none", "-p", str(s.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(key), "-l", "burrowtest"]
+        clients = {"burrow": [str(pathlib.Path(a.bin).resolve())] + common,
+                   "ssh": [str(oraclelib.SSH), "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"] + common}
+        for i in range(a.runs):
+            for name, argv in clients.items():
+                res[name]["login"].append(first_byte(argv + ["127.0.0.1", "echo x"], env))
+                for mib in (4, 16):
+                    res[name][mib].append(cat(argv + ["127.0.0.1", "cat"], srcs[mib], env))
+            print(f"measure-session: round {i + 1} of {a.runs} done", flush=True)
+    for f in srcs.values():
+        f.unlink()
+    m = {}
+    for name in ("burrow", "ssh"):
+        m[name] = {"login_wall_min": min(res[name]["login"]),
+                   "cat4_cpu_min": min(c for c, _ in res[name][4]), "cat16_cpu_min": min(c for c, _ in res[name][16]),
+                   "cat16_wall_min": min(w for _, w in res[name][16])}
+        print(f"measure-session: {name:6} login to first byte {m[name]['login_wall_min'] * 1000:8.2f} ms; "
+              f"cat 4 MiB cpu {m[name]['cat4_cpu_min']:.3f} s; cat 16 MiB cpu {m[name]['cat16_cpu_min']:.3f} s "
+              f"wall {m[name]['cat16_wall_min']:.3f} s ({16 / m[name]['cat16_wall_min']:.1f} MiB/s)")
+    floor = 0.005
+    login = m["burrow"]["login_wall_min"] / m["ssh"]["login_wall_min"]
+    thru = m["burrow"]["cat16_cpu_min"] / max(m["ssh"]["cat16_cpu_min"], floor)
+    lin = m["burrow"]["cat16_cpu_min"] / max(m["burrow"]["cat4_cpu_min"], floor)
+    m.update(ratio_login_wall=login, ratio_cat16_cpu=thru, burrow_linearity=lin, runs=a.runs)
+    print(f"measure-session: burrow / ssh: login wall {login:.2f}x (margin 8x); cat 16 MiB cpu {thru:.2f}x (margin 200x); "
+          f"burrow 16 MiB / 4 MiB cpu {lin:.2f}x (margin 6x)")
+    (oraclelib.ROOT / "target" / "measure-session.json").write_text(json.dumps(m, indent=2) + "\n")
+    bad = 0
+    for what, value, limit in (("login-ratio", login, 8), ("throughput-ratio", thru, 200), ("linearity", lin, 6)):
+        if value > limit:
+            print(f"FAIL measure {what} {value:.2f} over {limit}", flush=True)
+            bad += 1
+    sys.exit(1 if bad else 0)
+
+
+if __name__ == "__main__":
+    main()

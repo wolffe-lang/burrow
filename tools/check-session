@@ -1,0 +1,873 @@
+#!/usr/bin/env python3
+"""check-session — B2 and B3's rows: burrow and burrow-keygen against the
+pinned sshd, ssh and ssh-keygen, on loopback.
+
+    tools/in-container python3 -I tools/check-session --bin target/native/burrow [--only ROW...]
+
+Every row makes its own run directory, its own keys (by the pinned
+ssh-keygen or by burrow-keygen, for that run only), its own sshd
+(oraclelib.Sshd), and runs burrow and, where the row compares, the pinned
+ssh with the same arguments. A row prints `PASS <row>` or `FAIL <row> <why>`
+at column 0; the exit status is the number of failures (capped at 100).
+
+Private keys stay in the run directories (0711, the files 0600); rows print
+fingerprints and public lines only. After the rows, each row's sshd.log and
+its compare.txt are copied to target/evidence/session-<tier>/<row>/,
+readable, and that copy is checked to hold no key file and no private key
+text (`evidence`).
+"""
+import argparse
+import base64
+import hashlib
+import hmac
+import os
+import pathlib
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "session"
+SSH, KEYGEN = str(oraclelib.SSH), str(oraclelib.KEYGEN)
+ROWS = []
+USER = "burrowtest"
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def tail(b, n=500):
+    s = b.decode("utf-8", "replace") if isinstance(b, bytes) else b
+    return s.strip()[-n:].replace("\n", " | ")
+
+
+def lines(b):
+    return [x.rstrip("\r") for x in b.decode("utf-8", "replace").splitlines()]
+
+
+def run_dir(name):
+    d = WORK / name
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    os.chmod(d, 0o711)
+    (d / "home").mkdir()
+    return d
+
+
+def keypair(path, tool="ssh-keygen", kind="ed25519", passphrase=""):
+    """A key pair at `path`, made for this run by the named tool."""
+    if tool == "ssh-keygen":
+        args = [KEYGEN, "-q", "-t", kind, "-N", passphrase, "-C", "row", "-f", str(path)]
+        if kind == "rsa":
+            args[4:4] = ["-b", "3072"]
+    else:
+        args = [str(KEYGEN_BIN), "-q", "-t", kind, "-N", passphrase, "-C", "row", "-f", str(path)]
+    r = subprocess.run(args, capture_output=True, timeout=60)
+    check(r.returncode == 0, f"{tool} failed: {tail(r.stderr)}")
+    return pathlib.Path(str(path) + ".pub")
+
+
+def proc(argv, stdin=None, inp=None, env=None, timeout=120):
+    """Runs argv; returns (returncode, stdout, stderr, max RSS KiB, wall s)."""
+    t0 = time.monotonic()
+    p = subprocess.Popen(argv, stdin=stdin if stdin is not None else (subprocess.PIPE if inp is not None else subprocess.DEVNULL),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    try:
+        out, err = p.communicate(inp, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        p.kill()
+        out, err = p.communicate()
+        raise Fail(f"{argv[0]} did not finish within {timeout}s; stderr {tail(err)}")
+    return p.returncode, out, err, None, time.monotonic() - t0
+
+
+def envfor(d, extra=None):
+    e = {"PATH": "/usr/bin:/bin", "HOME": str(d / "home"), "USER": "root", "LC_ALL": "C"}
+    e.update(extra or {})
+    return e
+
+
+def common(s, kh, key, user=USER):
+    return ["-p", str(s.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(key), "-l", user]
+
+
+def burrow(d, args, **kw):
+    env = envfor(d, kw.pop("env", None))
+    return proc([str(BIN), "-F", "none"] + args, env=env, **kw)
+
+
+def ssh(d, args, config="none", **kw):
+    env = envfor(d, kw.pop("env", None))
+    return proc([SSH, "-F", config, "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"] + args, env=env, **kw)
+
+
+def known(d, s, text=None):
+    kh = d / "known_hosts"
+    kh.write_text(text if text is not None else s.known_hosts_line())
+    return kh
+
+
+def compare(d, text):
+    (d / "compare.txt").write_text(text)
+
+
+def refused(r, name):
+    check(r[0] == 255, f"exit {r[0]}, wanted 255; stderr {tail(r[2])}")
+    check(re.search(rb"^burrow: " + name.encode() + rb": ", r[2], re.M), f"no 'burrow: {name}:' line; stderr {tail(r[2])}")
+
+
+def same_verdict(rb, rs, d, what):
+    """burrow's exit code is ssh's, and ssh's last stderr line is among burrow's."""
+    last = [x for x in lines(rs[2]) if x.strip()][-1:] or [""]
+    compare(d, f"{what}\nssh exit {rs[0]}, last line {last[0]!r}\nburrow exit {rb[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}")
+    check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}")
+    check(last[0] in lines(rb[2]), f"ssh's line {last[0]!r} not in burrow's stderr {tail(rb[2])}")
+    return last[0]
+
+
+class Server:
+    """A row's sshd with one authorized user key."""
+
+    def __init__(self, d, extra=(), tool="ssh-keygen", **kw):
+        self.d = d
+        self.key = d / "id_user"
+        keypair(self.key, tool)
+        self.s = oraclelib.Sshd(d / "sshd", list(extra), authorized=[str(self.key) + ".pub"], **kw)
+
+    def __enter__(self):
+        self.s.__enter__()
+        return self.s
+
+    def __exit__(self, *e):
+        self.s.__exit__(*e)
+
+
+# ---- authentication -----------------------------------------------------------
+@row
+def auth_accepted():
+    d = run_dir("auth-accepted")
+    with Server(d) as s:
+        r = burrow(d, common(s, known(d, s), d / "id_user") + ["127.0.0.1", "true"])
+        check(r[0] == 0, f"exit {r[0]}; stderr {tail(r[2])}")
+        fp = oraclelib.fingerprint(d / "id_user.pub")
+        check(re.search(rf"Accepted publickey for {USER} from 127\.0\.0\.1 port \d+ ssh2: ED25519 {re.escape(fp)}", s.log_text()),
+              "sshd did not log the publickey login with the key's fingerprint")
+    return fp
+
+
+@row
+def auth_burrow_key():
+    """A key made by burrow-keygen logs in."""
+    d = run_dir("auth-burrow-key")
+    with Server(d, tool="burrow-keygen") as s:
+        r = burrow(d, common(s, known(d, s), d / "id_user") + ["127.0.0.1", "true"])
+        check(r[0] == 0, f"exit {r[0]}; stderr {tail(r[2])}")
+        check("Accepted publickey for " + USER in s.log_text(), "sshd did not log the login")
+
+
+@row
+def auth_order():
+    """RFC 4252 §7: the query, then the signed request; no none request."""
+    d = run_dir("auth-order")
+    with Server(d) as s:
+        r = burrow(d, common(s, known(d, s), d / "id_user") + ["127.0.0.1", "true"])
+        check(r[0] == 0, f"exit {r[0]}; stderr {tail(r[2])}")
+        log = s.log_text()
+        q = log.find("publickey test pkalg ssh-ed25519")
+        sig = log.find("have ssh-ed25519 signature")
+        check(q >= 0 and sig > q, f"sshd log: query at {q}, signature at {sig}")
+        check("method none" not in log, "burrow sent a none request")
+        check("method publickey-hostbound" not in log, "burrow used publickey-hostbound")
+
+
+@row
+def auth_refused_key():
+    d = run_dir("auth-refused-key")
+    other = d / "id_other"
+    keypair(other)
+    with Server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, other) + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, other) + ["127.0.0.1", "true"])
+    refused(rb, "auth_refused")
+    return same_verdict(rb, rs, d, "a key the server does not accept")
+
+
+@row
+def auth_no_publickey():
+    d = run_dir("auth-no-publickey")
+    with Server(d, ["PubkeyAuthentication no", "KbdInteractiveAuthentication yes"]) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "auth_no_publickey")
+    return same_verdict(rb, rs, d, "a server that offers no publickey")
+
+
+@row
+def auth_sig_algs():
+    """server-sig-algs without ssh-ed25519: refused, no publickey request sent."""
+    d = run_dir("auth-sig-algs")
+    with Server(d, ["PubkeyAcceptedAlgorithms rsa-sha2-256"]) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        time.sleep(0.2)
+        log = s.log_text()
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "auth_sig_alg_unsupported")
+    check("userauth_pubkey" not in log, "burrow sent a publickey request anyway")
+    check(rs[0] == 255, f"ssh exit {rs[0]}")
+    compare(d, f"burrow refused before any request; ssh tried and exited {rs[0]}: {tail(rs[2])}\n")
+
+
+@row
+def auth_partial():
+    d = run_dir("auth-partial")
+    with Server(d, ["AuthenticationMethods publickey,password", "PasswordAuthentication yes"]) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "auth_partial")
+    return same_verdict(rb, rs, d, "partial success")
+
+
+@row
+def auth_banner():
+    """The banner as the pinned ssh writes it, byte for byte."""
+    d = run_dir("auth-banner")
+    banner = d / "banner.txt"
+    banner.write_bytes(b"line one\r\nctl \x01 esc \x1b[31m tab\t del \x7f utf8 \xc3\xa9 high \xff back \\ end")
+    os.chmod(banner, 0o644)
+    with Server(d, [f"Banner {banner}"]) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    compare(d, f"ssh stderr {rs[2]!r}\nburrow stderr {rb[2]!r}\n")
+    check(rb[0] == rs[0] == 0, f"exits burrow {rb[0]} ssh {rs[0]}")
+    check(rb[2] == rs[2], f"stderr differs: burrow {rb[2]!r} ssh {rs[2]!r}")
+
+
+# ---- keys ---------------------------------------------------------------------------
+PUB_RE = re.compile(rb"^ssh-ed25519 [A-Za-z0-9+/]{68} row\n$")
+
+
+@row
+def keygen_public_line():
+    d = run_dir("keygen-public-line")
+    b = keypair(d / "b", "burrow-keygen")
+    o = keypair(d / "o", "ssh-keygen")
+    check(PUB_RE.match(b.read_bytes()), f"burrow-keygen's line {b.read_bytes()!r}")
+    check(PUB_RE.match(o.read_bytes()), f"ssh-keygen's line {o.read_bytes()!r}")
+
+
+@row
+def keygen_read_by_ssh_keygen():
+    """The pinned ssh-keygen -y reads burrow's private file: the same public line."""
+    d = run_dir("keygen-read-by-ssh-keygen")
+    pub = keypair(d / "b", "burrow-keygen")
+    r = subprocess.run([KEYGEN, "-y", "-f", str(d / "b")], capture_output=True, timeout=60)
+    check(r.returncode == 0, f"ssh-keygen -y exit {r.returncode}: {tail(r.stderr)}")
+    check(r.stdout == pub.read_bytes(), f"ssh-keygen -y {r.stdout!r}, burrow's .pub {pub.read_bytes()!r}")
+    r = subprocess.run([KEYGEN, "-l", "-f", str(d / "b")], capture_output=True, timeout=60)
+    want = subprocess.run([str(KEYGEN_BIN), "-l", "-f", str(d / "b")], capture_output=True, timeout=60)
+    check(r.stdout == want.stdout, f"ssh-keygen -l {r.stdout!r}, burrow-keygen -l {want.stdout!r}")
+
+
+@row
+def keygen_modes():
+    d = run_dir("keygen-modes")
+    keypair(d / "b", "burrow-keygen")
+    keypair(d / "o", "ssh-keygen")
+    modes = [oct(stat.S_IMODE((d / n).stat().st_mode)) for n in ("b", "b.pub", "o", "o.pub")]
+    compare(d, f"burrow-keygen {modes[0]} {modes[1]}; ssh-keygen {modes[2]} {modes[3]}\n")
+    check(modes[0] == modes[2] == "0o600" and modes[1] == modes[3] == "0o644", f"modes {modes}")
+
+
+@row
+def keygen_no_overwrite():
+    d = run_dir("keygen-no-overwrite")
+    keypair(d / "b", "burrow-keygen")
+    before = ((d / "b").read_bytes(), (d / "b.pub").read_bytes())
+    r = subprocess.run([str(KEYGEN_BIN), "-q", "-t", "ed25519", "-N", "", "-f", str(d / "b")],
+                       capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+    keypair(d / "o", "ssh-keygen")
+    rs = subprocess.run([KEYGEN, "-q", "-t", "ed25519", "-N", "", "-f", str(d / "o")],
+                        capture_output=True, stdin=subprocess.DEVNULL, timeout=60)
+    check(r.returncode == rs.returncode == 1, f"exits burrow-keygen {r.returncode} ssh-keygen {rs.returncode}")
+    check(((d / "b").read_bytes(), (d / "b.pub").read_bytes()) == before, "burrow-keygen changed a file")
+    check(re.search(rb"^burrow-keygen: exists: ", r.stderr, re.M), f"stderr {tail(r.stderr)}")
+    check(r.stdout.startswith(str(d / "b").encode() + b" already exists."), f"stdout {r.stdout!r}")
+
+
+@row
+def keygen_y_l_on_ssh_keygen_file():
+    """burrow-keygen -y and -l print what ssh-keygen prints for ssh-keygen's file."""
+    d = run_dir("keygen-y-l")
+    keypair(d / "o", "ssh-keygen")
+    for flag, f in (("-y", "o"), ("-l", "o"), ("-l", "o.pub")):
+        a = subprocess.run([str(KEYGEN_BIN), flag, "-f", str(d / f)], capture_output=True, timeout=60)
+        b = subprocess.run([KEYGEN, flag, "-f", str(d / f)], capture_output=True, timeout=60)
+        check(a.returncode == b.returncode == 0 and a.stdout == b.stdout,
+              f"{flag} {f}: burrow-keygen {a.returncode} {a.stdout!r} {tail(a.stderr)}; ssh-keygen {b.returncode} {b.stdout!r}")
+
+
+@row
+def key_encrypted():
+    d = run_dir("key-encrypted")
+    with Server(d) as s:
+        keypair(d / "enc", passphrase="row passphrase")
+        before = s.log_text().count("Connection from")
+        r = burrow(d, common(s, known(d, s), d / "enc") + ["127.0.0.1", "true"])
+        time.sleep(0.2)
+        conns = s.log_text().count("Connection from") - before
+    refused(r, "key_encrypted")
+    check(conns == 0, f"burrow connected ({conns}) before refusing the key")
+
+
+@row
+def key_rsa():
+    d = run_dir("key-rsa")
+    with Server(d) as s:
+        keypair(d / "rsa", kind="rsa")
+        r = burrow(d, common(s, known(d, s), d / "rsa") + ["127.0.0.1", "true"])
+    refused(r, "key_unsupported")
+
+
+@row
+def key_permissions():
+    d = run_dir("key-permissions")
+    with Server(d) as s:
+        kh = known(d, s)
+        os.chmod(d / "id_user", 0o644)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "key_permissions")
+    check(rs[0] == 255 and b"bad permissions" in rs[2], f"ssh exit {rs[0]}: {tail(rs[2])}")
+
+
+# ---- known_hosts -------------------------------------------------------------------
+def host_line(s, names):
+    algo, blob = s.host_pub().read_text().split()[:2]
+    return f"{names} {algo} {blob}\n"
+
+
+@row
+def kh_hashed():
+    """A known_hosts file hashed by the pinned ssh-keygen -H."""
+    d = run_dir("kh-hashed")
+    with Server(d) as s:
+        kh = known(d, s)
+        r = subprocess.run([KEYGEN, "-H", "-f", str(kh)], capture_output=True, timeout=60)
+        check(r.returncode == 0 and kh.read_text().startswith("|1|"), f"ssh-keygen -H: {tail(r.stderr)}")
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    check(rb[0] == 0, f"exit {rb[0]}; stderr {tail(rb[2])}")
+
+
+@row
+def kh_several_names():
+    d = run_dir("kh-several-names")
+    with Server(d) as s:
+        kh = known(d, s, host_line(s, f"one.example,[127.0.0.1]:{s.port},two.example"))
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    check(rb[0] == 0, f"exit {rb[0]}; stderr {tail(rb[2])}")
+
+
+@row
+def kh_revoked():
+    d = run_dir("kh-revoked")
+    with Server(d) as s:
+        kh = known(d, s, "@revoked * " + host_line(s, "")[1:] + s.known_hosts_line())
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "host_key_revoked")
+    return same_verdict(rb, rs, d, "a @revoked line naming the host key")
+
+
+@row
+def kh_cert_authority():
+    d = run_dir("kh-cert-authority")
+    with Server(d) as s:
+        kh = known(d, s, "@cert-authority * " + host_line(s, "")[1:])
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+    refused(rb, "host_key_unknown")
+    return same_verdict(rb, rs, d, "a host known only through @cert-authority")
+
+
+def accept_new(d, s, extra, who):
+    kh = d / f"known_hosts_{who}"
+    kh.write_text("")
+    args = common(s, kh, d / "id_user") + extra + ["127.0.0.1", "true"]
+    r = burrow(d, args) if who == "burrow" else ssh(d, args)
+    return r, kh.read_text()
+
+
+@row
+def kh_accept_new():
+    """The line appended under accept-new is the line the pinned ssh appends."""
+    d = run_dir("kh-accept-new")
+    with Server(d) as s:
+        rb, lb = accept_new(d, s, ["-o", "StrictHostKeyChecking=accept-new"], "burrow")
+        rs, ls = accept_new(d, s, ["-o", "StrictHostKeyChecking=accept-new"], "ssh")
+        again = burrow(d, common(s, d / "known_hosts_burrow", d / "id_user") + ["127.0.0.1", "true"])
+    compare(d, f"burrow appended {lb!r}\nssh appended {ls!r}\n")
+    check(rb[0] == rs[0] == 0, f"exits burrow {rb[0]} ssh {rs[0]}: {tail(rb[2])}")
+    check(lb == ls == s.known_hosts_line(), f"burrow {lb!r} ssh {ls!r}")
+    warn = [x for x in lines(rs[2]) if x.startswith("Warning: Permanently added")]
+    check(warn and warn[0] in lines(rb[2]), f"ssh's warning {warn} not in burrow's stderr")
+    check(again[0] == 0, f"the second, strict login exit {again[0]}")
+
+
+@row
+def kh_accept_new_hashed():
+    """HashKnownHosts: burrow's |1| line is HMAC-SHA1 of the name, and the
+    pinned ssh reads burrow's file strictly."""
+    d = run_dir("kh-accept-new-hashed")
+    with Server(d) as s:
+        rb, lb = accept_new(d, s, ["-o", "StrictHostKeyChecking=accept-new", "-o", "HashKnownHosts=yes"], "burrow")
+        rs = ssh(d, common(s, d / "known_hosts_burrow", d / "id_user") + ["-o", "StrictHostKeyChecking=yes", "127.0.0.1", "true"])
+    compare(d, f"burrow appended {re.sub(r'AAAA[^ ]+', '<key>', lb)!r}\n")
+    check(rb[0] == 0, f"exit {rb[0]}: {tail(rb[2])}")
+    m = re.fullmatch(r"\|1\|([A-Za-z0-9+/=]{28})\|([A-Za-z0-9+/=]{28}) (ssh-ed25519 \S+)\n", lb)
+    check(m, f"burrow's line {lb!r}")
+    name = f"[127.0.0.1]:{s.port}".encode()
+    check(hmac.new(base64.b64decode(m[1]), name, hashlib.sha1).digest() == base64.b64decode(m[2]), "the hash is not HMAC-SHA1(salt, name)")
+    check(m[3] + "\n" == " ".join(s.known_hosts_line().split()[1:]) + "\n", "the key differs")
+    check(rs[0] == 0, f"the pinned ssh rejected burrow's hashed line: exit {rs[0]} {tail(rs[2])}")
+
+
+@row
+def kh_accept_new_changed():
+    d = run_dir("kh-accept-new-changed")
+    other = d / "other"
+    keypair(other)
+    with Server(d) as s:
+        algo, blob = other.with_suffix(".pub").read_text().split()[:2]
+        kh = known(d, s, f"[127.0.0.1]:{s.port} {algo} {blob}\n")
+        args = common(s, kh, d / "id_user") + ["-o", "StrictHostKeyChecking=accept-new", "127.0.0.1", "true"]
+        rb = burrow(d, args)
+        rs = ssh(d, args)
+    refused(rb, "host_key_changed")
+    return same_verdict(rb, rs, d, "a changed key under accept-new")
+
+
+@row
+def kh_no_changed():
+    """StrictHostKeyChecking=no with a changed key: both run, neither writes."""
+    d = run_dir("kh-no-changed")
+    other = d / "other"
+    keypair(other)
+    with Server(d) as s:
+        algo, blob = other.with_suffix(".pub").read_text().split()[:2]
+        text = f"[127.0.0.1]:{s.port} {algo} {blob}\n"
+        kh = known(d, s, text)
+        args = common(s, kh, d / "id_user") + ["-o", "StrictHostKeyChecking=no", "127.0.0.1", "printf ran"]
+        rb = burrow(d, args)
+        after_b = kh.read_text()
+        rs = ssh(d, args)
+        after_s = kh.read_text()
+    compare(d, f"burrow exit {rb[0]} {rb[1]!r}; ssh exit {rs[0]} {rs[1]!r}\n")
+    check(rb[0] == rs[0] == 0 and rb[1] == rs[1] == b"ran", f"burrow {rb[0]} {rb[1]!r}; ssh {rs[0]} {rs[1]!r}")
+    check(after_b == after_s == text, "a known_hosts file changed")
+    for ln in ("Password authentication is disabled to avoid man-in-the-middle attacks.",):
+        check(ln in lines(rb[2]) and ln in lines(rs[2]), f"{ln!r} not in both stderrs")
+
+
+@row
+def kh_alias():
+    d = run_dir("kh-alias")
+    with Server(d) as s:
+        extra = ["-o", "StrictHostKeyChecking=accept-new", "-o", "HostKeyAlias=alias.example"]
+        rb, lb = accept_new(d, s, extra, "burrow")
+        rs, ls = accept_new(d, s, extra, "ssh")
+    compare(d, f"burrow {lb!r}\nssh {ls!r}\n")
+    check(rb[0] == rs[0] == 0 and lb == ls and lb.startswith("alias.example ssh-ed25519 "), f"burrow {lb!r} ssh {ls!r}")
+
+
+# ---- the session ------------------------------------------------------------------
+def session_server(d, extra=()):
+    return Server(d, ["AcceptEnv GIT_PROTOCOL FOO"] + list(extra))
+
+
+@row
+def session_cat_64m():
+    """64 MiB of random bytes through `cat`, against the input and ssh's output;
+    burrow's memory stays flat (at most 128 MiB of RSS)."""
+    d = run_dir("session-cat-64m")
+    data = os.urandom(64 << 20)
+    src = d / "in.bin"
+    src.write_bytes(data)
+    want = hashlib.sha256(data).hexdigest()
+    del data
+    with session_server(d) as s:
+        kh = known(d, s)
+        out = {}
+        for who, argv in (("burrow", [str(BIN), "-F", "none"]), ("ssh", [SSH, "-F", "none", "-o", "BatchMode=yes"])):
+            with open(src, "rb") as fi, open(d / f"out-{who}.bin", "wb") as fo:
+                t0 = time.monotonic()
+                p = subprocess.Popen(argv + common(s, kh, d / "id_user") + ["127.0.0.1", "cat"], stdin=fi, stdout=fo,
+                                     stderr=subprocess.DEVNULL, env=envfor(d))
+                # The process's own high-water mark, sampled: wait4's
+                # ru_maxrss carries the forking parent's.
+                hwm = 0
+                while p.poll() is None:
+                    try:
+                        st = pathlib.Path(f"/proc/{p.pid}/status").read_text()
+                        hwm = max(hwm, int(re.search(r"VmHWM:\s+(\d+)", st)[1]))
+                    except (OSError, TypeError):
+                        pass
+                    time.sleep(0.02)
+                out[who] = (p.returncode, time.monotonic() - t0, hwm, 0.0, b"")
+    hb = hashlib.sha256((d / "out-burrow.bin").read_bytes()).hexdigest()
+    hs = hashlib.sha256((d / "out-ssh.bin").read_bytes()).hexdigest()
+    for f in ("in.bin", "out-burrow.bin", "out-ssh.bin"):
+        (d / f).unlink()
+    b, o = out["burrow"], out["ssh"]
+    note = (f"burrow exit {b[0]} {b[1]:.2f}s peak RSS {b[2]} KiB; "
+            f"ssh exit {o[0]} {o[1]:.2f}s peak RSS {o[2]} KiB")
+    compare(d, note + f"\ninput sha256 {want}\nburrow {hb}\nssh {hs}\n")
+    check(b[0] == 0, f"burrow exit {b[0]}: {tail(b[4])}")
+    check(hb == want, f"burrow's output sha256 {hb}, the input's {want}")
+    check(hs == want, f"ssh's output sha256 {hs}")
+    check(b[2] <= 131072, f"burrow's max RSS {b[2]} KiB, over 128 MiB")
+    return note
+
+
+@row
+def session_interleaved():
+    d = run_dir("session-interleaved")
+    cmd = "for i in 1 2 3 4 5; do printf o$i; printf e$i >&2; done; printf '\\000\\377\\n'; printf '\\303(' >&2"
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", cmd])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", cmd])
+    compare(d, f"burrow {rb[1]!r} {rb[2]!r}\nssh {rs[1]!r} {rs[2]!r}\n")
+    check(rb[0] == rs[0] == 0, f"exits {rb[0]} {rs[0]}")
+    check(rb[1] == rs[1] == b"o1o2o3o4o5\x00\xff\n", f"stdout burrow {rb[1]!r} ssh {rs[1]!r}")
+    check(rb[2] == rs[2] == b"e1e2e3e4e5\xc3(", f"stderr burrow {rb[2]!r} ssh {rs[2]!r}")
+
+
+@row
+def session_exit_codes():
+    d = run_dir("session-exit-codes")
+    got = []
+    with session_server(d) as s:
+        kh = known(d, s)
+        for code in (0, 1, 42, 255):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", f"exit {code}"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", f"exit {code}"])
+            got.append((code, rb[0], rs[0]))
+    compare(d, f"(remote, burrow, ssh): {got}\n")
+    check(all(c == b == o for c, b, o in got), f"(remote, burrow, ssh): {got}")
+
+
+@row
+def session_signal():
+    d = run_dir("session-signal")
+    got = []
+    with session_server(d) as s:
+        kh = known(d, s)
+        for sig in ("KILL", "TERM"):
+            rb = burrow(d, ["-v"] + common(s, kh, d / "id_user") + ["127.0.0.1", f"kill -{sig} $$"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1", f"kill -{sig} $$"])
+            got.append((sig, rb[0], rs[0], f"exit-signal reply 0: {sig}" in rb[2].decode("utf-8", "replace")))
+    compare(d, f"(signal, burrow, ssh, burrow saw it): {got}\n")
+    check(all(b == o == 255 and seen for _, b, o, seen in got), f"(signal, burrow, ssh, seen): {got}")
+
+
+@row
+def session_env():
+    d = run_dir("session-env")
+    cmd = 'printf "[%s][%s]" "$GIT_PROTOCOL" "$FOO"'
+    with session_server(d) as s:
+        kh = known(d, s)
+        args = common(s, kh, d / "id_user") + ["-o", "SendEnv=GIT_PROTOCOL", "-o", "SetEnv=FOO=bar", "127.0.0.1", cmd]
+        rb = burrow(d, args, env={"GIT_PROTOCOL": "version=2"})
+        rs = ssh(d, args, env={"GIT_PROTOCOL": "version=2"})
+    compare(d, f"burrow {rb[1]!r} ssh {rs[1]!r}\n")
+    check(rb[0] == rs[0] == 0 and rb[1] == rs[1] == b"[version=2][bar]", f"burrow {rb[1]!r} ssh {rs[1]!r} {tail(rb[2])}")
+
+
+@row
+def session_eof_first():
+    """Input ends before the command does: EOF, then the command's output."""
+    d = run_dir("session-eof-first")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "cat; sleep 0.2; echo done"], inp=b"abc\x00")
+    check(rb[0] == 0 and rb[1] == b"abc\x00done\n", f"exit {rb[0]} stdout {rb[1]!r} {tail(rb[2])}")
+
+
+@row
+def session_close_first():
+    """The command ends while input is still open: burrow exits, not hangs."""
+    d = run_dir("session-close-first")
+    with session_server(d) as s:
+        kh = known(d, s)
+        p = subprocess.Popen([str(BIN), "-F", "none"] + common(s, kh, d / "id_user") + ["127.0.0.1", "head -c 5"],
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envfor(d))
+        p.stdin.write(b"0123456789")
+        p.stdin.flush()
+        try:
+            p.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            p.wait()
+            raise Fail("burrow did not exit after the command ended with its stdin still open")
+        out, err = p.stdout.read(), p.stderr.read()
+        p.stdin.close()
+    check(p.returncode == 0 and out == b"01234", f"exit {p.returncode} stdout {out!r} {tail(err)}")
+
+
+@row
+def session_stderr_1m():
+    d = run_dir("session-stderr-1m")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "head -c 1048576 /dev/zero | tr '\\000' e >&2; printf ok"])
+    check(rb[0] == 0 and rb[1] == b"ok" and rb[2] == b"e" * 1048576, f"exit {rb[0]} stdout {rb[1]!r} stderr {len(rb[2])} bytes")
+
+
+@row
+def session_rekey():
+    """4 MiB through cat at RekeyLimit=256K: re-exchanges under channel traffic."""
+    d = run_dir("session-rekey")
+    data = os.urandom(4 << 20)
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, ["-v", "-o", "RekeyLimit=256K"] + common(s, kh, d / "id_user") + ["127.0.0.1", "cat"], inp=data, timeout=300)
+        n = len(re.findall(r"SSH2_MSG_NEWKEYS received", s.log_text()))
+    k = rb[2].count(b"rekeying:")
+    check(rb[0] == 0 and rb[1] == data, f"exit {rb[0]}, {len(rb[1])} of {len(data)} bytes back; {tail(rb[2])}")
+    check(k >= 8 and n >= 1 + k, f"{k} rekeys by burrow, sshd logged {n} NEWKEYS received")
+    return f"{k} rekeys by burrow, sshd logged {n} NEWKEYS received"
+
+
+# ---- the command line ----------------------------------------------------------------
+def as_ssh(d):
+    """burrow under the name `ssh`, as den finds it on PATH."""
+    b = d / "bin"
+    b.mkdir(exist_ok=True)
+    link = b / "ssh"
+    if not link.exists():
+        link.symlink_to(BIN)
+    return link
+
+
+def den_argv(s, dest, cmd):
+    a = []
+    for o in ("BatchMode=yes", "StrictHostKeyChecking=yes", "UpdateHostKeys=no", "ControlMaster=no",
+              "ControlPath=none", "ClearAllForwardings=yes", "ConnectTimeout=30", "SendEnv=GIT_PROTOCOL"):
+        a += ["-o", o]
+    return a + ["-p", str(s.port), "--", dest] + cmd
+
+
+@row
+def cli_den_argv():
+    """den's argv, its quoting and its environment; identity and known_hosts
+    from ~/.ssh/config, as den passes neither."""
+    d = run_dir("cli-den-argv")
+    with session_server(d) as s:
+        kh = known(d, s)
+        cfg = d / "home" / ".ssh" / "config"
+        cfg.parent.mkdir(mode=0o700)
+        cfg.write_text(f"Host 127.0.0.1\n    IdentityFile {d / 'id_user'}\n    UserKnownHostsFile {kh}\n")
+        cmd = ["'printf'", "'%s:%s'", "'a b'\\''c'", '"$GIT_PROTOCOL"']
+        env = envfor(d, {"GIT_PROTOCOL": "version=2"})
+        rb = proc([str(as_ssh(d))] + den_argv(s, f"{USER}@127.0.0.1", cmd), env=env)
+        rs = proc([SSH, "-F", str(cfg)] + den_argv(s, f"{USER}@127.0.0.1", cmd), env=env)
+    compare(d, f"burrow {rb[0]} {rb[1]!r}\nssh {rs[0]} {rs[1]!r}\n")
+    check(rb[0] == rs[0] == 0 and rb[1] == rs[1] == b"a b'c:version=2", f"burrow {rb[0]} {rb[1]!r} {tail(rb[2])}; ssh {rs[0]} {rs[1]!r}")
+
+
+@row
+def cli_ssh_uri():
+    d = run_dir("cli-ssh-uri")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, ["-o", f"UserKnownHostsFile={kh}", "-i", str(d / "id_user"), f"ssh://{USER}@127.0.0.1:{s.port}", "printf uri"])
+    check(rb[0] == 0 and rb[1] == b"uri", f"exit {rb[0]} {rb[1]!r} {tail(rb[2])}")
+
+
+@row
+def cli_config():
+    """~/.ssh/config: Host and Match host blocks; first value wins."""
+    d = run_dir("cli-config")
+    with session_server(d) as s:
+        kh = known(d, s)
+        cfg = d / "home" / ".ssh" / "config"
+        cfg.parent.mkdir(mode=0o700)
+        cfg.write_text(f"Host nothere\n    ForwardAgent yes\nHost row-alias\n    Hostname 127.0.0.1\n    Port {s.port}\n"
+                       f"    User {USER}\nMatch host 127.0.0.1\n    IdentityFile {d / 'id_user'}\n    UserKnownHostsFile {kh}\n"
+                       f"Host *\n    Port 1\n")
+        env = envfor(d)
+        rb = proc([str(BIN), "row-alias", "printf cfg"], env=env)
+        bad = cfg.read_text() + "Host *\n    ForwardAgent yes\n"
+        cfg.write_text(bad)
+        rbad = proc([str(BIN), "row-alias", "true"], env=env)
+    check(rb[0] == 0 and rb[1] == b"cfg", f"exit {rb[0]} {rb[1]!r} {tail(rb[2])}")
+    refused(rbad, "config_unsupported")
+
+
+@row
+def cli_unknown_flag():
+    d = run_dir("cli-unknown-flag")
+    rb = proc([str(as_ssh(d)), "-Z", "127.0.0.1", "true"], env=envfor(d))
+    rs = ssh(d, ["-Z", "127.0.0.1", "true"])
+    check(rb[0] == rs[0] == 255, f"exits {rb[0]} {rs[0]}")
+    check("unknown option -- Z" in lines(rb[2]) and "unknown option -- Z" in lines(rs[2]), f"burrow {tail(rb[2])}")
+    refused(rb, "option_unknown")
+
+
+@row
+def cli_unknown_keyword():
+    d = run_dir("cli-unknown-keyword")
+    rb = burrow(d, ["-o", "Foo=bar", "127.0.0.1", "true"])
+    rs = ssh(d, ["-o", "Foo=bar", "127.0.0.1", "true"])
+    refused(rb, "option_unknown")
+    return same_verdict(rb, rs, d, "a keyword ssh_config(5) does not list")
+
+
+@row
+def cli_bad_value():
+    d = run_dir("cli-bad-value")
+    rb = burrow(d, ["-o", "StrictHostKeyChecking=maybe", "127.0.0.1", "true"])
+    rs = ssh(d, ["-o", "StrictHostKeyChecking=maybe", "127.0.0.1", "true"])
+    refused(rb, "option_unsupported")
+    return same_verdict(rb, rs, d, "a value ssh does not take")
+
+
+@row
+def cli_unsupported_keyword():
+    """A keyword ssh has and burrow lacks: refused by name, never ignored
+    (the pinned ssh takes it: a recorded difference)."""
+    d = run_dir("cli-unsupported-keyword")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["-o", "ForwardAgent=yes", "127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["-o", "ForwardAgent=yes", "127.0.0.1", "true"])
+    compare(d, f"burrow {rb[0]} {tail(rb[2])}\nssh {rs[0]}\n")
+    refused(rb, "option_unsupported")
+
+
+@row
+def cli_connect_refused():
+    d = run_dir("cli-connect-refused")
+    port = oraclelib.free_port()
+    rb = proc([str(as_ssh(d)), "-F", "none", "-p", str(port), "127.0.0.1", "true"], env=envfor(d))
+    rs = ssh(d, ["-p", str(port), "127.0.0.1", "true"])
+    refused(rb, "connect_refused")
+    return same_verdict(rb, rs, d, "nothing listens")
+
+
+@row
+def cli_user_precedence():
+    """`-l other` beside `user@host`: the user both clients log in as."""
+    d = run_dir("cli-user-precedence")
+    with session_server(d) as s:
+        kh = known(d, s)
+        # The row's sshd authorizes the key for every account; nobody's shell
+        # refuses a login, so the exit code and message tell who logged in.
+        args = ["-p", str(s.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(d / "id_user"), "-l", "nobody", f"{USER}@127.0.0.1", "id -un"]
+        rb = burrow(d, args)
+        rs = ssh(d, args)
+    compare(d, f"burrow {rb[0]} {rb[1]!r}\nssh {rs[0]} {rs[1]!r}\n")
+    check(rb[0] == rs[0] and rb[1] == rs[1], f"burrow {rb[0]} {rb[1]!r} {tail(rb[2])}; ssh {rs[0]} {rs[1]!r}")
+    return f"-l wins for both: exit {rs[0]}, {rs[1].decode().strip()}"
+
+
+@row
+def cli_no_command():
+    """No command: refused by name (no interactive session in B3); the
+    pinned ssh starts a shell (a recorded difference)."""
+    d = run_dir("cli-no-command")
+    rb = burrow(d, ["127.0.0.1"])
+    refused(rb, "shell_unsupported")
+
+
+def keep_evidence(tier):
+    out = ROOT / "target" / "evidence" / f"session-{tier}"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    kept = 0
+    for d in sorted(p for p in WORK.iterdir() if p.is_dir()):
+        for rel in ("sshd/sshd.log", "compare.txt"):
+            src = d / rel
+            if src.is_file():
+                dst = out / d.name / src.name
+                dst.parent.mkdir(exist_ok=True)
+                shutil.copyfile(src, dst)
+                kept += 1
+    bad = []
+    for p in [out.parent, out] + sorted(out.rglob("*")):
+        os.chmod(p, 0o755 if p.is_dir() else 0o644)
+        if p.is_file():
+            if p.name.startswith(("host_", "id_", "other", "enc", "rsa")) or p.suffix == ".pub":
+                bad.append(f"{p.relative_to(ROOT)} is a key file")
+            elif b"PRIVATE KEY" in p.read_bytes() or b"b3BlbnNzaC1rZXktdjE" in p.read_bytes():
+                bad.append(f"{p.relative_to(ROOT)} holds private key text")
+    for why in bad:
+        print(f"FAIL evidence {why}", flush=True)
+    if not bad:
+        print(f"check-session: {kept} evidence files in {out.relative_to(ROOT)}, readable, no key material")
+    return len(bad)
+
+
+def main():
+    global BIN, KEYGEN_BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    KEYGEN_BIN = BIN.parent / "burrow-keygen"
+    for b in (BIN, KEYGEN_BIN):
+        if not b.exists():
+            print(f"FAIL setup no binary at {b}")
+            sys.exit(1)
+    oraclelib.require_oracle()
+    os.umask(0o022)
+    WORK.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK, 0o711)
+    fails = 0
+    ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:  # a harness fault is a red row too, by name
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-session: {ran} rows, {fails} failed, 0 SKIP")
+    fails += keep_evidence(BIN.parent.name)
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()

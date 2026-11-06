@@ -17,9 +17,17 @@
 #   unit        every src/*_test.lu: the checked machine, native and lupin
 #   transport   the transport rows against the pinned sshd, native
 #   transport-release   the same rows, release
+#   session     the auth, key, known_hosts, session and CLI rows against the
+#               pinned sshd, ssh and ssh-keygen, native
+#   session-release     the same rows, release
+#   hostile     a scripted server that misbehaves (tools/fakeserver.py), native
+#   hostile-release     the same rows, release
+#   measure     login to first byte and cat throughput against the pinned ssh,
+#               release, held to the prediction's margins (a perf step: run
+#               the gauntlet with nothing beside it)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors fmt build unit transport transport-release"
+ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release measure"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -43,6 +51,11 @@ run() {
     unit) tools/in-container tools/check-test ;;
     transport) tools/in-container python3 -I tools/check-transport --bin target/native/burrow ;;
     transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;
+    session) tools/in-container python3 -I tools/check-session --bin target/native/burrow ;;
+    session-release) tools/in-container python3 -I tools/check-session --bin target/release/burrow ;;
+    hostile) tools/in-container python3 -I tools/check-hostile --bin target/native/burrow ;;
+    hostile-release) tools/in-container python3 -I tools/check-hostile --bin target/release/burrow ;;
+    measure) tools/in-container python3 -I tools/measure-session --bin target/release/burrow ;;
     *)
         echo "gate: no step $1 (steps: $ALL)"
         return 2

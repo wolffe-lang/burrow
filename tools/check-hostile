@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""check-hostile — burrow against a server that misbehaves (tools/fakeserver.py).
+
+    tools/in-container python3 -I tools/check-hostile --bin target/native/burrow [--only ROW...]
+
+Each row starts a scripted server on a loopback port, with a host key made
+for that run, runs burrow against it, and holds burrow's exit status, its
+named refusal, its output, and what the server recorded. `PASS <row>` or
+`FAIL <row> <why>` at column 0; the exit status is the number of failures.
+"""
+import argparse
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import fakeserver  # noqa: E402
+import oraclelib  # noqa: E402
+import vectorgen as v  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "hostile"
+ROWS = []
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def tail(b, n=400):
+    return b.decode("utf-8", "replace").strip()[-n:].replace("\n", " | ")
+
+
+def burrow(f, *extra, inp=None, cmd="true", timeout=60):
+    d = WORK / "run"
+    if d.exists():
+        shutil.rmtree(d)
+    d.mkdir(parents=True)
+    kh = d / "known_hosts"
+    kh.write_text(f.host_line())
+    oraclelib.keygen(d / "id", "ed25519")
+    args = [str(BIN), "-F", "none", "-p", str(f.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(d / "id"),
+            "-l", "row"] + list(extra) + ["127.0.0.1", cmd]
+    r = subprocess.run(args, input=inp if inp is not None else b"", capture_output=True, timeout=timeout,
+                       env={"PATH": "/usr/bin:/bin", "HOME": str(d)})
+    shutil.rmtree(d)
+    return r
+
+
+def refused(r, name):
+    check(r.returncode == 255, f"exit {r.returncode}, wanted 255; stderr {tail(r.stderr)}")
+    check(re.search(rb"^burrow: " + name.encode() + rb": ", r.stderr, re.M), f"no 'burrow: {name}:' line; stderr {tail(r.stderr)}")
+
+
+def data_received(f):
+    return sum(e[2] - 9 for e in f.record["events"] if e[0] == "got" and e[1] == 94)
+
+
+@row
+def window_stuck():
+    """A server that never adjusts its 4096-byte window: burrow sends no more
+    than 4096 bytes of its 64 KiB of input, and still exits with the status."""
+    def script(s, w):
+        w.s.settimeout(2)
+        try:
+            while True:
+                p = w.recv()
+                s.event("got", p[0], len(p))
+        except Exception:
+            pass
+        s.finish(w, 0)
+
+    with fakeserver.FakeServer(script, window=4096) as f:
+        r = burrow(f, inp=os.urandom(65536), cmd="cat")
+    sent = data_received(f)
+    check(sent <= 4096, f"burrow sent {sent} bytes into a 4096-byte window")
+    check(sent > 0, "burrow sent nothing at all")
+    check(r.returncode == 0, f"exit {r.returncode}; stderr {tail(r.stderr)}; server {f.record['error']}")
+    return f"{sent} bytes sent into the 4096-byte window"
+
+
+@row
+def data_after_close():
+    """Data after the server's CLOSE is refused by name and never written."""
+    def script(s, w):
+        burst = (w.encode(s.to_client(94, fakeserver.string(b"early")))
+                 + w.encode(s.to_client(98, fakeserver.string(b"exit-status"), b"\x00", fakeserver.u32(0)))
+                 + w.encode(s.to_client(97))
+                 + w.encode(s.to_client(94, fakeserver.string(b"LATE"))))
+        w.s.sendall(burst)
+        s.drain(w)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f)
+    refused(r, "channel_closed")
+    check(r.stdout == b"early", f"stdout {r.stdout!r}")
+
+
+@row
+def oversize_packet():
+    """A packet_length over 262144: refused before the rest is read."""
+    def script(s, w):
+        k1 = w.tx_key[32:]
+        w.s.sendall(v.chacha20_xor(k1, 0, v.nonce_of(w.tx_seq), fakeserver.u32(300000)) + b"\x00" * 64)
+        s.drain(w, 5)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f)
+    refused(r, "packet_too_long")
+
+
+@row
+def oversize_data():
+    """CHANNEL_DATA past burrow's 32768-byte maximum packet."""
+    def script(s, w):
+        w.send(s.to_client(94, fakeserver.string(b"x" * 40000)))
+        s.drain(w, 5)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f)
+    refused(r, "channel_packet_too_large")
+    check(r.stdout == b"", f"stdout {len(r.stdout)} bytes")
+
+
+@row
+def window_exceeded():
+    """Data past burrow's window (shrunk to 4096 by --test-window)."""
+    def script(s, w):
+        w.send(s.to_client(94, fakeserver.string(b"y" * 8192)))
+        s.drain(w, 5)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f, "--test-window=4096")
+    refused(r, "window_exceeded")
+
+
+@row
+def success_unrequested():
+    """USERAUTH_SUCCESS before any request."""
+    def script(s, w):
+        w.send(bytes([52]))
+        s.drain(w, 5)
+
+    with fakeserver.FakeServer(script, stage="auth") as f:
+        r = burrow(f)
+    refused(r, "auth_success_unrequested")
+
+
+@row
+def exit_status_wrong_channel():
+    def script(s, w):
+        w.send(bytes([98]) + fakeserver.u32(5) + fakeserver.string(b"exit-status") + b"\x00" + fakeserver.u32(0))
+        s.drain(w, 5)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f)
+    refused(r, "channel_unknown")
+
+
+@row
+def x11_and_agent_opens():
+    """The server opens x11 and auth-agent@openssh.com channels: each gets
+    OPEN_FAILURE reason 1, and the session completes."""
+    def script(s, w):
+        for kind, sender in ((b"x11", 3), (b"auth-agent@openssh.com", 4)):
+            body = fakeserver.string(kind) + fakeserver.u32(sender) + fakeserver.u32(65536) + fakeserver.u32(16384)
+            if kind == b"x11":
+                body += fakeserver.string(b"127.0.0.1") + fakeserver.u32(6010)
+            w.send(bytes([90]) + body)
+            p = w.recv()
+            while p[0] not in (91, 92):  # burrow's EOF (empty stdin) may come first
+                s.event("got", p[0], len(p))
+                p = w.recv()
+            r = fakeserver.Reader(p[1:])
+            s.event("open-answer", p[0], r.u32(), r.u32())
+        w.send(s.to_client(94, fakeserver.string(b"ok")))
+        s.finish(w, 0)
+
+    with fakeserver.FakeServer(script) as f:
+        r = burrow(f, "-v")
+    answers = [e[1:] for e in f.record["events"] if e[0] == "open-answer"]
+    check(answers == [(92, 3, 1), (92, 4, 1)], f"the server saw {answers}; {f.record['error']}")
+    check(r.returncode == 0 and r.stdout == b"ok", f"exit {r.returncode} stdout {r.stdout!r} {tail(r.stderr)}")
+    check(r.stderr.count(b"channel_open_refused") == 2, "no channel_open_refused debug lines")
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    if not BIN.exists():
+        print(f"FAIL setup no burrow binary at {BIN}")
+        sys.exit(1)
+    oraclelib.require_oracle()
+    WORK.mkdir(parents=True, exist_ok=True)
+    fails = ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        t0 = time.monotonic()
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else "") + f" [{time.monotonic() - t0:.1f}s]", flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-hostile: {ran} rows, {fails} failed, 0 SKIP")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()

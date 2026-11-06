@@ -23,6 +23,9 @@ SSH = PREFIX / "bin" / "ssh"
 SSHD = PREFIX / "sbin" / "sshd"
 KEYGEN = PREFIX / "bin" / "ssh-keygen"
 HOST_KEY_TYPES = ("ed25519", "ecdsa", "rsa")
+# Public key files every row's sshd authorizes when a row names none (a
+# harness sets it once, to a client key made for its run).
+DEFAULT_AUTHORIZED = []
 
 
 def require_oracle():
@@ -63,9 +66,11 @@ def fingerprint(pub):
 class Sshd:
     """One `sshd -D -e` on 127.0.0.1:<port>, its config and keys under `run_dir`."""
 
-    def __init__(self, run_dir, extra_config=(), host_keys=HOST_KEY_TYPES, port=None, log_level="DEBUG3"):
+    def __init__(self, run_dir, extra_config=(), host_keys=HOST_KEY_TYPES, port=None, log_level="DEBUG3",
+                 authorized=()):
         self.dir = pathlib.Path(run_dir)
         self.extra = list(extra_config)
+        self.authorized = list(authorized) or list(DEFAULT_AUTHORIZED)
         self.kinds = list(host_keys)
         self.port = port or free_port()
         self.level = log_level
@@ -76,7 +81,10 @@ class Sshd:
         if self.dir.exists():
             shutil.rmtree(self.dir)
         self.dir.mkdir(parents=True)
-        os.chmod(self.dir, 0o700)
+        # 0711: traversable, not listable, so the row user's session can
+        # read authorized_keys (0644, public keys only); the host keys stay
+        # 0600, the container's root their owner.
+        os.chmod(self.dir, 0o711)
         for kind in self.kinds:
             keygen(self.dir / f"host_{kind}", kind, comment=f"burrow-row-host-{kind}")
         # sshd takes the first value it reads for an option: a row's own
@@ -89,9 +97,13 @@ class Sshd:
             "KbdInteractiveAuthentication no",
             f"AuthorizedKeysFile {self.dir / 'authorized_keys'}",
             "StrictModes no",
+            # OpenSSH 10's per-source penalties refused 127.0.0.1 after a
+            # few failed logins in one row (measured): rows run their own.
+            "PerSourcePenalties no",
         ] + [f"HostKey {self.dir / ('host_' + k)}" for k in self.kinds]
         (self.dir / "sshd_config").write_text("\n".join(lines) + "\n")
-        (self.dir / "authorized_keys").write_text("")
+        (self.dir / "authorized_keys").write_text("".join(pathlib.Path(p).read_text() for p in self.authorized))
+        os.chmod(self.dir / "authorized_keys", 0o644)
         self.log = open(self.dir / "sshd.log", "wb")
         self.proc = subprocess.Popen([str(SSHD), "-D", "-e", "-f", str(self.dir / "sshd_config")],
                                      stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)

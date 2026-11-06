@@ -4,13 +4,11 @@
     tools/in-container python3 -I tools/measure-handshake --bin target/release/burrow [--runs N]
 
 Evidence only, never a gate. One sshd (a row's own, keys for this run)
-admits the image's empty-password user through RFC 4252 `none`. Each turn
-runs burrow (`--test-auth-none`: the transport, the login, a DISCONNECT) and
-the pinned `ssh` (`PreferredAuthentications=none`, then `true` on a session
-channel), interleaved. For each client it records the child's CPU time
+authorizes a client key made for this run. Each turn runs burrow and the
+pinned `ssh`, each logging in with that key and running `true` on a session
+channel, interleaved. For each client it records the child's CPU time
 (user + system, from rusage) and the wall time, and prints the minimum and
-median of each with the ratios. ssh does slightly more (a channel and an
-exec); the CPU column is the client's own work either way.
+median of each with the ratios.
 """
 import argparse
 import json
@@ -41,19 +39,24 @@ def main():
     ap.add_argument("--runs", type=int, default=15)
     a = ap.parse_args()
     out = oraclelib.ROOT / "target" / "measure"
-    with oraclelib.Sshd(out / "sshd", ["PermitEmptyPasswords yes", "PasswordAuthentication yes"],
-                        log_level="INFO") as s:
+    out.mkdir(parents=True, exist_ok=True)
+    key = out / "id_client"
+    for f in (key, out / "id_client.pub"):
+        if f.exists():
+            f.unlink()
+    oraclelib.keygen(key, "ed25519", comment="burrow-measure")
+    with oraclelib.Sshd(out / "sshd", log_level="INFO", authorized=[str(key) + ".pub"]) as s:
         kh = out / "known_hosts"
         kh.write_text(s.known_hosts_line())
-        burrow = [str(pathlib.Path(a.bin).resolve()), "-o", f"UserKnownHostsFile={kh}", "-p", str(s.port),
-                  "-l", "burrowtest", "--test-auth-none", "127.0.0.1"]
+        burrow = [str(pathlib.Path(a.bin).resolve()), "-F", "none", "-o", f"UserKnownHostsFile={kh}", "-p", str(s.port),
+                  "-i", str(key), "-l", "burrowtest", "127.0.0.1", "true"]
         ssh = [str(oraclelib.SSH), "-F", "none", "-p", str(s.port), "-o", "BatchMode=yes",
-               "-o", f"UserKnownHostsFile={kh}", "-o", "PreferredAuthentications=none",
+               "-o", f"UserKnownHostsFile={kh}", "-i", str(key), "-o", "IdentitiesOnly=yes",
                "-o", "KexAlgorithms=curve25519-sha256", "-o", "HostKeyAlgorithms=ssh-ed25519",
                "-o", "Ciphers=chacha20-poly1305@openssh.com", "-l", "burrowtest", "127.0.0.1", "true"]
         rows = {"burrow": [], "ssh": []}
         for i in range(a.runs):
-            for name, args, want in (("burrow", burrow, 2), ("ssh", ssh, 0)):
+            for name, args, want in (("burrow", burrow, 0), ("ssh", ssh, 0)):
                 r, cpu, wall = timed(args)
                 if r.returncode != want:
                     print(f"measure-handshake: {name} exit {r.returncode}: {r.stderr[-300:]}")
