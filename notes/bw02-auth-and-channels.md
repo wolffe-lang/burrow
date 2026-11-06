@@ -284,3 +284,238 @@ is unchanged.
 den finds burrow as `ssh` on PATH, with `~/.ssh/id_ed25519`,
 `~/.ssh/known_hosts` and `~/.ssh/config` under a row's `HOME`; den needs no
 change.
+
+## Forbidden
+
+No ssh implementation's code or tests were read: no `.c` or `.h` file of any
+OpenSSH release, nothing of dropbear, libssh, libssh2, Go's `x/crypto/ssh`,
+paramiko, asyncssh, russh, thrussh, conch, PuTTY or wolfSSH, and no SHA-1 or
+HMAC library's source. From the signed `openssh-10.0p2.tar.gz` only the
+`PROTOCOL*` notes (bw01's extraction) and the four man pages were taken, by
+name. `PROTOCOL.key` says the private key's own fields follow "the rules used
+for SSH agent"; `PROTOCOL.agent` points at an Internet-Draft for those, which
+is not on the reading list and was not read: the layout was measured from
+the pinned `ssh-keygen`'s files (by lengths and comparisons; no key byte was
+printed) and is held to RFC 8032 (R-bw02-1). wolf-std's `sha2` was read, as
+the organisation's own code the clean room allows, for wolf's 32-bit word
+idioms; its `hmac256` is RFC 2104's formula. Python's `hashlib` and `hmac`
+were used as black boxes in tools (to cross-check the copied NIST vectors and
+one hashed-name vector), never read. No real host was contacted: every row
+runs its own `sshd`, or the scripted `tools/fakeserver.py`, on loopback in
+the pinned container, with keys made for that run. Private keys stay in the
+run directories; rows print public lines and fingerprints, and the evidence
+copies are scanned for key files and private key text. The plant branch has
+no PR and no CI run.
+
+## Inputs verified
+
+Footprint: cross-cutting
+
+- The toolchain, std and OpenSSH pins are unchanged from trunk `f4b1e05`
+  (wolf 0.2.37, lupin 0.1.59, std `5b3a599`, OpenSSH 10.0p2); the tarball's
+  signature (`VALIDSIG 7168B983815A5EEF59A4ADFD2A3F414E736060BA`) and digest
+  were checked again before the man pages were extracted.
+- FIPS 180-4, RFC 2104, NIST's SHA-1 examples and its CAVP SHA and HMAC
+  archives by sha256 in [SOURCES](../docs/SOURCES.md); the man pages too.
+- The CI workflow gains the session and hostile-peer rows on both tiers and
+  the NIST vector check; `ci/local-gate-baseline.json` moves with it (the
+  wiring proof passes).
+
+Commits, in order (the row first wherever a row exists):
+
+- `8fb3d32` the prediction.
+- `60e6a3f` NIST's vectors, their generator and the gate's check; `2a475f0`
+  the SHA-1 rows against a stub, `d401332` SHA-1 and HMAC-SHA1.
+- `a181004` vectorgen's B2 and B3 vectors.
+- `2713e86` the key file rows against a stub, `fd5f6d5` `openssh-key-v1`,
+  `1e4b9d8` the seed rows split out for the checked machine's budget.
+- `308e91f` the known_hosts rows and `@revoked`'s new name against a stub,
+  `3eaff68` hashed names, markers, appended lines.
+- `d9727a3` the CLI and config rows against a stub, `4a1c08b` the module,
+  `45b2d16` literal braces.
+- `ad52f07` formatting; `42f79a1` the transport written in place (and the
+  pending-order fix, below); `75bef5b` the refusal names.
+- `4eabc30` the auth rows against a stub, `b2dab34` publickey.
+- `4f61f27` the 4 KiB window's vector; `64649ce` the channel rows against a
+  stub, `148097a` the channel.
+- `6dce587` the -l and RekeyLimit rows, `3ceee02` the fix.
+- `b48c649` the build's second program (a stub).
+- `9764f38` the oracle, hostile and measured rows, red against B1's CLI.
+- `5bd9f04` burrow-keygen, `8b8ba4e` the session, `30d6189` the CLI.
+- `a4ce0e7` README, MAP, SOURCES, CHANGELOG; and this note.
+
+## Evidence index
+
+**The rows.** Fourteen unit rows (`src/*_test.lu`, seven of them B2's and
+B3's: `sha1`, `keyfile`, `keyseed`, `knownhosts`, `auth`, `channel`,
+`config`) pass on the checked machine, natively and on lupin, none falling
+back to native. The transport rows (21, B1's, now logging in with a
+per-run client key), the session rows (44) and the hostile-peer rows (8)
+pass against the pinned OpenSSH and the scripted server on both tiers. Each
+row family was red first: the unit rows at their stub commits, by assertion
+(`2a475f0`, `2713e86`, `308e91f`, `d9727a3`, `4eabc30`, `64649ce`,
+`6dce587`), and the oracle rows at `9764f38`, against B1's CLI. The final
+head's gauntlet record, its `END` lines and the plant record are in the PR
+body.
+
+**The prediction, hit and missed.**
+
+| predicted | measured |
+|---|---|
+| burrow sends no `none`; the query, then the signed request | hit (`auth-order`: `sshd` logs the test before the signature, and no `none`) |
+| payloads 117 (query) and 204 (signed) for `burrowtest`, PK_OK 71 | hit (`auth_test`, against vectorgen's vectors) |
+| the pinned `ssh` sends `none`, its query, then its signed request | hit, with a detail missed: it signs with `publickey-hostbound-v00@openssh.com` |
+| `sshd` drops `ssh-ed25519` from `server-sig-algs` under `PubkeyAcceptedAlgorithms` | hit (`server-sig-algs=<rsa-sha2-256>`); burrow refuses, the pinned `ssh` tries anyway |
+| the banner byte for byte, controls other than TAB, LF, CR escaped | hit for controls, as `\ooo`; **miss**: bytes from 0x80 up are escaped too (C locale); burrow follows (`auth-banner`) |
+| `openssh-key-v1` as laid out, padded to 8, armour of 70, modes 0600 and 0644 | hit (probe and `keygen-*` rows) |
+| `ssh-keygen -N` writes `aes256-ctr` and `bcrypt`; overwrite exits 1; `-y` prints the comment | hit |
+| hashed names are HMAC-SHA1 keyed by the 20-byte salt over the name | hit (`kh-accept-new-hashed`; the pinned `ssh` reads burrow's file) |
+| appended lines and the warning as `ssh`'s; `no` with a changed key proceeds and writes nothing | hit (`kh-accept-new`, `kh-no-changed`, `kh-alias`) |
+| `@cert-authority` alone is unknown | hit (`kh-cert-authority`) |
+| confirmation with window 0, maximum packet 32768 | hit |
+| exit codes pass through; a signal is 255 with nothing printed | hit (`session-exit-codes`, `session-signal`) |
+| DISCONNECT 11 `disconnected by user` | hit (`sshd` logs it for burrow) |
+| `ssh` exits 255 on a keyword it lacks and takes the ones burrow lacks | hit (`cli-unknown-keyword`, `cli-unsupported-keyword`) |
+| (not predicted) | `-l` wins over `user@host` in the pinned `ssh`; burrow followed (`cli-user-precedence`) |
+| (not predicted) | the pinned `ssh` ends its log lines in CR LF; burrow's end in LF, and the rows compare lines (R-bw02-2) |
+| (not predicted) | OpenSSH 10's per-source penalties refuse 127.0.0.1 after a few failed logins; the rows' `sshd` sets `PerSourcePenalties no` |
+| 64 MiB through `cat` within 60 s at `--release`, 5 minutes native | hit: 1.19 s release, 5.37 s native (the pinned `ssh`: 0.34 s) |
+| `cat` CPU 10x to 100x `ssh`'s | in the PR body (the final record's `measure` step) |
+| login to first byte, 1.2x to 4x `ssh`'s wall | in the PR body |
+
+**Two misses of B1's, found by B3's rows.**
+
+- **Memory grew with traffic.** B1's transport replaced its buffers and
+  formatted a detail sentence per packet, and every allocation landed in
+  `main`'s region: 1 MiB of traffic held 52 MB, 8 MiB 397 MB (probe 2, on the
+  B1 binary). The transport now writes only in place (its detail is bytes it
+  owns, its input is compacted, re-exchange keys are `copy`), so each
+  function taking `mut c` is ambient-clean, and the session runs every turn in
+  a region of its own: 64 MiB through `cat` peaks at 6.3 MB of RSS native and
+  5.0 MB release (`session-cat-64m`, sampled from `VmHWM`; the pinned `ssh`
+  7.8 MB).
+- **A re-exchange let a later message overtake the ones it kept.** `next`
+  checked its queue, then started a due re-exchange that queued what
+  arrived before the server's KEXINIT, then read the socket and returned the
+  newer packet first: at `RekeyLimit=256K`, two 32 KiB chunks of `cat`'s
+  output swapped at every re-exchange (`session-rekey` red at a work-in-
+  progress head; the lane's probe 3 found the swap). `next` now looks at its
+  queue again after a re-exchange. The history was cut after the fact, so
+  the fix sits in the transport commit `42f79a1`, ahead of the row's commit;
+  the red is in the lane's run log, not in this branch's history.
+
+**The measurement** (`tools/measure-session`): interleaved rounds against the
+pinned `ssh` on one quiet block with nothing beside it, the minimum of five,
+the client's own CPU from `wait4` and the wall time; its ratios and their
+margins (login wall at most 8x, `cat` CPU at most 200x, burrow's 16 MiB over
+4 MiB CPU at most 6x) are the final record's `measure` step, in the PR body.
+
+**Where constant time matters.** B1's tag comparison is unchanged. The user
+key's signature is wolf-std's `curve25519.sign`, whose scalar multiplication
+adds under a branch on each secret bit (std's own `ct:` line names it): one
+signature per login is not constant time, and burrow says so in MAP. burrow's
+own code never branches on or indexes by the seed. The hashed-name and
+check-word comparisons use `wire.ct_eq`, though neither guards a secret.
+
+**Rulings.**
+
+- **R-bw02-1, the private key's fields.** (a) Measure them from the pinned
+  `ssh-keygen`'s files and hold them to RFC 8032 (implemented); (b) admit the
+  agent Internet-Draft `PROTOCOL.agent` points at. Recommended: (a).
+- **R-bw02-2, the message shapes.** (a) Print the pinned `ssh`'s line where it
+  has one (with the program's own name, so `ssh: …` when installed as `ssh`),
+  then `burrow: <name>: <detail>`, each ending in LF (implemented; the rows
+  hold the exit code and find `ssh`'s last line among burrow's); (b) burrow's
+  line alone; (c) `ssh`'s byte for byte, CR LF included. Recommended: (a).
+- **R-bw02-3, `server-sig-algs` without `ssh-ed25519`.** (a) Refuse by name
+  before any request (implemented: RFC 8308 §3.1 warns of penalties for
+  trial); (b) try anyway, as the pinned `ssh` does. Recommended: (a).
+- **R-bw02-4, the home directory.** (a) `$HOME` for `~/.ssh` (implemented:
+  PAX has no passwd database, and den's rows set `HOME`); (b) the passwd
+  entry, as OpenSSH documents for itself. Recommended: (a).
+- **R-bw02-5, keywords burrow lacks.** (a) Refused by name in a block that
+  applies, unread in one that does not, and a keyword `ssh_config(5)` does
+  not list refused anywhere, as `ssh` refuses it (implemented); (b) refused
+  anywhere. Recommended: (a), so one unrelated `Host` block does not stop
+  burrow.
+- **R-bw02-6, waiting on a socket and stdin.** wolf-std has no one wait over
+  both at the pin (`net.wait` takes the network table's handles,
+  `signal.wait_fds` files). (a) Alternate 5 ms waits when idle (implemented:
+  input waits at most 5 ms, the socket not at all once ready); (b) a task
+  per direction. Recommended: (a) now, and a wolf-std issue for one wait.
+- **R-bw02-7, plain `publickey`.** (a) Sign with `publickey` (implemented);
+  (b) `publickey-hostbound-v00@openssh.com`, as the pinned `ssh` does.
+  Recommended: (a): the binding serves agent restrictions, and burrow has no
+  agent.
+- **R-bw02-8, the test options.** `--test-traffic`, `--test-preauth` and
+  `--test-window` stay in the release binary, as bw01's did, named in the
+  program's header and MAP. Recommended: keep them until a lane moves them
+  behind a build flag.
+- **R-bw02-9, `@revoked`.** A `@revoked` line holding the presented key
+  refuses whatever its host patterns (B1's behaviour, kept). Recommended:
+  keep; it is stricter than matching hosts first.
+- **R-bw02-10, no command.** Refused (`shell_unsupported`), where the pinned
+  `ssh` starts a shell. Recommended: keep until a lane adds a pty session for
+  people on PAX.
+
+**Issues to file** (for the orchestrator; none filed here):
+
+- wolf-std: one wait over sockets and files together (R-bw02-6).
+- wolf-std: constant-time Ed25519 signing (the scalar multiplication's
+  bit-gated add; std records it as an obligation already).
+- wolf-std#131 (SHA-1): when it lands, `src/sha1` goes.
+- lupin: a bare hex literal in a `wrapping[u64]` struct field's initializer
+  is read as `i32` and traps (`src/sha1`'s initial words needed typed
+  `let`s); native and the checked machine take it.
+
+## For bw03
+
+**What den's ssh rows need.** den starts `ssh` through PATH, so burrow goes
+on PATH under the name `ssh` (a link: its messages then say `ssh:` as the
+pinned client's do). den passes neither `-i` nor `UserKnownHostsFile`, so the
+rows give burrow a `HOME` with `~/.ssh/id_ed25519` (0600; `burrow-keygen` or
+`ssh-keygen` makes it), `~/.ssh/known_hosts` with the server's line (or
+`StrictHostKeyChecking=accept-new` in `~/.ssh/config`), and, where the row
+needs them, `Host` blocks with `IdentityFile`, `UserKnownHostsFile`,
+`Port`, `User`, `Hostname` and `HostKeyAlias`. The environment carries
+`GIT_PROTOCOL=version=2`, which den's `-o SendEnv=GIT_PROTOCOL` sends; the
+server must `AcceptEnv GIT_PROTOCOL`. The exact argv is in the prediction
+above and in `cli-den-argv`, which runs it through burrow-as-`ssh` against
+the pinned `sshd` and compares with the pinned `ssh`.
+
+**A draft of bw03 (B4: den over burrow).**
+
+1. The prediction: den's ssh rows through burrow, and what changes.
+2. den's ssh-interop leg pointed at burrow against the pinned `sshd` in
+   burrow's container (clone, fetch, push, the scp-like and `ssh://` forms,
+   leases), with a burrow built at its pinned head; den itself unchanged.
+3. The live push to the fixture: its URL and deploy key from environment
+   variables, the row SKIPping by name when they are absent; public text
+   never names it.
+4. `tools/build --static` for PAX, handed to a px lane with the resolver gap
+   (wolf-lang#831, wolf-std#4) worked around by an address and
+   `HostKeyAlias`.
+5. One plant, local, at a den-over-burrow row.
+
+## Done-when
+
+- [x] The prediction, committed first (`8fb3d32`).
+- [x] `publickey` with `ssh-ed25519`: the query, then the signed request;
+  `server-sig-algs` honoured; FAILURE's list and partial success refused by
+  name; the banner as `ssh` shows it.
+- [x] OpenSSH's private key format read and written for unencrypted Ed25519
+  keys, every other kind refused by name; `burrow-keygen`, its files read by
+  the pinned `ssh-keygen`, and `ssh-keygen`'s read by burrow.
+- [x] known_hosts: hashed names, markers, several names, ports; SHA-1 and
+  HMAC-SHA1 from FIPS 180-4 and RFC 2104 against NIST's vectors; appending
+  under `accept-new` and `no`, as `ssh` appends.
+- [x] The session channel: `env`, `exec`, byte-clean streams, both windows,
+  EOF and CLOSE in both orders, `exit-status` and `exit-signal` as `ssh` maps
+  them; 64 MiB through `cat` compared by digest.
+- [x] The CLI den uses, `~/.ssh/config`'s `Host` and `Match host`, every
+  refusal by name and held to `ssh`'s exit code and line.
+- [x] Hostile peers, each refused or survived by name.
+- [x] Measured against the pinned `ssh`, with stated margins.
+- [x] README, MAP, SOURCES and CHANGELOG refreshed.
+- [ ] The final-head gauntlet record, the plant record and the audit: in the
+  PR body.
