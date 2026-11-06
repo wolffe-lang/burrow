@@ -317,6 +317,25 @@ both tiers.
 | with no identity both are refused `git@github.com: Permission denied (publickey).`, exit 255 | hit (burrow sent `none`, as RFC 4252 §5.2 names the methods) |
 | static binaries with no interpreter | hit: no `PT_INTERP`, no dynamic section; the static `burrow-keygen` also ran on a Linux host whose userland is not the image's (it made the deploy key) |
 | the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (den#63, R-bw03-4). The fixture is 60 commits and 8 large files |
+| CPU through burrow / through `ssh` between 1.02x and 1.3x, wall between 0.95x and 1.4x, margins 2x | CPU hit (1.04x); wall a miss low (0.83x): den's wall time is mostly I/O and swings 10–45 s between rounds on a shared host, so the wall minimum is noise-bound; both inside the margins |
+
+**The measurement** (`tools/measure-den`, release burrow, at `292e148`, on a
+quiet block of the Linux x86-64 host with its light lock held, so nothing
+ran beside it): the 60-commit fixture is 811 objects in a 3,056 KiB pack;
+five interleaved rounds per client, the minimum of each.
+
+```text
+measure-den: through burrow wall 9.950 s, cpu 1.725 s (den and the ssh it waits for)
+measure-den: through ssh    wall 12.031 s, cpu 1.660 s (den and the ssh it waits for)
+measure-den: burrow / ssh: wall 0.83x (margin 2.0x); cpu 1.04x (margin 2.0x)
+```
+
+Per round, CPU ran 1.73–2.96 s through burrow and 1.66–3.68 s through
+`ssh`, wall 9.9–30.1 s and 12.0–45.2 s: the first rounds are the slow ones
+for both. den's peak RSS was 1,335 MiB each way. burrow's own share is the
+difference of the minima, about 0.07 s of CPU for 3 MiB, in line with
+bw02's `cat` rate. The final record's `measure-den` step, in the PR body,
+is the merge's number.
 
 **Where constant time matters.** Unchanged from bw02: the Poly1305 tag
 check through `wire.ct_eq`; the user key's signature is not constant time
@@ -428,7 +447,8 @@ What it needs from here:
   (the row and its self-test are green; the fixture waits on R-bw03-2).
 - [x] For PAX: `tools/build --static`, its shape and digests, and the px
   lane's first items (above).
-- [ ] Measured: den's clone through burrow against the pinned `ssh`, with
-  margins (in the PR body, from the final record's `measure-den` step).
+- [x] Measured: den's clone through burrow against the pinned `ssh`, with
+  margins: CPU 1.04x, wall 0.83x, each held to 2x (the final record's
+  `measure-den` step is in the PR body).
 - [ ] The final-head gauntlet record, the plant record and the audit: in the
   PR body.
