@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""check-github — GitHub's real server, read only, with no key (B4).
+
+    tools/in-container python3 -I tools/check-github --bin target/native/burrow
+    tools/in-container python3 -I tools/check-github --probe
+
+burrow as `ssh` and the pinned ssh each run `ssh -T git@github.com` from a
+HOME with no identity at all and a known_hosts holding only GitHub's
+published ed25519 line (ci/github-known-hosts, from api.github.com/meta;
+docs/SOURCES.md), checked strictly. No account and no key is used, and
+nothing is sent but the handshake and RFC 4252's `none` request.
+
+  github-host-key  both clients accept the server's ssh-ed25519 key from the
+                   published line, and the fingerprint each prints under -v
+                   is GitHub's published one
+  github-no-key    both are refused authentication alike: the same exit
+                   code, and the pinned ssh's last line among burrow's
+
+`--probe` exits 0 when github.com port 22 answers with an SSH version line
+within 10 s, and 1 (with the reason) otherwise; the gate prints the step's
+SKIP by name then. A row prints `PASS <row>` or `FAIL <row> <why>` at
+column 0; the exit status is the number of failures.
+"""
+import argparse
+import pathlib
+import re
+import shutil
+import socket
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "github"
+KNOWN = ROOT / "ci" / "github-known-hosts"
+# api.github.com/meta's ssh_key_fingerprints.SHA256_ED25519 (docs/SOURCES.md).
+PUBLISHED = "SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU"
+DEST = "git@github.com"
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def lines(b):
+    return [x.rstrip("\r") for x in b.decode("utf-8", "replace").splitlines()]
+
+
+def tail(b, n=400):
+    return b.decode("utf-8", "replace").strip()[-n:].replace("\n", " | ")
+
+
+def probe():
+    try:
+        with socket.create_connection(("github.com", 22), timeout=10) as s:
+            s.settimeout(10)
+            first = s.recv(256)
+    except OSError as e:
+        return f"github.com port 22 did not answer ({type(e).__name__}: {e})"
+    if not first.startswith(b"SSH-2.0-"):
+        return f"github.com port 22 sent no SSH version line ({first[:40]!r})"
+    return ""
+
+
+def home(name):
+    d = WORK / name
+    if d.exists():
+        shutil.rmtree(d)
+    (d / "home" / ".ssh").mkdir(parents=True, mode=0o700)
+    shutil.copyfile(KNOWN, d / "home" / ".ssh" / "known_hosts")
+    (d / "bin").mkdir()
+    (d / "bin" / "ssh").symlink_to(BIN)
+    return d
+
+
+def client(d, which, args):
+    exe = str(d / "bin" / "ssh") if which == "burrow" else str(oraclelib.SSH)
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(d / "home"), "LC_ALL": "C"}
+    try:
+        p = subprocess.run([exe, *args], env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        raise Fail(f"{which} did not finish within 60 s")
+    (d / f"{which}.txt").write_text(f"argv ssh {' '.join(args)}\nexit {p.returncode}\nstdout {p.stdout!r}\nstderr:\n"
+                                    + p.stderr.decode("utf-8", "replace"))
+    return p.returncode, p.stdout, p.stderr
+
+
+def github_host_key():
+    d = home("github-host-key")
+    rb = client(d, "burrow", ["-v", "-T", DEST])
+    rs = client(d, "ssh", ["-v", "-T", DEST])
+    want = f"debug1: Server host key: ssh-ed25519 {PUBLISHED}"
+    check(want in lines(rs[2]), f"the pinned ssh did not print {want!r}: {tail(rs[2])}")
+    check(want in lines(rb[2]), f"burrow did not print {want!r}: exit {rb[0]}, {tail(rb[2])}")
+    check(not any("host_key_" in x for x in lines(rb[2])), f"burrow refused the host key: {tail(rb[2])}")
+    return f"{PUBLISHED} from the published line, both clients"
+
+
+def github_no_key():
+    d = home("github-no-key")
+    rb = client(d, "burrow", ["-T", DEST])
+    rs = client(d, "ssh", ["-T", DEST])
+    last = [x for x in lines(rs[2]) if x.strip()][-1:] or [""]
+    check(rs[0] == 255 and last[0] == f"{DEST}: Permission denied (publickey).",
+          f"the pinned ssh: exit {rs[0]}, last line {last[0]!r}")
+    check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}; burrow stderr {tail(rb[2])}")
+    check(last[0] in lines(rb[2]), f"ssh's line {last[0]!r} not in burrow's stderr {tail(rb[2])}")
+    check(rb[1] == rs[1] == b"", f"stdout: burrow {rb[1]!r}, ssh {rs[1]!r}")
+    return f"exit {rb[0]}, {last[0]!r}, both clients"
+
+
+ROWS = [github_host_key, github_no_key]
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin")
+    ap.add_argument("--probe", action="store_true")
+    a = ap.parse_args()
+    if a.probe:
+        why = probe()
+        print(f"check-github: {why or 'github.com port 22 answers'}")
+        sys.exit(1 if why else 0)
+    BIN = pathlib.Path(a.bin).resolve()
+    if not BIN.exists():
+        print(f"FAIL setup no binary at {BIN}")
+        sys.exit(1)
+    oraclelib.require_oracle()
+    WORK.mkdir(parents=True, exist_ok=True)
+    fails = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:  # a harness fault is a red row too, by name
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-github: {len(ROWS)} rows, {fails} failed, 0 SKIP")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
