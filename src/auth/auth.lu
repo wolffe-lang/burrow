@@ -70,7 +70,7 @@ pub fn query(user: str, blob: List[byte]) -> List[byte] {
 /// signed request's fields up to the key.
 pub fn signed_data(session_id: List[byte], user: str, blob: List[byte]) -> List[byte] {
     var d = List[byte]()
-    wire.put_string(mut d, session_id)
+    let _ = session_id.len
     let h = head(user, method())
     wire.put_raw(mut d, h)
     wire.put_bool(mut d, true)
