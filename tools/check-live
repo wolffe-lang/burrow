@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""check-live — den pushes to the live fixture through burrow and through
+the pinned ssh, and clones it back (B4).
+
+    tools/in-container python3 -I tools/check-live --bin target/native/burrow
+    tools/in-container python3 -I tools/check-live --bin target/native/burrow --self-test
+
+The fixture's URL and the deploy key's path come from BURROW_LIVE_SSH_URL
+and BURROW_LIVE_SSH_KEY, and from nowhere else; without both the row
+prints `SKIP live-push reason=…` and exits 0 (the gate prints the step's
+SKIP at column 0 before it would run). Neither value is ever printed or
+kept: every line this tool writes passes through `redact`, which replaces
+the URL, its repository path and name, and the key's path with `<live>`,
+and the evidence copy is scanned for them and for private key text.
+
+`live-push`, in order, each den command through burrow as `ssh` and then
+through the pinned ssh where it says so:
+  1. a fixed synthetic base commit to `refs/heads/burrow-live-base`, through
+     burrow (a no-op after the first run; GitHub makes an empty
+     repository's first branch its default, which may not be deleted, so
+     the per-run refs are never the first);
+  2. a synthetic commit holding a per-run nonce, pushed by den to
+     `refs/heads/burrow-live/<nonce>/burrow` through burrow and to `…/ssh`
+     through the pinned ssh: den's exit, stdout and stderr compared, with
+     the two ref names as the one normalisation;
+  3. the fixture cloned back by den through each client: both refs at the
+     pushed commit, its objects present, the two clones alike on them;
+  4. both refs deleted through burrow, and a last clone shows them gone.
+
+`--self-test` runs the same steps against a loopback sshd (oraclelib.Sshd)
+serving an empty repository through den's fixture wrappers, with that
+sshd's known_hosts line: the mechanics, before a fixture exists.
+"""
+import argparse
+import hashlib
+import os
+import pathlib
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import zlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+from denlib import (  # noqa: E402
+    DEN,
+    PW_HOME,
+    ROOT,
+    USER,
+    Fail,
+    Fixture,
+    check,
+    clear_home,
+    git,
+    require_den,
+    tail,
+)
+
+WORK = ROOT / "target" / "live"
+KNOWN = ROOT / "ci" / "github-known-hosts"
+SECRETS = []
+
+
+def redact(text):
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    for s in sorted(SECRETS, key=len, reverse=True):
+        text = text.replace(s, "<live>")
+    return text
+
+
+def say(line):
+    print(redact(line), flush=True)
+
+
+def secrets_of(url, key):
+    """The URL, its repository path with and without `.git`, its last name,
+    and the key's path: what must never be written."""
+    out = [url, key]
+    m = re.match(r"^ssh://[^/]+(/.*)$", url) or re.match(r"^[^/:]+:(.*)$", url)
+    if m:
+        path = m.group(1).strip("/")
+        for p in (path, path.removesuffix(".git"), path.rsplit("/", 1)[-1].removesuffix(".git")):
+            if len(p) >= 6:
+                out.append(p)
+    return [s for s in out if s]
+
+
+def make_commit(fx, scratch, text, parent=None):
+    """A commit of one file, at a fixed date, made by the pinned git."""
+    blob = git(fx, "hash-object", "-w", "--stdin", cwd=scratch, data=text.encode()).strip().decode()
+    tree = git(fx, "mktree", cwd=scratch, data=f"100644 blob {blob}\tlive\n".encode()).strip().decode()
+    args = ["-p", parent] if parent else []
+    return git(fx, "commit-tree", tree, *args, "-m", "burrow live row", cwd=scratch).strip().decode()
+
+
+def den_repo(fx, local, scratch, commits):
+    """A den repository holding `scratch`'s objects, loose, HEAD on main at
+    the last of `commits`, and `base` at the first."""
+    r = subprocess.run([str(DEN), "init", "-q", "--bare", str(local)], capture_output=True, timeout=60)
+    check(r.returncode == 0, f"den init: {tail(r.stderr)}")
+    names = git(fx, "--git-dir", scratch, "cat-file", "--batch-all-objects", "--batch-check=%(objectname)").decode().split()
+    for oid in names:
+        kind = git(fx, "--git-dir", scratch, "cat-file", "-t", oid).strip().decode()
+        body = git(fx, "--git-dir", scratch, "cat-file", kind, oid)
+        raw = kind.encode() + b" " + str(len(body)).encode() + b"\0" + body
+        check(hashlib.sha1(raw).hexdigest() == oid, "an object does not hash to its id")
+        p = pathlib.Path(local) / "objects" / oid[:2] / oid[2:]
+        p.parent.mkdir(exist_ok=True)
+        p.write_bytes(zlib.compress(raw, 1))
+    (pathlib.Path(local) / "refs" / "heads" / "main").write_text(commits[-1] + "\n")
+    (pathlib.Path(local) / "refs" / "heads" / "base").write_text(commits[0] + "\n")
+
+
+class Live:
+    def __init__(self, url, key, known_lines, den_env):
+        self.url, self.key = url, key
+        if WORK.exists():
+            shutil.rmtree(WORK)
+        WORK.mkdir(parents=True)
+        os.chmod(WORK, 0o700)
+        self.fx = Fixture(WORK)
+        self.den_env = den_env
+        for client, target in (("burrow", BIN), ("ssh", oraclelib.SSH)):
+            b = WORK / f"via-{client}"
+            b.mkdir()
+            (b / "ssh").symlink_to(target)
+        # The client's home: the container user's own (the pinned ssh reads
+        # the passwd entry's, burrow $HOME); the key named, never copied.
+        if os.environ.get("BURROW_IN_CONTAINER") != "1":
+            raise SystemExit("check-live: refusing to replace ~/.ssh outside the pinned container")
+        clear_home()
+        (PW_HOME / ".ssh").mkdir(mode=0o700)
+        cfg = PW_HOME / ".ssh" / "config"
+        cfg.write_text(f"Host *\n    IdentityFile {key}\n    IdentitiesOnly yes\n")
+        os.chmod(cfg, 0o600)
+        (PW_HOME / ".ssh" / "known_hosts").write_text("".join(known_lines))
+        (PW_HOME / ".gitconfig").write_text("[user]\n\tname = Den Tester\n\temail = den@example.invalid\n")
+        self.log = []
+
+    def den(self, client, args, cwd):
+        env = {"PATH": f"{WORK / ('via-' + client)}:/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C", "TZ": "UTC",
+               "TMPDIR": str(WORK / "tmp")}
+        env.update(self.den_env)
+        (WORK / "tmp").mkdir(exist_ok=True)
+        try:
+            p = subprocess.run([str(DEN), *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=180)
+        except subprocess.TimeoutExpired:
+            raise Fail(f"den {args[0]} through {client} did not finish within 180 s")
+        shown = " ".join("<live>" if a == self.url else a for a in args)
+        self.log.append(redact(f"--- den {shown} through {client}\nexit {p.returncode}\nstdout {p.stdout!r}\nstderr {p.stderr!r}"))
+        return p.returncode, p.stdout, p.stderr
+
+    def clone(self, client, dest):
+        if dest.exists():
+            shutil.rmtree(dest)
+        r = self.den(client, ["clone", "-q", "--bare", self.url, str(dest)], cwd=WORK)
+        check(r[0] == 0, f"den clone through {client}: exit {r[0]}, {redact(tail(r[2]))}")
+        refs = git(self.fx, "--git-dir", dest, "for-each-ref", "--format=%(refname) %(objectname)").decode().splitlines()
+        return r, dict(line.split(" ", 1) for line in refs)
+
+    def run(self):
+        scratch = WORK / "scratch.git"
+        git(self.fx, "init", "-q", "--bare", "-b", "main", scratch)
+        base = make_commit(self.fx, scratch, "burrow live base\n")
+        nonce = secrets.token_hex(8)
+        commit = make_commit(self.fx, scratch, f"burrow live row {nonce}\n", parent=base)
+        src = WORK / "src.git"
+        den_repo(self.fx, src, scratch, [base, commit])
+        prefix = f"refs/heads/burrow-live/{nonce}"
+        refs = {"burrow": f"{prefix}/burrow", "ssh": f"{prefix}/ssh"}
+        # 1. the base, through burrow
+        r = self.den("burrow", ["push", "-q", self.url, "refs/heads/base:refs/heads/burrow-live-base"], cwd=src)
+        check(r[0] == 0, f"the base push: exit {r[0]}, {redact(tail(r[2]))}")
+        # 2. the same push through each client
+        pushed = {}
+        for client in ("burrow", "ssh"):
+            pushed[client] = self.den(client, ["push", "-q", self.url, f"HEAD:{refs[client]}"], cwd=src)
+        norm = {c: (r[0], r[1], r[2].replace(refs[c].encode(), b"<ref>").replace(refs[c][11:].encode(), b"<ref>"))
+                for c, r in pushed.items()}
+        check(norm["burrow"] == norm["ssh"],
+              f"the pushes differ: burrow {redact(repr(norm['burrow']))[:300]}; ssh {redact(repr(norm['ssh']))[:300]}")
+        check(pushed["burrow"][0] == 0, f"the push: exit {pushed['burrow'][0]}, {redact(tail(pushed['burrow'][2]))}")
+        # 3. cloned back through each client
+        back = {}
+        for client in ("burrow", "ssh"):
+            dest = WORK / f"back-{client}.git"
+            _, got = self.clone(client, dest)
+            for c, ref in refs.items():
+                check(got.get(ref) == commit, f"through {client}, {ref[len(prefix):]} is {got.get(ref, 'absent')}")
+            objects = git(self.fx, "--git-dir", dest, "rev-list", "--objects", commit).decode().split()
+            back[client] = ({k: v for k, v in got.items() if k.startswith(prefix)}, sorted(objects))
+        check(back["burrow"] == back["ssh"], "the two clones differ on the pushed refs or objects")
+        # 4. both refs deleted through burrow, and gone
+        r = self.den("burrow", ["push", "-q", self.url, f":{refs['burrow']}", f":{refs['ssh']}"], cwd=src)
+        check(r[0] == 0, f"the deletion: exit {r[0]}, {redact(tail(r[2]))}")
+        _, after = self.clone("burrow", WORK / "after.git")
+        check(not any(k.startswith(prefix) for k in after), "the pushed refs are still there after the deletion")
+        return f"commit {commit[:12]} pushed alike through both clients, cloned back alike ({len(back['burrow'][1])} objects), deleted"
+
+
+def keep_evidence():
+    out = ROOT / "target" / "evidence" / "live"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    (out / "compare.txt").write_text("\n".join(LIVE.log) + "\n" if LIVE else "")
+    bad = []
+    for p in [out] + sorted(out.rglob("*")):
+        os.chmod(p, 0o755 if p.is_dir() else 0o644)
+        if p.is_file():
+            data = p.read_bytes()
+            if b"PRIVATE KEY" in data or b"b3BlbnNzaC1rZXktdjE" in data:
+                bad.append(f"{p.relative_to(ROOT)} holds private key text")
+            if any(s.encode() in data for s in SECRETS):
+                bad.append(f"{p.relative_to(ROOT)} holds the fixture's URL, name or key path")
+    for why in bad:
+        print(f"FAIL evidence {why}", flush=True)
+    if not bad:
+        print("check-live: evidence in target/evidence/live, readable, no key material, no fixture name")
+    return len(bad)
+
+
+LIVE = None
+
+
+def main():
+    global BIN, LIVE
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--self-test", action="store_true")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    name = "live-self-test" if a.self_test else "live-push"
+    url, key = os.environ.get("BURROW_LIVE_SSH_URL", ""), os.environ.get("BURROW_LIVE_SSH_KEY", "")
+    if not a.self_test and not (url and key):
+        print(f"SKIP {name} reason=BURROW_LIVE_SSH_URL and BURROW_LIVE_SSH_KEY are not both set", flush=True)
+        sys.exit(0)
+    oraclelib.require_oracle()
+    require_den()
+    os.umask(0o022)
+    fails = 0
+    server = None
+    try:
+        if a.self_test:
+            # A loopback stand-in: an empty repository behind den's wrappers.
+            d = ROOT / "target" / "live-self-test"
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir(parents=True)
+            os.chmod(d, 0o711)
+            keydir = d / "key"
+            keydir.mkdir(mode=0o700)
+            key = str(keydir / "id_ed25519")
+            subprocess.run([str(BIN.parent / "burrow-keygen"), "-q", "-t", "ed25519", "-N", "", "-f", key], check=True,
+                           capture_output=True)
+            fx = Fixture(d)
+            fx.empty("fixture-repo.git")
+            # As GitHub does, an empty repository's first branch becomes its
+            # HEAD: here the base's name, unborn until the first push.
+            git(fx, "symbolic-ref", "HEAD", "refs/heads/burrow-live-base", cwd=fx.path("fixture-repo.git"))
+            fx.reset_server()
+            server = oraclelib.Sshd(d / "sshd", ["AcceptEnv GIT_PROTOCOL"], authorized=[key + ".pub"])
+            server.__enter__()
+            url = f"ssh://{USER}@127.0.0.1:{server.port}{fx.served('fixture-repo.git')}"
+            SECRETS.extend(secrets_of(url, key))
+            LIVE = Live(url, key, [server.known_hosts_line()], {"DEN_UPLOAD_PACK": fx.upload, "DEN_RECEIVE_PACK": fx.receive})
+        else:
+            SECRETS.extend(secrets_of(url, key))
+            check(os.path.isfile(key), "BURROW_LIVE_SSH_KEY names no file")
+            algo, blob = KNOWN.read_text().split()[1:3]
+            LIVE = Live(url, key, [f"github.com {algo} {blob}\n", f"[ssh.github.com]:443 {algo} {blob}\n"], {})
+        note = LIVE.run()
+        print(f"PASS {name} ({redact(note)})", flush=True)
+    except Fail as e:
+        fails += 1
+        print(f"FAIL {name} {redact(str(e))}", flush=True)
+    except Exception as e:  # a harness fault is a red row too, by name
+        fails += 1
+        print(f"FAIL {name} harness: {type(e).__name__}: {redact(str(e))}", flush=True)
+    finally:
+        if server:
+            server.__exit__(None, None, None)
+        clear_home()
+    print(f"check-live: 1 rows, {fails} failed, 0 SKIP")
+    fails += keep_evidence()
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
