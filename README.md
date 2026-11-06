@@ -7,12 +7,15 @@ for PAX and the same on Linux and macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B3, auth, keys and one command on a session channel.** burrow
-connects, verifies the server's host key against known_hosts (plain and
-hashed entries; strict by default, `accept-new` and `no` as `ssh` has them),
-logs in with an Ed25519 key in OpenSSH's own format, runs one command with
-stdin, stdout and stderr as raw bytes, and exits with the command's status.
-It takes the command line den passes:
+**State: B4, den over burrow.** burrow connects, verifies the server's host
+key against known_hosts (plain and hashed entries; strict by default,
+`accept-new` and `no` as `ssh` has them), logs in with an Ed25519 key in
+OpenSSH's own format, runs one command with stdin, stdout and stderr as raw
+bytes, and exits with the command's status. Linked as `ssh` on PATH, it
+carries [den](https://github.com/wolffe-lang/den)'s clone, fetch and push
+over `ssh://` and scp-like URLs byte for byte as the pinned OpenSSH client
+does, and a static build is ready for PAX. It takes the command line den
+passes:
 
 ```sh
 ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]
@@ -27,8 +30,10 @@ none`, `HashKnownHosts`, `HostKeyAlias`, `Hostname`, `IdentitiesOnly`,
 `IdentityFile`, `Port`, `RekeyLimit`, `SendEnv`, `SetEnv`,
 `StrictHostKeyChecking`, `UpdateHostKeys no`, `User` and
 `UserKnownHostsFile`. Anything else is refused by name, never ignored. No
-interactive shell, pty, agent or forwarding: den over burrow is B4
-([MAP](docs/MAP.md)).
+interactive shell, pty, agent or forwarding ([MAP](docs/MAP.md)): with no
+command, burrow logs in and then refuses by name (`shell_unsupported`), so a
+keyless probe such as `ssh -T git@github.com` is refused authentication as
+`ssh` refuses it.
 
 ## What it speaks, and what it refuses
 
@@ -66,6 +71,7 @@ tools/fetch-toolchain                 # wolf 0.2.37, lupin 0.1.59, the bundled s
 tools/build --all                     # target/{native,release}/{burrow,burrow-keygen}, rows/kexprobe
 tools/check-test                      # src/*_test.lu: checked machine, native, lupin
 tools/in-container tools/fetch-oracle # OpenSSH 10.0p2, built in the pinned image
+tools/in-container tools/fetch-den    # den at its pin (burrow-den.toml), built by its own tools
 tools/gate                            # the whole gauntlet, in the container
 ```
 
@@ -74,8 +80,11 @@ tools/gate                            # the whole gauntlet, in the container
 digests, the CI planner's tests, the vectors (`tools/vectorgen.py`
 regenerates `src/kexvec` byte for byte from the RFCs, `tools/nistvec.py`
 `src/sha1vec` from NIST's vectors), formatting, both compiler tiers, the
-unit rows, the transport, session and hostile-peer rows on both tiers, and
-the measurement against the pinned `ssh`.
+unit rows, the transport, session and hostile-peer rows on both tiers, den
+over burrow on both tiers, GitHub read only, the live push, the static
+build, and the two measurements against the pinned `ssh`. A step that cannot
+run where the gauntlet runs (GitHub unreachable, the live variables unset)
+prints `SKIP <step> reason=…` at column 0 instead: never a pass.
 
 The transport rows (`tools/check-transport`) hold burrow to the pinned
 `sshd`, each row starting its own on a loopback port with keys made for that
@@ -105,11 +114,37 @@ unrequested USERAUTH_SUCCESS, an `exit-status` for another channel, and
 byte and `cat` throughput to stated margins against the pinned `ssh`;
 `tools/measure-handshake` compares the cost of a handshake (evidence only).
 
+**den over burrow** (`tools/check-den`, B4): den, at the commit
+`burrow-den.toml` pins and built by its own tools at its own toolchain pin
+(`tools/fetch-den`, which also holds den's git oracle to its digest), runs
+each of its ssh rows twice, with PATH's `ssh` a link to burrow and then to
+the pinned `ssh`, against one pinned `sshd` with `AcceptEnv GIT_PROTOCOL`
+and den's own fixture shape (service wrappers into den's pinned git,
+which pass on only the `GIT_PROTOCOL` that arrived). Clone over `ssh://`
+with a user and a port, through a `Host` alias, scp-like with and without a
+user, a checkout, paths with a space, a quote and a semicolon; incremental
+fetch; push over both forms; `--force-with-lease` stale and matching;
+`--atomic` accepted and refused; a push den rejects and one the server
+rejects; and the v0 refusal. Each compares den's exit code, stdout and
+stderr byte for byte, the local and server repositories (refs, objects,
+fsck) and what each service received. `tools/check-github` holds burrow
+to the pinned `ssh` against GitHub's real server, read only and with no
+key: GitHub's published host key, and the same refusal. `tools/check-live`
+pushes to a live fixture and clones it back through both clients, from
+`BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone (it never prints
+either), and runs the same steps against a loopback `sshd` as a self-test.
+`tools/check-static` holds the static binaries' shape and runs den rows
+through the static `burrow`; `tools/measure-den` compares den's clone through
+burrow with its clone through the pinned `ssh`.
+
 ## CI
 
 Unlabelled pull requests run one cheap job that points at the local
 gauntlet. The `ci` or `full-matrix` label runs the full set: the Linux
-gauntlet in the pinned container and the macOS unit rows. Trunk pushes run
+gauntlet in the pinned container and the macOS unit rows. den over burrow,
+GitHub, the live push and the measurements are the local gauntlet's (den's
+git oracle is built in den's own image, whose digest a runner is not held
+to reproduce). Trunk pushes run
 it when CI, tools or pins change, and the nightly runs it always; a red
 nightly opens an issue.
 
@@ -142,7 +177,10 @@ used: `std.x.crypto.curve25519` (X25519 and Ed25519),
 and digest and run in a container as black boxes. A test row holds burrow's
 bytes, behaviour and exit status to the pinned OpenSSH client talking to the
 same pinned `sshd`, on loopback ports the test owns, with keys generated for
-that run. No row contacts a real host.
+that run. Two rows contact a real host, and say so: `tools/check-github`
+(GitHub, read only, no key) and `tools/check-live` (the live fixture, from
+its variables only). den's own sources are read as the consumer's, and git
+only through den's documentation and its pinned binary as a black box.
 
 ## Licence
 
