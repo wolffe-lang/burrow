@@ -220,3 +220,193 @@ held (a perf step).
 - **den: nothing.** Its trunk `ef0bb0c` is built as it is, and its argv,
   its wrappers' shape and its rows are read, never edited. If den needed a
   change, the lane would hand back with an R-bw03-N.
+
+## Forbidden
+
+No ssh implementation's code or tests were read: no `.c` or `.h` file of
+any OpenSSH release, nothing of dropbear, libssh, libssh2, Go's
+`x/crypto/ssh`, paramiko, asyncssh, russh, thrussh, conch, PuTTY or
+wolfSSH, and no SHA or HMAC library's source. No git source: den's git is
+its pinned binary, a black box, and no git documentation was needed. den's
+own code and tools were read as the consumer's (SOURCES lists the files);
+den was not edited, and its tree is checked clean at its pin by every
+`tools/fetch-den`. Two rows contact a real host, by design and only these:
+GitHub's server, read only and with no key (the handshake and RFC 4252's
+`none` request), and the live fixture, from `BURROW_LIVE_SSH_URL` and
+`BURROW_LIVE_SSH_KEY` alone. Keys are made per run by `burrow-keygen`;
+private keys stay in 0700 run directories or the container user's own
+`~/.ssh`, which each row replaces and clears; evidence copies are scanned
+for key files, private key text and (the live row) the fixture's URL, name
+and key path. The deploy key was made by `burrow-keygen` in the lane's own
+directory on the Linux host, and only its public line left it. The plant
+branch has no PR and no CI run.
+
+## Inputs verified
+
+Footprint: cross-cutting
+
+- The toolchain and OpenSSH pins are unchanged from trunk `2077c87` (wolf
+  0.2.37, lupin 0.1.59, std `5b3a599`, OpenSSH 10.0p2), each held to its
+  digest by `tools/fetch-toolchain` and `tools/fetch-oracle` in every take.
+- **A new pin, `burrow-den.toml`:** den at its trunk `ef0bb0c` (fetched by
+  that commit alone, checked out clean, built by den's own
+  `tools/fetch-toolchain` at its own pin, wolf 0.2.36 `5adf3d9` and std
+  `78b9d3c`, and its own `tools/build --native`), and den's git oracle,
+  git 2.56.0 with binary sha256
+  `c4848492938c4ebfffbefe1fbbaa68b9af90c86d1f6a20e76816c5ff37fcfa60`, the
+  digest den's own `den-oracle.toml` pins (checked against it at the pin).
+  The tree was built by den's own `tools/fetch-oracle` in den's image and
+  reused by copy; `tools/fetch-den` refuses any other digest.
+- GitHub's published host key (`ci/github-known-hosts`) and fingerprint,
+  from GitHub's meta API and its fingerprints page, by sha256 in SOURCES.
+- `tools/in-container` gains a pass-through for three variables, and the
+  gate gains its B4 steps; CI's workflow is unchanged (R-bw03-3).
+
+Commits, in order (the row first wherever a row exists):
+
+- `0a0b2ba` the prediction.
+- `1e746cd` the den pin; `ce390c5` `6fb9080` `tools/fetch-den`.
+- `369d50b` `59ab214` `b22d1ef` `tools/check-den` (rows, the fixture's git
+  environment, the passwd home); `3a9687d` the gate's den steps.
+- `ba1f956` `882e14d` `tools/check-github`, red against `2077c87`'s burrow;
+  `4c4fb9c` the gate's `github` step and its SKIP.
+- `9b83991` `cli-no-command` logs in first (red); `8fecc2f` R-bw03-1, the
+  fix; `43d4e18` the rejection rows' assertions.
+- `e84fa3c` `tools/denlib.py`; `2c035b8` `tools/check-live`; `8eca493`
+  `9c881db` `27c8085` `tools/measure-den` and its size; `4aef680`
+  `tools/check-static`; `2e0fa05` the gate's last steps; `13a8ef8` counts
+  and flushes.
+- `292e148` `9540a7d` README, `dd05cec` MAP, `c4a4dea` SOURCES, `4a27c96`
+  CHANGELOG; and this note.
+
+## Evidence index
+
+**The rows.** den's 18 rows (`tools/check-den`) pass on both of burrow's
+tiers, every compared field equal through burrow and through the pinned
+`ssh`; two of them pass again through the static `burrow`
+(`tools/check-static`). The GitHub rows (2) and the live row's loopback
+self-test (1) pass; the live row SKIPs by name without its variables. The
+existing families are unchanged in count and green: 14 unit rows, 25
+transport rows and 44 session rows on both tiers, 8 hostile-peer rows on
+both tiers.
+
+**Red first.**
+
+- den's rows needed no burrow change, as predicted: at `882e14d`, whose
+  burrow source is `2077c87`'s, all 18 passed on their first full run. Their
+  red is the plant's (below): they are rows that hold behaviour bw02 built.
+- `github-host-key` and `github-no-key` were red at `882e14d`, by name:
+  burrow refused `shell_unsupported` before connecting. Both passed after
+  `8fecc2f`.
+- `cli-no-command` was red at `9b83991` (`sshd did not log the login before
+  the refusal`) and passed after `8fecc2f`.
+
+**The prediction, hit and missed.**
+
+| predicted | measured |
+|---|---|
+| den's argv and environment as tabled, for every URL form | hit: each row's command reached the wrappers as den quoted it (paths with a space, a quote and a semicolon too), and each service received `GIT_PROTOCOL=version=2` |
+| receive-pack is sent `version=2` too, and serves v0 framing | hit (`receive version=2` in the wrappers' log; den's push reads it) |
+| den's rows need no burrow change | hit (above) |
+| den's early close (v0 refusal, a push den rejects) puts nothing on its stderr from either client | hit: `den-v0-refusal` and `den-push-rejected` equal through both |
+| burrow-as-`ssh` and the pinned `ssh` read the same `$HOME/.ssh` | **miss**: the pinned `ssh` reads `~/.ssh` from the passwd entry, never `$HOME` (its `-v` names `/root/.ssh`); the rows install their `.ssh` as the container user's own (R-bw03-5) |
+| a remote's stderr reaches den's stderr alike | hit: `error: denying non-fast-forward …` from the server's receive-pack, byte for byte (`den-push-server-rejected`) |
+| with no command, burrow refuses before connecting, so the GitHub rows are red until R-bw03-1 | hit (above) |
+| GitHub offers `curve25519-sha256`, strict kex, `ssh-ed25519`, `chacha20-poly1305@openssh.com`, EXT_INFO with `server-sig-algs` | hit, with `publickey-hostbound@openssh.com` too; the pinned `ssh` chose `mlkem768x25519-sha256`, burrow `curve25519-sha256` |
+| GitHub's ed25519 fingerprint is the published `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU` | hit, and both clients accepted the published line strictly |
+| with no identity both are refused `git@github.com: Permission denied (publickey).`, exit 255 | hit (burrow sent `none`, as RFC 4252 §5.2 names the methods) |
+| static binaries with no interpreter | hit: no `PT_INTERP`, no dynamic section; the static `burrow-keygen` also ran on a Linux host whose userland is not the image's (it made the deploy key) |
+| the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (R-bw03-4). The fixture is 60 commits and 8 large files |
+
+**Where constant time matters.** Unchanged from bw02: the Poly1305 tag
+check through `wire.ct_eq`; the user key's signature is not constant time
+(wolf-std's `curve25519.sign`). B4 adds no comparison of secret data.
+
+**Rulings.**
+
+- **R-bw03-1, no command.** burrow refused `shell_unsupported` before it
+  connected, so a keyless `ssh -T git@github.com` never reached GitHub.
+  (a) Refuse after the login, before any channel (implemented: a keyless
+  probe is refused authentication as `ssh` refuses it; a login with no
+  command still ends by name, DISCONNECT 11); (b) a `shell` request without
+  a pty under `-T`, so `ssh -T git@github.com` with a key prints GitHub's
+  greeting as `ssh` does; (c) keep the refusal before connecting, and drop
+  the GitHub row. Recommended: (a); (b) when a lane wants interactive use on
+  PAX (it amends R-bw02-10).
+- **R-bw03-2, the live fixture.** The row needs a private, disposable
+  repository with this lane's deploy key (write access), its URL in
+  `BURROW_LIVE_SSH_URL` and the key's path in `BURROW_LIVE_SSH_KEY`, both
+  set only in the lane's environment. The row writes only
+  `refs/heads/burrow-live-base` (a fixed synthetic commit, pushed once and
+  then a no-op, because GitHub makes an empty repository's first branch its
+  default and refuses to delete it) and `refs/heads/burrow-live/<nonce>/…`,
+  which it deletes at the end. (a) As above (implemented); (b) the fixture
+  is seeded with a default branch first, and the row writes only its per-run
+  refs. Recommended: (a).
+- **R-bw03-3, den's rows in CI.** den's git oracle is built by den's own
+  tools in den's image, whose packages are not snapshot-pinned, so a fresh
+  runner is not held to reproduce its digest. (a) den's rows, GitHub, the
+  live row and the measurements run in the local gauntlet only; CI's
+  workflow is unchanged (implemented); (b) a CI job that builds den's oracle
+  with den's own tools (a digest drift would turn it red for no fault of
+  burrow's); (c) build git 2.56.0 from den's verified tarball in burrow's
+  snapshot-pinned image, under a digest burrow pins. Recommended: (a) now,
+  (c) as a follow-on lane if den's rows should run in CI.
+- **R-bw03-4, the measurement's size.** den's clone holds the history in
+  memory and its peak RSS grows faster than the history (above). (a) A
+  fixture den clones comfortably, 60 commits and 8 incompressible 256 KiB
+  files (implemented); (b) wait for a streaming clone in den. Recommended:
+  (a), and the den issue below.
+- **R-bw03-5, the client's home.** The pinned `ssh` reads `~/.ssh` from the
+  passwd entry, burrow from `$HOME` (R-bw02-4). (a) Each row installs its
+  `.ssh` as the container user's own and sets `HOME` to that directory, so
+  den's argv stays exactly den's (implemented; the tools refuse to do it
+  outside the pinned container); (b) pass `-F` and `UserKnownHostsFile` to
+  the pinned `ssh` (not den's argv: not the same rows). Recommended: (a).
+- **R-bw03-6, the resolver on PAX** (the track's "decide at bw03"). (a)
+  No resolver in burrow: `~/.ssh/config`'s `HostName` (an address from
+  GitHub's published `git` ranges) and `HostKeyAlias github.com` (no code;
+  the px lane's first push uses it); (b) a minimal DNS A/AAAA client in
+  burrow over UDP from `/etc/resolv.conf`; (c) wait for wolf-std#4's
+  resolver. Recommended: (a) for the first PAX push, then (c); (b) only if
+  std's resolver is far off, since it would be burrow's alone.
+
+**Issues to file** (for the orchestrator; none filed here):
+
+- den: a clone's peak RSS grows faster than the history. Through the pinned
+  OpenSSH client, a bare clone of a fixed fixture peaked at 348 MiB (30
+  commits, about 500 objects), 954 MiB (60), 3.3 GiB (120) and 12.2 GiB
+  (300 commits, about 3,200 objects), so den's 10,000-object bound is out of
+  reach in a 12 GiB container. Its wall time is also mostly not CPU (60
+  commits: 21 s wall, 1.3 s CPU). The fixture is `tools/measure-den`'s
+  (`--commits`, `--binaries`, `--clients ssh`).
+- burrow: none.
+
+## For the px lane (a draft of its first items)
+
+B4's last row, a typed PAX session pushing to the fixture, is a px lane's.
+What it needs from here:
+
+1. **The binaries.** `tools/build --static` at burrow's merged head, in the
+   pinned Ubuntu image; `tools/check-static` prints both sha256 digests and
+   holds their shape (no interpreter, no dynamic section). Install
+   `target/static/burrow` as `/bin/ssh` and `target/static/burrow-keygen` as
+   `/bin/burrow-keygen`, held to those digests.
+2. **Entropy.** burrow and `burrow-keygen` read `/dev/urandom` and refuse by
+   name (`entropy_unavailable`) without it: the first row on PAX is
+   `burrow-keygen -t ed25519 -f ~/.ssh/id_ed25519` succeeding, and its
+   public line reading back with `-y`.
+3. **The home.** `$HOME/.ssh` with that key (0600), a `known_hosts` with
+   GitHub's published line (`ci/github-known-hosts`), and a `config`:
+   `Host github.com`, `HostName` an address from GitHub's published `git`
+   ranges, `HostKeyAlias github.com` (no resolver, R-bw03-6).
+4. **The network.** TCP to port 22 from the console kernel, once PAX's
+   network lane lands; then `ssh -T git@github.com` without a key, refused
+   as `tools/check-github` holds it, is the first network row.
+5. **The push.** den on PAX, `GIT_PROTOCOL` sent by `SendEnv`: a synthetic
+   ref pushed to the fixture by a typed session and cloned back on Linux
+   by `tools/check-live`'s steps, the deploy key made on PAX by
+   `burrow-keygen` with only its public half leaving PAX.
+6. **The cost.** One handshake and one push timed on PAX against the same
+   on Linux, as evidence (wolf-std's checked-`int` X25519 and Ed25519 run
+   on PAX's CPU there).
