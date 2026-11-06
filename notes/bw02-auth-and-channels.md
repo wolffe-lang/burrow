@@ -407,20 +407,42 @@ Commits, in order (the row first wherever a row exists):
 - `9764f38` the oracle, hostile and measured rows, red against B1's CLI.
 - `5bd9f04` burrow-keygen, `8b8ba4e` the session, `30d6189` the CLI.
 - `a4ce0e7` README, MAP, SOURCES, CHANGELOG; and this note.
+- After review: `5ed6105` the test options' prediction; `0c30d2f` and
+  `a407b94` their rows, red; `f7fe1d6` the PING miss written into the rows;
+  `839b08c` the waiver out of burrow's command line, `5ed3b23` the row
+  program, `4acfe04` its build; `d8e758a` the inert rows' wording;
+  `8f9611d`, `070a272` and `ff30d6f` README, MAP and CHANGELOG.
 
 ## Evidence index
 
 **The rows.** Fourteen unit rows (`src/*_test.lu`, seven of them B2's and
 B3's: `sha1`, `keyfile`, `keyseed`, `knownhosts`, `auth`, `channel`,
 `config`) pass on the checked machine, natively and on lupin, none falling
-back to native. The transport rows (21, B1's, now logging in with a
-per-run client key), the session rows (44) and the hostile-peer rows (8)
-pass against the pinned OpenSSH and the scripted server on both tiers. Each
-row family was red first: the unit rows at their stub commits, by assertion
-(`2a475f0`, `2713e86`, `308e91f`, `d9727a3`, `4eabc30`, `64649ce`,
-`6dce587`), and the oracle rows at `9764f38`, against B1's CLI. The final
-head's gauntlet record, its `END` lines and the plant record are in the PR
-body.
+back to native. The transport rows (25: B1's 21, now logging in with a
+per-run client key, and four from review), the session rows (44) and the
+hostile-peer rows (8) pass against the pinned OpenSSH and the scripted server
+on both tiers. Each row family was red first: the unit rows at their stub
+commits, by assertion (`2a475f0`, `2713e86`, `308e91f`, `d9727a3`,
+`4eabc30`, `64649ce`, `6dce587`), and the oracle rows at `9764f38`, against
+B1's CLI. The final head's gauntlet record, its `END` lines and the plant
+record are in the PR body.
+
+**The test options, after review.** At `a407b94`, the rows ran before the
+change:
+- `config_test` was red by assertion at line 150 on all three machines.
+- `no-strict-kex-refused` was red: exit 0, since B1's command line took the
+  flag and logged in.
+- `downgrade-caught` was red: no row probe.
+- The three inert rows passed, because the options were already inert, with
+  one miss written into its row (below).
+
+At `4acfe04` all five rows passed on both tiers. The inert rows were then
+seen red by two witness branches, never pushed to GitHub. Each adds one
+hunk to `src/burrow.lu` that weakens one property only when a test option
+is given:
+- `d36d37c` waives strict kex: all three rows red at `strict kex stripped`.
+- `8cfd5cd` sets `StrictHostKeyChecking=no`: all three rows red at
+  `unknown host key`, since burrow went on past an unknown key.
 
 **The prediction, hit and missed.**
 
@@ -443,6 +465,8 @@ body.
 | (not predicted) | `-l` wins over `user@host` in the pinned `ssh`; burrow followed (`cli-user-precedence`) |
 | (not predicted) | the pinned `ssh` ends its log lines in CR LF; burrow's end in LF, and the rows compare lines (R-bw02-2) |
 | (not predicted) | OpenSSH 10's per-source penalties refuse 127.0.0.1 after a few failed logins; the rows' `sshd` sets `PerSourcePenalties no` |
+| `--no-strict-kex`, once removed, is `option_unknown` before any connection | hit (`no-strict-kex-refused`: exit 255, `sshd` logs no connection) |
+| the pinned `sshd` answers a PING between SERVICE_ACCEPT and the login | **miss**: it answers nothing there, so burrow under `--test-preauth` refuses `timeout` and never logs in; `test-preauth-inert` holds that (no login in burrow's output or `sshd`'s log) |
 | 64 MiB through `cat` within 60 s at `--release`, 5 minutes native | hit: 1.19 s release, 5.37 s native (the pinned `ssh`: 0.34 s) |
 | `cat` CPU 10x to 100x `ssh`'s | in the PR body (the final record's `measure` step) |
 | login to first byte, 1.2x to 4x `ssh`'s wall | in the PR body |
@@ -511,10 +535,19 @@ check-word comparisons use `wire.ct_eq`, though neither guards a secret.
   (b) `publickey-hostbound-v00@openssh.com`, as the pinned `ssh` does.
   Recommended: (a): the binding serves agent restrictions, and burrow has no
   agent.
-- **R-bw02-8, the test options.** `--test-traffic`, `--test-preauth` and
-  `--test-window` stay in the release binary, as bw01's did, named in the
-  program's header and MAP. Recommended: keep them until a lane moves them
-  behind a build flag.
+- **R-bw02-8, the test options**, answered after review. B1's
+  `--no-strict-kex` waived strict kex in the release binary: it weakened a
+  security property, and wolf 0.2.37 cannot compile it out of one tier
+  alone. So it left burrow's command line on every tier (`839b08c`). It is
+  now `option_unknown`, refused before any connection
+  (`no-strict-kex-refused`), and `downgrade-caught` runs `rows/kexprobe`
+  instead. `--test-traffic`, `--test-preauth` and `--test-window` change
+  only load and window size. Each stays, held inert for security by its own
+  row (`test-traffic-inert`, `test-preauth-inert`, `test-window-inert`) and
+  seen red by the two witnesses above. Recommended: keep the three, and put
+  them behind a build flag if wolf gains a tier conditional.
+
+Review accepted R-bw02-1 to 7, 9 and 10 as recommended.
 - **R-bw02-9, `@revoked`.** A `@revoked` line holding the presented key
   refuses whatever its host patterns (B1's behaviour, kept). Recommended:
   keep; it is stricter than matching hosts first.
@@ -528,9 +561,14 @@ check-word comparisons use `wire.ct_eq`, though neither guards a secret.
 - wolf-std: constant-time Ed25519 signing (the scalar multiplication's
   bit-gated add; std records it as an obligation already).
 - wolf-std#131 (SHA-1): when it lands, `src/sha1` goes.
-- lupin: a bare hex literal in a `wrapping[u64]` struct field's initializer
-  is read as `i32` and traps (`src/sha1`'s initial words needed typed
-  `let`s); native and the checked machine take it.
+- lupin 0.1.59: a `wrapping[u64]` struct field set from a bare literal above
+  `i32`'s range traps when the field is read into an unannotated binding
+  (`let b = s.h1`): lupin gives the binding the literal's default type,
+  `i32`. A typed binding works, and native and the checked machine print
+  the value. The reduction found this. The first account here blamed the
+  initializer, which is why `src/sha1`'s initial words became typed `let`s.
+  When the read is in another module, the trap's site also names the entry
+  file, at a line past its end.
 
 ## For bw03
 
@@ -580,6 +618,8 @@ the pinned `sshd` and compares with the pinned `ssh`.
   refusal by name and held to `ssh`'s exit code and line.
 - [x] Hostile peers, each refused or survived by name.
 - [x] Measured against the pinned `ssh`, with stated margins.
+- [x] Review: no strict-kex waiver in burrow on any tier; each test option
+  held inert for security by a row, red first or by witness.
 - [x] README, MAP, SOURCES and CHANGELOG refreshed.
 - [ ] The final-head gauntlet record, the plant record and the audit: in the
   PR body.
