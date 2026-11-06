@@ -7,6 +7,10 @@
 #                          is the recipe's digest, so a changed recipe is a new image
 #   BURROW_CPUS            a CPU list: CMD runs under taskset inside the container
 #   BURROW_CONTAINER_ARGS  more engine arguments (--memory 12g, extra mounts)
+#   BURROW_DEN_GIT_ROOT    passed through when set (tools/fetch-den's git source)
+#   BURROW_LIVE_SSH_URL, BURROW_LIVE_SSH_KEY
+#                          passed through when set, for the live row
+#                          (tools/check-live); never printed here
 set -eu
 BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 engine=${BURROW_ENGINE:-podman}
@@ -22,6 +26,11 @@ image=${BURROW_IMAGE:-localhost/burrow-oracle}:$tag
 mkdir -p "$BURROW_ROOT/target/tmp"
 pin=""
 [ -z "${BURROW_CPUS:-}" ] || pin="taskset -c $BURROW_CPUS"
+pass=""
+for v in BURROW_DEN_GIT_ROOT BURROW_LIVE_SSH_URL BURROW_LIVE_SSH_KEY; do
+    eval "isset=\${$v+x}"
+    [ -z "$isset" ] || pass="$pass -e $v"
+done
 # shellcheck disable=SC2086
-exec "$engine" run --rm ${BURROW_CONTAINER_ARGS:-} -e BURROW_IN_CONTAINER=1 -e BURROW_JOBS -e LC_ALL=C \
+exec "$engine" run --rm ${BURROW_CONTAINER_ARGS:-} -e BURROW_IN_CONTAINER=1 -e BURROW_JOBS -e LC_ALL=C $pass \
     -e TMPDIR=/work/burrow/target/tmp -v "$BURROW_ROOT:/work/burrow:Z" -w /work/burrow "$image" $pin "$@"

@@ -22,12 +22,17 @@
 #   session-release     the same rows, release
 #   hostile     a scripted server that misbehaves (tools/fakeserver.py), native
 #   hostile-release     the same rows, release
+#   den-pin     den at burrow-den.toml's pin, built by its own tools, and its
+#               git oracle, by digest (tools/fetch-den)
+#   den         den's ssh rows with burrow as `ssh`, each held byte for byte to
+#               the same den command through the pinned ssh, native
+#   den-release the same rows, release
 #   measure     login to first byte and cat throughput against the pinned ssh,
 #               release, held to the prediction's margins (a perf step: run
 #               the gauntlet with nothing beside it)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release measure"
+ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release den-pin den den-release measure"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -55,6 +60,9 @@ run() {
     session-release) tools/in-container python3 -I tools/check-session --bin target/release/burrow ;;
     hostile) tools/in-container python3 -I tools/check-hostile --bin target/native/burrow ;;
     hostile-release) tools/in-container python3 -I tools/check-hostile --bin target/release/burrow ;;
+    den-pin) tools/in-container tools/fetch-den ;;
+    den) tools/in-container python3 -I tools/check-den --bin target/native/burrow ;;
+    den-release) tools/in-container python3 -I tools/check-den --bin target/release/burrow ;;
     measure) tools/in-container python3 -I tools/measure-session --bin target/release/burrow ;;
     *)
         echo "gate: no step $1 (steps: $ALL)"
