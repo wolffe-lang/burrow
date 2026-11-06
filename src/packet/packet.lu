@@ -77,7 +77,11 @@ pub fn plain() -> Direction {
 pub fn take_keys(mut d: Direction, material: List[byte], strict: bool) {
     d.keyed = true
     d.wrapped = false
-    d.keys = chachapoly.keys(material)
+    // Field by field, each a `copy`: a re-exchange inside a session turn's
+    // region stores keys that outlive the turn ([mem.region.outer-write]).
+    let k = chachapoly.keys(material)
+    d.keys.main = copy k.main
+    d.keys.header = copy k.header
     d.packets = 0
     d.bytes = 0
     if strict {

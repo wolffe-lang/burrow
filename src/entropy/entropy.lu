@@ -14,6 +14,7 @@
 //! ct: the bytes are never branched on or indexed by.
 
 use std.fs
+use std.list
 use refuse
 
 /// A buffer of random bytes and where its refills come from.
@@ -33,29 +34,32 @@ pub fn fixed(bytes: List[byte]) -> Source {
     Source { buf: copy bytes, pos: 0, path: "" }
 }
 
+// Keeps the unread bytes, then tops the buffer up from the source, in
+// place: the buffer is never replaced, so a draw inside a session turn's
+// region stores nothing that dies with the turn ([mem.region.outer-write]).
 fn refill(mut p: Source, want: int) -> () ! refuse.Refusal {
     if p.path == "" {
         return entropy_unavailable
     }
     var f = fs.open(p.path) else { return entropy_unavailable }
-    var fresh = List[byte]()
-    var i = p.pos
-    while i < p.buf.len {
-        (mut fresh).push(p.buf[i])
+    let keep = p.buf.len - p.pos
+    var i = 0
+    while i < keep {
+        p.buf[i] = p.buf[p.pos + i]
         i += 1
     }
-    while fresh.len < want + 4096 {
+    list.truncate(mut p.buf, keep)
+    p.pos = 0
+    while p.buf.len < want + 4096 {
         let chunk = fs.read_chunk(mut f, 4096) else {
             fs.close(take f) else {}
             return entropy_unavailable
         }
         for b in chunk {
-            (mut fresh).push(b)
+            (mut p.buf).push(b)
         }
     }
     fs.close(take f) else {}
-    p.buf = fresh
-    p.pos = 0
 }
 
 /// `n` random bytes.

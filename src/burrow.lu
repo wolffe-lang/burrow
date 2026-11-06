@@ -203,11 +203,11 @@ fn auth_none(mut c: transport.Conn, user: str) -> () ! refuse.Refusal {
         if t == refuse.msg_userauth_failure() {
             var r = wire.reader(got[1..got.len])
             let methods = wire.read_utf8(mut r) else ""
-            c.detail = "the server refused `none` for {user}; methods that can continue: {methods}"
+            transport.note(mut c, "the server refused `none` for {user}; methods that can continue: {methods}")
             return auth_refused
         }
         if t != refuse.msg_userauth_banner() {
-            c.detail = "message {t} in answer to a userauth request"
+            transport.note(mut c, "message {t} in answer to a userauth request")
             return message_unexpected
         }
     }
@@ -254,7 +254,7 @@ fn traffic(mut c: transport.Conn, total: int) -> () ! refuse.Refusal {
     }
     if transport.kind(back) != refuse.msg_pong() ||
         wire.hex(back[1..back.len]) != wire.hex(ping[1..ping.len]) {
-        c.detail = "message {transport.kind(back)} in answer to PING"
+        transport.note(mut c, "message {transport.kind(back)} in answer to PING")
         return message_unexpected
     }
     eprint(
@@ -309,7 +309,7 @@ fn run(cli: Cli) -> int {
         if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
             transport.disconnect(mut c, refuse.reason_of(why), why)
         }
-        eprint("burrow: {why}: {c.detail}")
+        eprint("burrow: {why}: {transport.detail(c)}")
         transport.close(take c)
         return 255
     }
