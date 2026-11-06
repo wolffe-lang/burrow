@@ -1,0 +1,60 @@
+//! member: false
+
+// kexprobe — a row program, never installed: the transport's first exchange
+// and SERVICE_ACCEPT with strict kex waived through the library option
+// `allow_no_strict`, which burrow's command line does not reach on any tier.
+// check-transport's `downgrade-caught` row runs it, beside the binary under
+// test, to show that a KEXINIT stripped of `kex-strict-s-v00@openssh.com`
+// still breaks H when the waiver is on.
+//
+//   kexprobe HOST PORT KNOWN_HOSTS
+//
+// Exit 0 with `kexprobe: transport up`, or 255 with
+// `kexprobe: <name>: <detail>`; 2 for a bad command line. tools/build puts it
+// at target/<tier>/rows/kexprobe on the native and release tiers, never
+// `--static`; CI uploads no binary.
+use std.env
+use refuse
+use transport
+
+fn main() -> int {
+    let a = env.args()
+    if a.len != 3 {
+        eprint("kexprobe: usage: kexprobe HOST PORT KNOWN_HOSTS")
+        return 2
+    }
+    let port = a[1].to_int() else 0
+    if port < 1 || port > 65535 {
+        eprint("kexprobe: usage: {a[1]}: not a port")
+        return 2
+    }
+    var opts = transport.options(a[0], port)
+    (mut opts.known_hosts).push(a[2])
+    opts.allow_no_strict = true
+    var c = transport.dial(opts) else |e| {
+        eprint("kexprobe: {e}: connect to host {a[0]} port {port}")
+        return 255
+    }
+    var why = ""
+    transport.start(mut c) else |e| {
+        why = "{e}"
+    }
+    if why == "" {
+        transport.service(mut c, "ssh-userauth") else |e| {
+            why = "{e}"
+        }
+    }
+    if why != "" {
+        if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
+            transport.disconnect(mut c, refuse.reason_of(why), why)
+        }
+        let d = transport.detail(c)
+        transport.close(take c)
+        eprint("kexprobe: {why}: {d}")
+        return 255
+    }
+    transport.disconnect(mut c, 11, "disconnected by user")
+    transport.close(take c)
+    eprint("kexprobe: transport up")
+    0
+}
