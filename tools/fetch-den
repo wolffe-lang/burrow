@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""fetch-den — stage den at its pin, built by its own tools, and its git
+oracle by digest, into .den/ (bw03, B4).
+
+    tools/in-container tools/fetch-den
+
+- `.den/den`: den cloned from burrow-den.toml's URL and checked out at its
+  pinned rev, detached; refused unless HEAD is the rev and the tree is
+  clean (den is never edited). Its toolchain comes from its own
+  `tools/fetch-toolchain` (its own wolf-toolchain.toml), and the binary from
+  its own `tools/build --native`: `.den/den/target/native/den`.
+- `.den/git`: den's pinned git 2.56.0, the tree its own `tools/fetch-oracle`
+  installs (prefix /opt/git), held to burrow-den.toml's digest, which must
+  also be the one den's den-oracle.toml pins. Taken, in order, from
+  `.den/git` if it holds the digest, from `$BURROW_DEN_GIT_ROOT`, or from
+  den's own build output under `.den/den/target/oracle/*/root` (a host step
+  runs `DEN_ENGINE=… .den/den/tools/in-container tools/fetch-oracle`, which
+  builds it in den's image). This script never builds git and never opens
+  a source file of it.
+
+Prints each digest and writes .den/STAMP; exits nonzero, by name, on any
+mismatch.
+"""
+import hashlib
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import tomllib
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+PIN = tomllib.loads((ROOT / "burrow-den.toml").read_text())
+DEN = ROOT / ".den" / "den"
+GIT_ROOT = ROOT / ".den" / "git"
+GIT_BIN = GIT_ROOT / "opt" / "git" / "bin" / "git"
+
+
+def say(msg):
+    print(f"fetch-den: {msg}", flush=True)
+
+
+def refuse(msg):
+    print(f"fetch-den: REFUSED — {msg}", file=sys.stderr, flush=True)
+    sys.exit(1)
+
+
+def sha(p):
+    return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+
+
+def git(*args, cwd=None):
+    return subprocess.run(["git", "-c", "safe.directory=*", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def stage_den():
+    rev = PIN["den"]["rev"]
+    if not DEN.exists():
+        DEN.parent.mkdir(parents=True, exist_ok=True)
+        say(f"cloning {PIN['den']['url']}")
+        subprocess.run(["git", "clone", "-q", "--no-checkout", PIN["den"]["url"], str(DEN)], check=True)
+    if git("rev-parse", "HEAD", cwd=DEN) != rev:
+        git("-c", "advice.detachedHead=false", "checkout", "-q", "--detach", rev, cwd=DEN)
+    head = git("rev-parse", "HEAD", cwd=DEN)
+    if head != rev:
+        refuse(f"den HEAD {head}, pin {rev}")
+    dirty = git("status", "--porcelain", "--untracked-files=all", cwd=DEN)
+    if dirty:
+        refuse(f"den's tree at {rev} is not clean: {dirty.splitlines()[:3]}")
+    say(f"den {head} (clean)")
+    oracle = tomllib.loads((DEN / "den-oracle.toml").read_text())["oracle"]
+    if oracle["binary_sha256"] != PIN["git"]["binary_sha256"]:
+        refuse(f"den-oracle.toml pins git {oracle['binary_sha256']}, burrow-den.toml {PIN['git']['binary_sha256']}")
+    env = dict(os.environ, TMPDIR=str(ROOT / "target" / "tmp"))
+    (ROOT / "target" / "tmp").mkdir(parents=True, exist_ok=True)
+    subprocess.run(["sh", "tools/fetch-toolchain"], cwd=DEN, env=env, check=True)
+    den_bin = DEN / "target" / "native" / "den"
+    stamp = DEN / "target" / "native" / "den.burrow-stamp"
+    want = f"{rev} {(DEN / '.wolf-bin' / 'STAMP').read_text().strip()}"
+    if not (den_bin.exists() and stamp.exists() and stamp.read_text().split("\n")[0] == want
+            and stamp.read_text().split("\n")[1] == sha(den_bin)):
+        say("building den with its own tools/build --native")
+        subprocess.run(["sh", "tools/build", "--native"], cwd=DEN, env=env, check=True)
+        stamp.write_text(f"{want}\n{sha(den_bin)}\n")
+    dirty = git("status", "--porcelain", cwd=DEN)
+    if dirty:
+        refuse(f"den's tree changed under its own build: {dirty.splitlines()[:3]}")
+    say(f"den binary sha256 {sha(den_bin)}")
+    return den_bin
+
+
+def stage_git():
+    want = PIN["git"]["binary_sha256"]
+    if GIT_BIN.exists() and sha(GIT_BIN) == want:
+        say(".den/git already holds the pin")
+    else:
+        sources = []
+        if os.environ.get("BURROW_DEN_GIT_ROOT"):
+            sources.append(pathlib.Path(os.environ["BURROW_DEN_GIT_ROOT"]))
+        sources += sorted((DEN / "target" / "oracle").glob("*/root"))
+        for src in sources:
+            cand = src / "opt" / "git" / "bin" / "git"
+            if cand.exists() and sha(cand) == want:
+                if GIT_ROOT.exists():
+                    shutil.rmtree(GIT_ROOT)
+                say(f"copying den's git oracle from {src.relative_to(ROOT) if src.is_relative_to(ROOT) else 'BURROW_DEN_GIT_ROOT'}")
+                shutil.copytree(src, GIT_ROOT, symlinks=True)
+                break
+        else:
+            refuse("no git oracle holding the pin: run den's own tools/fetch-oracle in its image "
+                   "(DEN_ENGINE=… .den/den/tools/in-container tools/fetch-oracle) or set BURROW_DEN_GIT_ROOT")
+    have = sha(GIT_BIN)
+    say(f"git sha256 {have}")
+    if have != want:
+        refuse(f"git digest {have}, pin {want}")
+    env = {"PATH": "/usr/bin:/bin", "GIT_EXEC_PATH": str(GIT_ROOT / "opt/git/libexec/git-core"), "LC_ALL": "C"}
+    line = subprocess.run([str(GIT_BIN), "version"], env=env, check=True, capture_output=True, text=True).stdout.strip()
+    say(f"git version: {line}")
+    if line != PIN["git"]["version_line"]:
+        refuse(f"git says {line!r}, pin {PIN['git']['version_line']!r}")
+    return GIT_BIN
+
+
+def main():
+    den_bin = stage_den()
+    git_bin = stage_git()
+    (ROOT / ".den" / "STAMP").write_text(f"den {PIN['den']['rev']} {sha(den_bin)}\ngit {sha(git_bin)}\n")
+    say("staged")
+
+
+if __name__ == "__main__":
+    main()
