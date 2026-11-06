@@ -1,0 +1,89 @@
+//! member: false
+
+// publickey authentication (RFC 4252 §7, RFC 8709 §6): the query, the
+// signed data and the signed request for RFC 8032 TEST 1's key under the
+// first exchange's H, held to tools/vectorgen.py's independent vectors;
+// then the login state machine message by message, every refusal by name,
+// and the banner as the pinned ssh writes it.
+use auth
+use kexvec
+use keyfile
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn failure(methods: str, partial: bool) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, 51)
+    wire.put_text(mut p, methods)
+    wire.put_bool(mut p, partial)
+    p
+}
+
+fn one(t: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, t)
+    p
+}
+
+fn verdict(sent: int, p: List[byte], blob: List[byte]) -> str {
+    var l = auth.start()
+    l.sent = sent
+    let v = auth.step(mut l, p, blob) else |e| {
+        return "{e}"
+    }
+    "{v}"
+}
+
+fn main() {
+    let blob = x(kexvec.user_blob())
+    let q = auth.query("burrowtest", blob)
+    assert(wire.hex(q) == kexvec.auth_query())
+    assert(q.len == 117)
+    let h = x(kexvec.h())
+    assert(wire.hex(auth.signed_data(h, "burrowtest", blob)) == kexvec.auth_signed_data())
+    let k = keyfile.Key {
+        seed: x("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"),
+        public: x("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"),
+        comment: "",
+    }
+    let signed = auth.sign_request(h, "burrowtest", k)
+    assert(wire.hex(signed) == kexvec.auth_signed_request())
+    assert(signed.len == 204)
+    assert(
+        wire.hex(auth.none_request("u")) ==
+            "3200000001750000000e7373682d636f6e6e656374696f6e000000046e6f6e65",
+    )
+    // The state machine: what each message means after each request.
+    let pk_ok = x(kexvec.auth_pk_ok())
+    assert(verdict(2, pk_ok, blob) == "2")
+    assert(verdict(2, pk_ok, x("00")) == "malformed")
+    assert(verdict(3, pk_ok, blob) == "message_unexpected")
+    assert(verdict(3, one(52), blob) == "4")
+    assert(verdict(1, one(52), blob) == "4")
+    assert(verdict(2, one(52), blob) == "auth_success_unrequested")
+    assert(verdict(0, one(52), blob) == "auth_success_unrequested")
+    assert(verdict(2, failure("publickey,password", false), blob) == "3")
+    assert(verdict(3, failure("publickey", false), blob) == "3")
+    assert(verdict(2, failure("password,keyboard-interactive", false), blob) == "auth_no_publickey")
+    assert(verdict(3, failure("publickey", true), blob) == "auth_partial")
+    assert(verdict(0, failure("publickey", false), blob) == "message_unexpected")
+    assert(verdict(2, one(51), blob) == "malformed")
+    assert(verdict(2, one(80), blob) == "message_unexpected")
+    assert(verdict(2, one(94), blob) == "message_unexpected")
+    var banner = List[byte]()
+    wire.put_u8(mut banner, 53)
+    wire.put_string(mut banner, x("61016209" + "0d0a" + "1b5b" + "7f" + "c3a9"))
+    wire.put_text(mut banner, "")
+    assert(verdict(2, banner, blob) == "1")
+    let shown = auth.banner_bytes(banner) else List[byte]()
+    assert((str_from_utf8(shown) else "") == "a\\001b\t\r\n\\033[\\177\\303\\251")
+    let f = auth.failure(failure("publickey,password", true)) else auth.Failure {
+        methods: List[str](),
+        partial: false,
+    }
+    assert(f.methods.len == 2 && f.methods[1] == "password" && f.partial)
+    print("auth: query, signed data and request as vectorgen's; 18 transitions; the banner")
+}

@@ -1,0 +1,91 @@
+//! member: true
+//!
+//! burrow.auth — user authentication. A stub until its implementation
+//! lands: every builder answers nothing and every login is refused.
+
+use keyfile
+use refuse
+use transport
+
+/// The method burrow authenticates with.
+pub fn method() -> str {
+    "publickey"
+}
+
+/// RFC 4252 §5.2's `none` request (stub).
+pub fn none_request(user: str) -> List[byte] {
+    let _ = user.len
+    List[byte]()
+}
+
+/// RFC 4252 §7's query (stub).
+pub fn query(user: str, blob: List[byte]) -> List[byte] {
+    let _ = user.len + blob.len
+    List[byte]()
+}
+
+/// The data the signature covers (stub).
+pub fn signed_data(session_id: List[byte], user: str, blob: List[byte]) -> List[byte] {
+    let _ = session_id.len + user.len + blob.len
+    List[byte]()
+}
+
+/// The signed request (stub).
+pub fn signed_request(user: str, blob: List[byte], sig: List[byte]) -> List[byte] {
+    let _ = user.len + blob.len + sig.len
+    List[byte]()
+}
+
+/// The signed request for `key` (stub).
+pub fn sign_request(session_id: List[byte], user: str, key: keyfile.Key) -> List[byte] {
+    let _ = session_id.len + user.len + key.seed.len
+    List[byte]()
+}
+
+/// What a USERAUTH_FAILURE says.
+pub struct Failure {
+    methods: List[str],
+    partial: bool,
+}
+
+/// USERAUTH_FAILURE's fields (stub).
+pub fn failure(p: List[byte]) -> Failure ! refuse.Refusal {
+    let _ = p.len
+    malformed
+}
+
+/// Whether `names` holds `name`.
+pub fn lists(names: List[str], name: str) -> bool {
+    let _ = names.len + name.len
+    false
+}
+
+/// The banner's text as shown (stub).
+pub fn banner_bytes(p: List[byte]) -> List[byte] ! refuse.Refusal {
+    let _ = p.len
+    malformed
+}
+
+/// The state of one login.
+pub struct Login {
+    index: int,
+    sent: int,
+    last_methods: List[str],
+}
+
+/// A login before any request.
+pub fn start() -> Login {
+    Login { index: 0, sent: 0, last_methods: List[str]() }
+}
+
+/// What to do after a message (stub: nothing is understood).
+pub fn step(mut l: Login, p: List[byte], blob: List[byte]) -> int ! refuse.Refusal {
+    l.index += p.len + blob.len
+    message_unexpected
+}
+
+/// Logs in (stub: refused).
+pub fn login(mut c: transport.Conn, user: str, host: str, keys: List[keyfile.Key]) -> () ! refuse.Refusal {
+    transport.note(mut c, "not yet implemented: {user}@{host}, {keys.len} keys")
+    auth_refused
+}
