@@ -235,13 +235,13 @@ Three black-box findings shape B1:
 | `tools/nistvec.py` | NIST's SHA-1 and HMAC-SHA1 vectors (`ci/vectors/nist-sha1.rsp`), regenerated and compared |
 | `tools/measure-session` | login to first byte and `cat` throughput against the pinned `ssh`, held to stated margins |
 | `tools/fetch-den` | den at `burrow-den.toml`'s pin (its commit alone, a clean tree), its own toolchain and `tools/build --native`; den's git oracle held to its digest |
-| `tools/denlib.py` | den, its pinned git, and den's fixture shape: service wrappers that pass on only the `GIT_PROTOCOL` that arrived, and log it |
-| `tools/check-den` | den's ssh rows with burrow as `ssh`, each held byte for byte to the same den command through the pinned `ssh` |
+| `tools/denlib.py` | den, its pinned git, and den's fixture shape: service wrappers that pass on only the `GIT_PROTOCOL` that arrived, and log it; a recorder for an `authorized_keys` `command=` that logs the command `sshd` was sent |
+| `tools/check-den` | den's ssh rows with burrow as `ssh`, each held byte for byte to the same den command through the pinned `ssh`; the `den-command-*` rows hold the command `sshd` is sent to git's form |
 | `tools/check-github` | GitHub's real server, read only, no key: the published host key and the refusal, against the pinned `ssh` |
-| `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted; `--self-test` against a loopback `sshd` |
+| `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted, its work files removed when it ends; `--self-test` against a loopback `sshd` |
 | `tools/check-static` | the static binaries: no interpreter, no dynamic section, their digests; den rows through the static `burrow` |
 | `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved, held to 2x |
-| `tools/diag-command-form` | a read-only probe, run by hand: the live fixture's answer to den's command form and git's, through both clients, redacted |
+| `tools/diag-command-form` | a read-only probe, run by hand: the live fixture's answer to den's old command form, git's, and den's own argv at the pin (taken from den by a recording `ssh`), through both clients, redacted |
 
 ## Machines
 
@@ -249,11 +249,12 @@ Three black-box findings shape B1:
 |---|---|
 | builds, unit rows | macOS arm64 workstation; Linux x86-64 in the pinned container |
 | oracle rows | Linux x86-64 laptop, 8 cores, in the pinned Ubuntu 24.04 container |
+| B4's rows, the live row and the measurements | Linux x86-64 desktop, i7-12700KF, 46 GiB: a six-CPU block, in the pinned container capped at 12 GiB |
 | CI | GitHub `ubuntu-24.04` (the gate) and `macos-latest` (unit rows) |
 
 ## den over burrow, measured (B4)
 
-den at `ef0bb0c` (`burrow-den.toml`), built by its own tools at its own
+den at `ac2332b` (`burrow-den.toml`), built by its own tools at its own
 toolchain pin, and its pinned git 2.56.0 as the server. Each den row runs
 through burrow-as-`ssh` and through the pinned `ssh` against one `sshd`
 (`AcceptEnv GIT_PROTOCOL`), and every compared field is equal: den's exit
@@ -267,8 +268,12 @@ receive-pack alike; nothing for the v0 wrapper). The black-box findings:
   their `.ssh` as the container user's own, and both clients read the same
   files.
 - den's argv is the one bw02 measured, for every URL form: `-p` only for
-  `ssh://host:port`, the user kept in the destination, the remote words
-  single-quoted, `GIT_PROTOCOL=version=2` sent by `SendEnv` for both services.
+  `ssh://host:port`, the user kept in the destination,
+  `GIT_PROTOCOL=version=2` sent by `SendEnv` for both services. Its remote
+  words are git's: the program bare when it is plain (letters, digits and
+  `._/+-`), quoted when it is not, the path always quoted, so `sshd` is
+  sent `git-upload-pack 'PATH'` (the `den-command-*` rows; den quoted the
+  program too until den#65).
 - A remote's own stderr (`error: denying non-fast-forward …` from the
   server's receive-pack) reaches den's stderr through either client byte for
   byte.
@@ -286,10 +291,13 @@ fingerprint is the published `SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU
 refused with `git@github.com: Permission denied (publickey).` and exit 255.
 GitHub's ssh service does not hand a command to a shell: it parses it, and
 takes the program as a bare word, as git sends it (`git-receive-pack
-'PATH'`). den quotes every remote word, which a shell accepts and GitHub
-refuses (`Invalid command: …`) through either client; den's change to send
-a plain program word bare is den's own. `tools/diag-command-form` puts both
-forms to the live fixture, read only.
+'PATH'`). A quoted program word (`'git-receive-pack' 'PATH'`), which a
+shell accepts, is refused (`Invalid command: …`) through either client.
+den sent that form until den#65, which sends a plain program word bare;
+burrow passes the command as `ssh` does and changed nothing for it.
+`tools/diag-command-form` puts the old form, git's, and den's own argv at
+the pin to the live fixture, read only: the old form is refused, and den's
+argv is accepted through both clients.
 
 ## PAX
 
