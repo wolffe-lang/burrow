@@ -221,6 +221,56 @@ held (a perf step).
   its wrappers' shape and its rows are read, never edited. If den needed a
   change, the lane would hand back with an R-bw03-N.
 
+### The re-pin to den `ac2332b` (R-bw03-7 applied)
+
+Written 2026-11-06 15:26Z, after den's fix merged (den trunk `ac2332b`)
+and before any change or run at it, from den's `src/transport/ssh.lu` at
+that trunk, its CHANGELOG and `notes/vc22-the-smart-http-transport.md`.
+
+- **What moves:** `burrow-den.toml`'s rev, `ef0bb0c` to `ac2332b`. den's
+  own toolchain pin keeps wolf 0.2.36 and moves its std from `78b9d3c` to
+  `d4a4d4c`; `tools/fetch-den` builds it with den's own tools, as before.
+  den's git oracle is unchanged (2.56.0, `c4848492…`; `den-oracle.toml`
+  did not change), so `tools/fetch-den` accepts it.
+- **den's argv at `ac2332b`:** the same eighteen words, then `-- HOST
+  PROGRAM 'PATH'`: the program word bare when it is plain (letters, digits
+  and `._/+-`), quoted when it is not; the path always quoted. ssh(1)
+  joins the words with spaces, so the exec request carries
+  `git-receive-pack 'PATH'`, git's form.
+- **New rows, red first at `ef0bb0c`** (`tools/check-den`,
+  `den-command-*`): the row key's `authorized_keys` line carries
+  `command="…/record-command"`. sshd(8) (AUTHORIZED_KEYS FILE FORMAT)
+  runs that command instead of the client's and puts the client's in
+  `SSH_ORIGINAL_COMMAND`; the recorder logs it and runs it under `sh -c`,
+  with den's wrappers as `git-upload-pack` and `git-receive-pack` first on
+  PATH. Each row is also held byte for byte to the pinned `ssh`, as every
+  den row is, and its clone or push succeeds.
+
+  | row | den | the command sshd is sent, predicted at `ac2332b` | at `ef0bb0c` |
+  |---|---|---|---|
+  | `den-command-upload` | `clone` with no `--upload-pack=` | `git-upload-pack 'PATH'` | red: `'git-upload-pack' 'PATH'` |
+  | `den-command-receive` | `push` with no `--receive-pack=` | `git-receive-pack 'PATH'` | red: `'git-receive-pack' 'PATH'` |
+  | `den-command-override` | `--upload-pack=` a plain path | `/…/upload 'PATH'` | red: `'/…/upload' 'PATH'` |
+  | `den-command-override-quoted` | `--upload-pack=` a path holding a space | `'/…/up load' 'PATH'` | green: quoted at both pins (den's guard) |
+
+- **den's 18 rows:** green at `ac2332b` through both clients, alike, with
+  no burrow change. den's other changes between the pins (the smart-HTTP
+  and local-path transports, status and branch work) touch no ssh row's
+  bytes but one: a failed clone now removes the directory it made, so
+  `den-v0-refusal` leaves no destination, through both clients alike.
+- **`tools/diag-command-form`, re-run:** den's command is taken from den
+  itself at the pin (a recording `ssh` first on PATH prints den's argv to
+  den's stderr, held in memory, and exits 255, so nothing connects), and
+  den's whole argv then runs through each client: accepted by the
+  fixture's server through both (exit 0, a receive-pack advertisement), and
+  it is git's form. den's old form through the pinned `ssh` is still
+  refused, `Invalid command` (the control).
+- **The live row:** green. The base push creates `burrow-live-base` once;
+  the per-run pushes are alike through both clients, cloned back alike,
+  then deleted.
+- **`measure-den`:** inside its 2x margins, CPU near 1.0x.
+- **burrow's `src/`:** unchanged.
+
 ## Forbidden
 
 No ssh implementation's code or tests were read: no `.c` or `.h` file of
