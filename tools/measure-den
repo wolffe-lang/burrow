@@ -1,0 +1,199 @@
+#!/usr/bin/env python3
+"""measure-den — den's clone of a mid-sized repository through burrow
+against through the pinned ssh, interleaved, as a ratio with margins (B4).
+
+    tools/in-container python3 -I tools/measure-den --bin target/release/burrow [--rounds 5]
+
+The fixture is made by the pinned git from a fixed seed, so every run has
+the same objects: 300 commits over 200 text files in 10 directories (each
+commit appends a deterministic 2 KiB to four of them), plus 40
+incompressible 256 KiB files in the first commit, repacked once. It is
+served by the row's own sshd through den's fixture wrappers, and den
+(`clone -q --bare`) runs through each client in turn, ROUNDS times each,
+interleaved. Timed: den's wall time, and its CPU from `wait4`, which
+includes the `ssh` it waits for; den is the same binary both ways, so the
+ratio is the ssh client's. The minimum of each is compared. A perf step:
+run it on a quiet block with nothing beside it.
+
+Margins (the prediction): CPU and wall through burrow / through the
+pinned ssh, each at most 2x. Every clone is checked whole (its objects are
+the server's) before its time counts.
+"""
+import argparse
+import hashlib
+import os
+import pathlib
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+from denlib import (  # noqa: E402
+    DEN,
+    GIT,
+    PW_HOME,
+    ROOT,
+    USER,
+    Fixture,
+    clear_home,
+    git,
+    git_env,
+    install_home,
+    require_den,
+)
+
+WORK = ROOT / "target" / "measure-den"
+CPU_MARGIN = WALL_MARGIN = 2.0
+
+
+def stream(seed=b"burrow-measure-den"):
+    """A deterministic byte stream (SHA-256 in counter mode)."""
+    n = 0
+    while True:
+        yield hashlib.sha256(seed + n.to_bytes(8, "big")).digest()
+        n += 1
+
+
+def text_chunk(gen, size=2048):
+    words = []
+    total = 0
+    while total < size:
+        w = next(gen).hex()[:12]
+        words.append(w)
+        total += len(w) + 1
+    return (" ".join(words) + "\n").encode()
+
+
+def fixture_stream():
+    """A `git fast-import` stream: the fixed repository."""
+    gen = stream()
+    out = []
+    files = {f"d{d:02}/f{f:02}.txt": text_chunk(gen) for d in range(10) for f in range(20)}
+    blobs = {}
+    for i in range(40):
+        data = b"".join(next(gen) for _ in range(256 * 1024 // 32))
+        blobs[f"bin/b{i:02}.bin"] = data
+    names = sorted(files)
+    when = 1700000000
+    for c in range(300):
+        changed = {}
+        if c == 0:
+            changed.update(files)
+            changed.update(blobs)
+        else:
+            for k in range(4):
+                name = names[(c * 7 + k * 53) % len(names)]
+                files[name] = files[name] + text_chunk(gen)
+                changed[name] = files[name]
+        out.append(b"commit refs/heads/main\n")
+        out.append(f"committer Den Tester <den@example.invalid> {when + c * 60} +0000\n".encode())
+        msg = f"commit {c}\n".encode()
+        out.append(b"data %d\n%s" % (len(msg), msg))
+        for name in sorted(changed):
+            data = changed[name]
+            out.append(f"M 100644 inline {name}\n".encode())
+            out.append(b"data %d\n" % len(data))
+            out.append(data + b"\n")
+        out.append(b"\n")
+    return b"".join(out)
+
+
+def timed(argv, env, cwd):
+    """(exit, wall seconds, CPU seconds of den and what it waited for)."""
+    t0 = time.monotonic()
+    p = subprocess.Popen(argv, env=env, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    err = p.stderr.read()
+    _, status, ru = os.wait4(p.pid, 0)
+    wall = time.monotonic() - t0
+    p.returncode = os.waitstatus_to_exitcode(status)
+    return p.returncode, wall, ru.ru_utime + ru.ru_stime, err
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--rounds", type=int, default=5)
+    a = ap.parse_args()
+    burrow = pathlib.Path(a.bin).resolve()
+    oraclelib.require_oracle()
+    require_den()
+    os.umask(0o022)
+    if WORK.exists():
+        shutil.rmtree(WORK)
+    WORK.mkdir(parents=True)
+    os.chmod(WORK, 0o711)
+    fx = Fixture(WORK)
+    repo = fx.path("mid.git")
+    git(fx, "init", "-q", "--bare", "-b", "main", repo)
+    p = subprocess.run([str(GIT), "--git-dir", str(repo), "fast-import", "--quiet"], input=fixture_stream(), env=git_env(fx),
+                       capture_output=True, timeout=600)
+    if p.returncode != 0:
+        print(f"FAIL measure-den fast-import exited {p.returncode}: {p.stderr[-300:]!r}")
+        sys.exit(1)
+    git(fx, "--git-dir", repo, "repack", "-a", "-d", "-q")
+    objects = git(fx, "--git-dir", repo, "count-objects", "-v").decode()
+    count = int(next(x.split()[1] for x in objects.splitlines() if x.startswith("in-pack:")))
+    size_kib = int(next(x.split()[1] for x in objects.splitlines() if x.startswith("size-pack:")))
+    want = git(fx, "--git-dir", repo, "rev-list", "--objects", "--all").decode().split("\n")
+    want = sorted(x.split(" ", 1)[0] for x in want if x)
+    fx.reset_server()
+    home = WORK / "home"
+    (home / ".ssh").mkdir(parents=True, mode=0o700)
+    key = home / ".ssh" / "id_ed25519"
+    subprocess.run([str(burrow.parent / "burrow-keygen"), "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True,
+                   capture_output=True)
+    (home / ".gitconfig").write_text("[user]\n\tname = Den Tester\n\temail = den@example.invalid\n")
+    for client, target in (("burrow", burrow), ("ssh", oraclelib.SSH)):
+        (WORK / f"via-{client}").mkdir()
+        (WORK / f"via-{client}" / "ssh").symlink_to(target)
+    times = {"burrow": [], "ssh": []}
+    with oraclelib.Sshd(WORK / "sshd", ["AcceptEnv GIT_PROTOCOL"], authorized=[str(key) + ".pub"], log_level="ERROR") as s:
+        (home / ".ssh" / "known_hosts").write_text(s.known_hosts_line())
+        install_home(home)
+        url = f"ssh://{USER}@127.0.0.1:{s.port}{fx.served('mid.git')}"
+        try:
+            for rnd in range(a.rounds):
+                for client in (("burrow", "ssh") if rnd % 2 == 0 else ("ssh", "burrow")):
+                    dest = WORK / "clone.git"
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    env = {"PATH": f"{WORK / ('via-' + client)}:/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C",
+                           "TZ": "UTC", "TMPDIR": str(WORK / "tmp")}
+                    (WORK / "tmp").mkdir(exist_ok=True)
+                    rc, wall, cpu, err = timed([str(DEN), "clone", "-q", "--bare", "--upload-pack=" + fx.upload, url, str(dest)],
+                                               env, WORK)
+                    if rc != 0:
+                        print(f"FAIL measure-den clone through {client} exited {rc}: {err[-300:]!r}")
+                        sys.exit(1)
+                    got = git(fx, "--git-dir", dest, "rev-list", "--objects", "--all").decode().split("\n")
+                    got = sorted(x.split(" ", 1)[0] for x in got if x)
+                    if got != want:
+                        print(f"FAIL measure-den the clone through {client} holds {len(got)} objects, the server {len(want)}")
+                        sys.exit(1)
+                    times[client].append((wall, cpu))
+                    print(f"measure-den: round {rnd + 1} {client:6} wall {wall:7.3f} s cpu {cpu:7.3f} s", flush=True)
+        finally:
+            clear_home()
+    best = {c: (min(w for w, _ in t), min(u for _, u in t)) for c, t in times.items()}
+    wall_ratio = best["burrow"][0] / best["ssh"][0]
+    cpu_ratio = best["burrow"][1] / best["ssh"][1]
+    print(f"measure-den: fixture {count} objects, pack {size_kib} KiB; {a.rounds} interleaved rounds per client, minimum of each")
+    for c in ("burrow", "ssh"):
+        print(f"measure-den: through {c:6} wall {best[c][0]:.3f} s, cpu {best[c][1]:.3f} s (den and the ssh it waits for)")
+    print(f"measure-den: burrow / ssh: wall {wall_ratio:.2f}x (margin {WALL_MARGIN}x); cpu {cpu_ratio:.2f}x (margin {CPU_MARGIN}x)")
+    bad = 0
+    if wall_ratio > WALL_MARGIN:
+        print(f"FAIL measure-den wall ratio {wall_ratio:.2f}x over {WALL_MARGIN}x")
+        bad += 1
+    if cpu_ratio > CPU_MARGIN:
+        print(f"FAIL measure-den cpu ratio {cpu_ratio:.2f}x over {CPU_MARGIN}x")
+        bad += 1
+    if not bad:
+        print("PASS measure-den")
+    sys.exit(bad)
+
+
+if __name__ == "__main__":
+    main()
