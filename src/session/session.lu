@@ -1,0 +1,175 @@
+//! member: true
+//!
+//! burrow.session — one command on a session channel (`src/channel`),
+//! with stdin, stdout and stderr as raw bytes, until the channel closes.
+//!
+//! **Waiting.** wolf-std at the pin has no single wait over a socket and a
+//! file: `net.wait` takes the network table's handles and
+//! `signal.wait_fds` takes files. So an idle turn waits up to 5 ms on the
+//! socket and then up to 5 ms on stdin; a turn that moved bytes waits on
+//! neither. Input waits at most that long; the socket is read the moment
+//! a wait sees it ready. `signal.wait_fds` needs a meaning to listen for:
+//! `resize` (SIGWINCH), whose default is to be ignored, so listening
+//! changes nothing.
+//!
+//! **Memory.** Each turn runs in a region of its own and keeps nothing:
+//! the connection and the channel are updated in place
+//! (`[mem.region.outer-write]`), so a transfer of any size holds no more
+//! than a packet's worth of memory.
+//!
+//! **After CLOSE** both ways, packets already whole in the input buffer
+//! are still read, so data a server sends after its CLOSE is refused by
+//! name (`channel_closed`) rather than dropped unseen; then DISCONNECT 11
+//! `disconnected by user`, as the pinned `sshd` logs for its own client.
+
+use std.fs
+use std.net
+use std.signal
+use channel
+use refuse
+use transport
+
+/// What the session runs.
+pub struct Plan {
+    command: List[byte],
+    env: List[str],
+    verbose: int,
+}
+
+fn say(p: Plan, msg: str) {
+    if p.verbose > 0 && msg.len > 0 {
+        eprint("debug1: {msg}")
+    }
+}
+
+// Writes what a step asks for and sends its reply.
+fn apply(
+    mut c: transport.Conn,
+    mut ch: channel.Chan,
+    plan: Plan,
+    s: channel.Step,
+) -> () ! refuse.Refusal {
+    say(plan, s.info)
+    if s.out.len > 0 {
+        var o = fs.stdout()
+        fs.write_chunk(mut o, s.out) else {
+            transport.note(mut c, "standard output cannot be written")
+            return io
+        }
+    }
+    if s.err.len > 0 {
+        var e = fs.stderr()
+        fs.write_chunk(mut e, s.err) else {}
+    }
+    if s.reply.len > 0 {
+        transport.write(mut c, s.reply)?
+    }
+    let adj = channel.adjust_msg(mut ch)
+    if adj.len > 0 {
+        transport.write(mut c, adj)?
+    }
+}
+
+fn pump(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> () ! refuse.Refusal {
+    let p = transport.next(mut c)?
+    let s = channel.on(mut ch, p)?
+    apply(mut c, mut ch, plan, s)?
+}
+
+fn sock_ready(c: transport.Conn, ms: int) -> bool ! refuse.Refusal {
+    if transport.buffered(c) {
+        return true
+    }
+    var fds = List[int]()
+    (mut fds).push(transport.sock_fd(c))
+    let ready = net.wait(fds, ms) else { return io }
+    ready.len > 0
+}
+
+fn stdin_ready(ms: int) -> bool ! refuse.Refusal {
+    var files = List[fs.File]()
+    (mut files).push(fs.stdin())
+    let w = signal.wait_fds(files, signal.resize(), ms) else { return io }
+    w.ready == 0
+}
+
+/// What a session's turns carry between them: whether stdin is still open.
+pub struct Flow {
+    stdin_open: bool,
+}
+
+// One turn: a message from the server if one is there, else input if the
+// server's window has room, else a short wait on both.
+fn turn_once(
+    mut c: transport.Conn,
+    mut ch: channel.Chan,
+    plan: Plan,
+    mut flow: Flow,
+) -> () ! refuse.Refusal {
+    if sock_ready(c, 0)? {
+        pump(mut c, mut ch, plan)?
+        return
+    }
+    let want_in = flow.stdin_open && !ch.sent_eof && !ch.eow && !ch.got_close
+    let room = channel.room(ch)
+    if want_in && room > 0 && stdin_ready(0)? {
+        var inp = fs.stdin()
+        var eof = false
+        let got = fs.read_chunk(mut inp, room) else {
+            eof = true
+            List[byte]()
+        }
+        if eof || got.len == 0 {
+            flow.stdin_open = false
+            transport.write(mut c, channel.eof_msg(mut ch))?
+        } else {
+            transport.write(mut c, channel.data_msg(mut ch, got))?
+        }
+        return
+    }
+    if !sock_ready(c, 5)? && want_in && room > 0 {
+        let _ = stdin_ready(5)?
+    }
+}
+
+/// Opens the session on `ch` (a `channel.new()` the caller keeps, so its
+/// detail can explain a refusal), sends the environment and the command,
+/// and moves bytes until the channel closes. Returns the exit code `ssh`
+/// would give.
+pub fn run(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> int ! refuse.Refusal {
+    signal.listen(signal.resize()) else { return io }
+    transport.write(mut c, channel.open_msg(ch))?
+    while !ch.opened {
+        pump(mut c, mut ch, plan)?
+    }
+    for kv in plan.env {
+        let eq = kv.find("=") else 0
+        transport.write(mut c, channel.env_msg(ch, kv[0..eq], kv[eq + 1..kv.len]))?
+        say(plan, "Sending env {kv[0..eq]}")
+    }
+    transport.write(mut c, channel.exec_msg(mut ch, plan.command))?
+    say(plan, "Sending command: {str_from_utf8(plan.command) else "<not UTF-8>"}")
+    while !ch.exec_ok && !ch.got_close {
+        pump(mut c, mut ch, plan)?
+    }
+    var flow = Flow { stdin_open: true }
+    while !channel.done(ch) {
+        region turn {
+            turn_once(mut c, mut ch, plan, mut flow)?
+        }
+    }
+    // Packets already whole in the buffer after both CLOSEs are still read.
+    loop {
+        let p = transport.try_next(mut c)?
+        if p.len == 0 {
+            break
+        }
+        let _ = channel.on(mut ch, p)?
+    }
+    if ch.signal.len > 0 {
+        say(plan, "the remote command was killed by signal {str_from_utf8(ch.signal) else "?"}")
+    }
+    say(plan, "Exit status {if ch.status >= 0 then ch.status else -1}")
+    transport.disconnect(mut c, 11, "disconnected by user")
+    channel.exit_code(ch)
+}
