@@ -437,7 +437,8 @@ change:
   one miss written into its row (below).
 
 At `4acfe04` all five rows passed on both tiers. The inert rows were then
-seen red by two witness branches, never pushed to GitHub. Each adds one
+seen red by two branches, pushed as witness branches, never merged (the
+prediction had said no scratch code would be committed). Each adds one
 hunk to `src/burrow.lu` that weakens one property only when a test option
 is given:
 - `d36d37c` waives strict kex: all three rows red at `strict kex stripped`.
@@ -544,10 +545,15 @@ check-word comparisons use `wire.ct_eq`, though neither guards a secret.
   instead. `--test-traffic`, `--test-preauth` and `--test-window` change
   only load and window size. Each stays, held inert for security by its own
   row (`test-traffic-inert`, `test-preauth-inert`, `test-window-inert`) and
-  seen red by the two witnesses above. Recommended: keep the three, and put
-  them behind a build flag if wolf gains a tier conditional.
+  seen red by the two witnesses above. Accepted as answered. No wolf-lang
+  issue is filed for a tier conditional: burrow no longer needs one (the
+  waiver is gone from every tier, and the three options are inert by their
+  rows), and wolf's tiers compile the same source by design. A lane that
+  needs a release-only gate for a hook that does weaken something files it
+  then, with that hook as its case.
 
-Review accepted R-bw02-1 to 7, 9 and 10 as recommended.
+Review accepted all ten: R-bw02-1 to 7, 9 and 10 as recommended, and R-bw02-8
+as answered.
 - **R-bw02-9, `@revoked`.** A `@revoked` line holding the presented key
   refuses whatever its host patterns (B1's behaviour, kept). Recommended:
   keep; it is stricter than matching hosts first.
@@ -561,7 +567,8 @@ Review accepted R-bw02-1 to 7, 9 and 10 as recommended.
 - wolf-std: constant-time Ed25519 signing (the scalar multiplication's
   bit-gated add; std records it as an obligation already).
 - wolf-std#131 (SHA-1): when it lands, `src/sha1` goes.
-- lupin 0.1.59: a `wrapping[u64]` struct field set from a bare literal above
+- lupin 0.1.59, filed as wolf-interp#337 and #338: a `wrapping[u64]` struct
+  field set from a bare literal above
   `i32`'s range traps when the field is read into an unannotated binding
   (`let b = s.h1`): lupin gives the binding the literal's default type,
   `i32`. A typed binding works, and native and the checked machine print
