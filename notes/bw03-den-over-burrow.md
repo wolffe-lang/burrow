@@ -189,7 +189,7 @@ resolver on PAX (wolf-lang#831, wolf-std#4), den keeps the URL
 `git@github.com:…` and `~/.ssh/config` maps it: `Host github.com`,
 `HostName` an address from `api.github.com/meta`'s `git` ranges, and
 `HostKeyAlias github.com`, so the known_hosts line is GitHub's published
-one. The console kernel's network (R-px97-17) is the other gap; no root
+one. The console kernel's network is the other gap, PAX's own; no root
 store is needed (ssh has no X.509). burrow reads `/dev/urandom` (R-bw01-4):
 the px lane must find one on PAX. The note drafts that lane's first items.
 
