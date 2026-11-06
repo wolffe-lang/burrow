@@ -214,6 +214,16 @@ fn run(s: config.Settings) -> int {
         if ok {
             transport.disconnect(mut c, 11, "disconnected by user")
         }
+    } else if ok && s.command.len == 0 {
+        // No command: refused by name after the login (R-bw03-1), so a probe
+        // without a key is refused authentication as the pinned ssh refuses
+        // it; burrow never starts a shell.
+        transport.disconnect(mut c, 11, "disconnected by user")
+        transport.close(take c)
+        return refusal(
+            "shell_unsupported",
+            "no command: burrow runs one command on a session channel; an interactive shell is not supported",
+        )
     } else if ok {
         var command = wire.bytes_of(config.remote_command(s))
         var env_pairs = List[str]()
@@ -264,10 +274,6 @@ fn main() -> int {
     }
     if s.refusal == "" {
         config.finish(mut s, home, local_user())
-        if s.command.len == 0 && s.traffic == 0 {
-            s.refusal = "shell_unsupported"
-            s.detail = "no command: burrow runs one command on a session channel; an interactive shell is not in B3"
-        }
     }
     if s.refusal != "" {
         if s.line != "" {
