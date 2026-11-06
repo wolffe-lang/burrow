@@ -269,7 +269,10 @@ def strict_kex_missing():
 @row
 def downgrade_caught():
     """With strict kex waived, the same tampering breaks H: the server's
-    signature covers the KEXINIT it sent, not the one burrow read."""
+    signature covers the KEXINIT it sent, not the one burrow read. burrow
+    has no waiver on any tier; rows/kexprobe, a row program beside the
+    binary under test, sets the transport's library option and runs the
+    exchange alone."""
     d = run_dir("downgrade-caught")
 
     def strip(t, payload):
@@ -277,9 +280,29 @@ def downgrade_caught():
             return [mitm.frame(mitm.kexinit_without(payload, "kex-strict-s-v00@openssh.com"))]
         return None
 
+    probe = BIN.parent / "rows" / "kexprobe"
+    check(probe.is_file(), f"no row probe at {probe}")
     with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
-        r = burrow(m.port, known_relay(d, s, m), "--no-strict-kex")
-        refused(r, "host_key_bad_signature")
+        r = subprocess.run([str(probe), "127.0.0.1", str(m.port), str(known_relay(d, s, m))],
+                           capture_output=True, text=True, timeout=120, env={"PATH": "/usr/bin:/bin"})
+        check(r.returncode == 255, f"kexprobe exit {r.returncode}, wanted 255; stderr: {tail(r.stderr)}")
+        check(re.search(r"^kexprobe: host_key_bad_signature: ", r.stderr, re.M),
+              f"no 'kexprobe: host_key_bad_signature:' line; stderr: {tail(r.stderr)}")
+
+
+@row
+def no_strict_kex_refused():
+    """burrow's command line has no strict-kex waiver on any tier: the flag
+    is an unknown option, refused before any connection."""
+    d = run_dir("no-strict-kex-refused")
+    with oraclelib.Sshd(d / "sshd") as s:
+        before = s.log_text().count("Connection from")
+        r = burrow(s.port, known(d, s), "--no-strict-kex")
+        time.sleep(0.2)
+        conns = s.log_text().count("Connection from") - before
+    refused(r, "option_unknown")
+    check("unknown option -- -" in r.stderr, f"no ssh-shaped 'unknown option' line; stderr: {tail(r.stderr)}")
+    check(conns == 0, f"burrow connected ({conns}) before refusing the flag")
 
 
 @row
@@ -367,6 +390,137 @@ def rekey_by_server():
         check(int(m[2]) >= 1, f"{m[2]} rekeys by the server")
         check(int(m[1]) == 0, f"{m[1]} rekeys by burrow at the default limits")
     return f"{m[2]} by the server"
+
+
+# ---- the test options: inert for security ---------------------------------------------
+def key_lines(path):
+    """The base64 lines of a private key file: none may appear in output."""
+    return [ln for ln in pathlib.Path(path).read_text().splitlines() if ln and not ln.startswith("-----")]
+
+
+def refused_at(cond, r, name):
+    try:
+        refused(r, name)
+    except Fail as e:
+        raise Fail(f"{cond}: {e}")
+
+
+def inert(row_name, opt, honest):
+    """Runs burrow with `opt` under each condition a security property
+    decides, each refused by the name it has without the option; then
+    `honest(sshd, r)` against an honest sshd, the option in effect; and no
+    line of a private key file in any output."""
+    outs = []
+    secrets = key_lines(CLIENT_KEY)
+
+    def strip(t, payload):
+        if t == 20:
+            return [mitm.frame(mitm.kexinit_without(payload, "kex-strict-s-v00@openssh.com"))]
+        return None
+
+    def flip(t, payload):
+        if t == 31:
+            return [mitm.frame(payload[:-1] + bytes([payload[-1] ^ 1]))]
+        return None
+
+    d = run_dir(f"{row_name}-strict")
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=strip)) as m:
+        r = burrow(m.port, known_relay(d, s, m), *opt)
+    outs.append(r)
+    refused_at("strict kex stripped", r, "strict_kex_missing")
+
+    d = run_dir(f"{row_name}-unknown")
+    with oraclelib.Sshd(d / "sshd") as s:
+        kh = known(d, s, text="")
+        r = burrow(s.port, kh, *opt)
+    outs.append(r)
+    refused_at("unknown host key", r, "host_key_unknown")
+    check(kh.read_text() == "", f"unknown host key: known_hosts was written: {kh.read_text()[:80]!r}")
+
+    d = run_dir(f"{row_name}-changed")
+    algo, blob = oraclelib.keygen(d / "other", "ed25519").read_text().split()[:2]
+    with oraclelib.Sshd(d / "sshd") as s:
+        line = f"[127.0.0.1]:{s.port} {algo} {blob}\n"
+        kh = known(d, s, text=line)
+        r = burrow(s.port, kh, *opt)
+    outs.append(r)
+    refused_at("changed host key", r, "host_key_changed")
+    check(kh.read_text() == line, "changed host key: known_hosts was rewritten")
+
+    d = run_dir(f"{row_name}-signature")
+    with oraclelib.Sshd(d / "sshd") as s, mitm.Relay(s.port, mitm.Hook(on_packet=flip)) as m:
+        r = burrow(m.port, known_relay(d, s, m), *opt)
+    outs.append(r)
+    refused_at("flipped signature", r, "host_key_bad_signature")
+
+    d = run_dir(f"{row_name}-cipher")
+    with oraclelib.Sshd(d / "sshd", ["Ciphers aes128-ctr,aes256-gcm@openssh.com"]) as s:
+        r = burrow(s.port, known(d, s), *opt)
+    outs.append(r)
+    refused_at("no common cipher", r, "no_common_cipher")
+
+    d = run_dir(f"{row_name}-auth")
+    other = oraclelib.keygen(d / "id_other", "ed25519")
+    with oraclelib.Sshd(d / "sshd", authorized=[str(other)]) as s:
+        r = burrow(s.port, known(d, s), *opt)
+    outs.append(r)
+    refused_at("key not authorized", r, "auth_refused")
+
+    d = run_dir(f"{row_name}-permissions")
+    oraclelib.keygen(d / "id_open", "ed25519")
+    os.chmod(d / "id_open", 0o644)
+    secrets += key_lines(d / "id_open")
+    with oraclelib.Sshd(d / "sshd") as s:
+        before = s.log_text().count("Connection from")
+        r = burrow(s.port, known(d, s), "-i", str(d / "id_open"), *opt)
+        time.sleep(0.2)
+        conns = s.log_text().count("Connection from") - before
+    outs.append(r)
+    refused_at("key file 0644", r, "key_permissions")
+    check(conns == 0, f"key file 0644: burrow connected ({conns}) before refusing the key")
+
+    d = run_dir(f"{row_name}-honest")
+    with oraclelib.Sshd(d / "sshd") as s:
+        r = burrow(s.port, known(d, s), *opt)
+        outs.append(r)
+        note = honest(s, r)
+
+    for r in outs:
+        for ln in secrets:
+            check(ln not in r.stdout and ln not in r.stderr, "a private key line appeared in burrow's output")
+    return f"7 conditions refused as without {' '.join(opt)}; {note}"
+
+
+@row
+def test_traffic_inert():
+    """--test-traffic: load after the login, then a disconnect."""
+    def honest(s, r):
+        authed_up(r)
+        check(re.search(r"^burrow: traffic: 64000 bytes sent; .*PONG received", r.stderr, re.M),
+              f"no traffic line; stderr: {tail(r.stderr)}")
+        return "traffic sent and answered"
+    return inert("test-traffic-inert", ["--test-traffic=64000"], honest)
+
+
+@row
+def test_preauth_inert():
+    """--test-preauth: that load once more before the login."""
+    def honest(s, r):
+        authed_up(r)
+        n = len(re.findall(r"^burrow: traffic: 64000 bytes sent; .*PONG received", r.stderr, re.M))
+        check(n == 2, f"{n} traffic lines, wanted 2 (before and after the login); stderr: {tail(r.stderr)}")
+        return "traffic answered before and after the login"
+    return inert("test-preauth-inert", ["--test-traffic=64000", "--test-preauth"], honest)
+
+
+@row
+def test_window_inert():
+    """--test-window: burrow's own channel window, smaller."""
+    def honest(s, r):
+        transport_up(r)
+        check(wait_log(s, r"ctype session rchan 0 win 4096 "), "sshd did not log the session's window of 4096")
+        return "the session opened with window 4096"
+    return inert("test-window-inert", ["--test-window=4096"], honest)
 
 
 # ---- the transcript against the pinned OpenSSH client ----------------------------------
