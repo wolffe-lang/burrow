@@ -405,11 +405,27 @@ def refused_at(cond, r, name):
         raise Fail(f"{cond}: {e}")
 
 
-def inert(row_name, opt, honest):
+def unauthorized(s, r):
+    refused_at("key not authorized", r, "auth_refused")
+
+
+def no_login(cond):
+    """The pinned sshd answers no PING between SERVICE_ACCEPT and the login,
+    so burrow under --test-preauth refuses `timeout` there: it never logs
+    in at all."""
+    def holds(s, r):
+        refused_at(cond, r, "timeout")
+        check("debug1: SSH2_MSG_SERVICE_ACCEPT received" in r.stderr, f"{cond}: no SERVICE_ACCEPT before the timeout")
+        check("Authentication succeeded" not in r.stderr, f"{cond}: burrow logged in")
+        check(not re.search(r"Accepted \S+ for ", s.log_text()), f"{cond}: sshd logged a login")
+    return holds
+
+
+def inert(row_name, opt, honest, login=unauthorized):
     """Runs burrow with `opt` under each condition a security property
-    decides, each refused by the name it has without the option; then
-    `honest(sshd, r)` against an honest sshd, the option in effect; and no
-    line of a private key file in any output."""
+    decides, each refused by the name it has without the option (the login
+    by `login(sshd, r)`); then `honest(sshd, r)` against an honest sshd, the
+    option in effect; and no line of a private key file in any output."""
     outs = []
     secrets = key_lines(CLIENT_KEY)
 
@@ -463,8 +479,8 @@ def inert(row_name, opt, honest):
     other = oraclelib.keygen(d / "id_other", "ed25519")
     with oraclelib.Sshd(d / "sshd", authorized=[str(other)]) as s:
         r = burrow(s.port, known(d, s), *opt)
-    outs.append(r)
-    refused_at("key not authorized", r, "auth_refused")
+        outs.append(r)
+        login(s, r)
 
     d = run_dir(f"{row_name}-permissions")
     oraclelib.keygen(d / "id_open", "ed25519")
@@ -504,13 +520,14 @@ def test_traffic_inert():
 
 @row
 def test_preauth_inert():
-    """--test-preauth: that load once more before the login."""
+    """--test-preauth: that load once more before the login. The pinned sshd
+    answers no PING there, so with it burrow never logs in: every check
+    before the login holds, and the login is never reached."""
     def honest(s, r):
-        authed_up(r)
-        n = len(re.findall(r"^burrow: traffic: 64000 bytes sent; .*PONG received", r.stderr, re.M))
-        check(n == 2, f"{n} traffic lines, wanted 2 (before and after the login); stderr: {tail(r.stderr)}")
-        return "traffic answered before and after the login"
-    return inert("test-preauth-inert", ["--test-traffic=64000", "--test-preauth"], honest)
+        no_login("honest server")(s, r)
+        return "an honest server: SERVICE_ACCEPT, the PING unanswered, `timeout`, no login"
+    return inert("test-preauth-inert", ["--test-traffic=64000", "--test-preauth", "-o", "ConnectTimeout=5"], honest,
+                 login=no_login("key not authorized"))
 
 
 @row
