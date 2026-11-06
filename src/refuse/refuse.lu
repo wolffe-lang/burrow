@@ -44,6 +44,10 @@ pub error Refusal = {
     known_hosts_unwritable,
     service_refused,
     auth_refused,
+    auth_no_publickey,
+    auth_partial,
+    auth_sig_alg_unsupported,
+    auth_success_unrequested,
     key_unreadable,
     key_malformed,
     key_encrypted,
@@ -52,6 +56,13 @@ pub error Refusal = {
     key_unsupported,
     key_mismatch,
     key_permissions,
+    channel_open_failed,
+    exec_refused,
+    channel_unknown,
+    channel_closed,
+    window_exceeded,
+    window_overflow,
+    channel_packet_too_large,
     entropy_unavailable,
     sequence_wrapped,
     disconnected,
@@ -137,14 +148,79 @@ pub fn msg_userauth_banner() -> int {
     53
 }
 
+/// SSH_MSG_USERAUTH_PK_OK (RFC 4252 §7).
+pub fn msg_userauth_pk_ok() -> int {
+    60
+}
+
 /// SSH_MSG_GLOBAL_REQUEST (RFC 4254 §4).
 pub fn msg_global_request() -> int {
     80
 }
 
+/// SSH_MSG_REQUEST_SUCCESS (RFC 4254 §4).
+pub fn msg_request_success() -> int {
+    81
+}
+
 /// SSH_MSG_REQUEST_FAILURE (RFC 4254 §4).
 pub fn msg_request_failure() -> int {
     82
+}
+
+/// SSH_MSG_CHANNEL_OPEN (RFC 4254 §5.1).
+pub fn msg_channel_open() -> int {
+    90
+}
+
+/// SSH_MSG_CHANNEL_OPEN_CONFIRMATION (§5.1).
+pub fn msg_channel_open_confirmation() -> int {
+    91
+}
+
+/// SSH_MSG_CHANNEL_OPEN_FAILURE (§5.1).
+pub fn msg_channel_open_failure() -> int {
+    92
+}
+
+/// SSH_MSG_CHANNEL_WINDOW_ADJUST (§5.2).
+pub fn msg_channel_window_adjust() -> int {
+    93
+}
+
+/// SSH_MSG_CHANNEL_DATA (§5.2).
+pub fn msg_channel_data() -> int {
+    94
+}
+
+/// SSH_MSG_CHANNEL_EXTENDED_DATA (§5.2).
+pub fn msg_channel_extended_data() -> int {
+    95
+}
+
+/// SSH_MSG_CHANNEL_EOF (§5.3).
+pub fn msg_channel_eof() -> int {
+    96
+}
+
+/// SSH_MSG_CHANNEL_CLOSE (§5.3).
+pub fn msg_channel_close() -> int {
+    97
+}
+
+/// SSH_MSG_CHANNEL_REQUEST (§5.4).
+pub fn msg_channel_request() -> int {
+    98
+}
+
+/// SSH_MSG_CHANNEL_SUCCESS (§5.4).
+pub fn msg_channel_success() -> int {
+    99
+}
+
+/// SSH_MSG_CHANNEL_FAILURE (§5.4).
+pub fn msg_channel_failure() -> int {
+    100
 }
 
 /// SSH2_MSG_PING (OpenSSH `PROTOCOL` §1.9, advertised by ext-info).
@@ -182,6 +258,9 @@ pub fn reason_of(code_name: str) -> int {
         "known_hosts_unwritable" => 9,
         "service_refused" => 7,
         "auth_refused" => 14,
+        "auth_no_publickey" => 14,
+        "auth_partial" => 14,
+        "auth_sig_alg_unsupported" => 14,
         "entropy_unavailable" => 11,
         _ => 2,
     }
