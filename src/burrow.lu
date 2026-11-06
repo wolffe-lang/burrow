@@ -230,7 +230,7 @@ fn run(s: config.Settings) -> int {
         for entry in env.vars() {
             let name = env.entry_key(entry)
             for pat in s.send_env {
-                if config.env_match(pat, name) {
+                if config.env_match(pat, "") {
                     (mut env_pairs).push("{name}={env.entry_value(entry)}")
                     break
                 }
