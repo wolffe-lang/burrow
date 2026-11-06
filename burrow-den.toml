@@ -1,0 +1,16 @@
+# den, the consumer B4 runs over burrow (bw03, 2026-11-06): its trunk at
+# the lane's launch, cloned from GitHub, built by its own tools at its own
+# toolchain pin (its wolf-toolchain.toml at this rev), never edited.
+[den]
+repo = "wolffe-lang/den"
+url = "https://github.com/wolffe-lang/den.git"
+rev = "ef0bb0caf277ad553513cc4f525412ba53a24e5a"
+
+# den's git oracle, as its den-oracle.toml at that rev pins it: git 2.56.0
+# from its signed tarball, built by den's tools/fetch-oracle in den's own
+# image (`DEN_ENGINE=… .den/den/tools/in-container tools/fetch-oracle`),
+# installed under prefix /opt/git. Only the installed tree is used here,
+# by digest, as the rows' git server and to read the server's state.
+[git]
+version_line = "git version 2.56.0"
+binary_sha256 = "c4848492938c4ebfffbefe1fbbaa68b9af90c86d1f6a20e76816c5ff37fcfa60"
