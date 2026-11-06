@@ -796,11 +796,15 @@ def cli_user_precedence():
 
 @row
 def cli_no_command():
-    """No command: refused by name (no interactive session in B3); the
-    pinned ssh starts a shell (a recorded difference)."""
+    """No command: refused by name after the login (R-bw03-1), never a
+    shell; the pinned ssh starts one (a recorded difference)."""
     d = run_dir("cli-no-command")
-    rb = burrow(d, ["127.0.0.1"])
+    with session_server(d) as s:
+        rb = burrow(d, common(s, known(d, s), d / "id_user") + ["127.0.0.1"])
+        log = s.log_text()
     refused(rb, "shell_unsupported")
+    check("Accepted publickey for " + USER in log, "sshd did not log the login before the refusal")
+    check("session_new" not in log and "server_input_channel_open" not in log, "burrow opened a channel")
 
 
 def keep_evidence(tier):
