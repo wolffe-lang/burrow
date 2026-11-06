@@ -371,16 +371,17 @@ check through `wire.ct_eq`; the user key's signature is not constant time
   resolver. Recommended: (a) for the first PAX push, then (c); (b) only if
   std's resolver is far off, since it would be burrow's alone.
 
-**Issues to file** (for the orchestrator; none filed here):
+**Issues** (none filed by this lane):
 
-- den: a clone's peak RSS grows faster than the history. Through the pinned
+- den#63, filed from this note: a clone's peak RSS grows faster than the history. Through the pinned
   OpenSSH client, a bare clone of a fixed fixture peaked at 348 MiB (30
   commits, about 500 objects), 954 MiB (60), 3.3 GiB (120) and 12.2 GiB
   (300 commits, about 3,200 objects), so den's 10,000-object bound is out of
   reach in a 12 GiB container. Its wall time is also mostly not CPU (60
   commits: 21 s wall, 1.3 s CPU). The fixture is `tools/measure-den`'s
   (`--commits`, `--binaries`, `--clients ssh`).
-- burrow: none.
+- burrow: none. R-bw03-3's option (c), den's rows in CI from a git built in
+  burrow's own snapshot-pinned image, is recorded as a follow-on.
 
 ## For the px lane (a draft of its first items)
 
