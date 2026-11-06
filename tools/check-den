@@ -1,0 +1,651 @@
+#!/usr/bin/env python3
+"""check-den — den's ssh rows through burrow as `ssh`, against the pinned
+sshd, each held byte for byte to the same den command through the pinned
+`ssh` (B4).
+
+    tools/in-container python3 -I tools/check-den --bin target/native/burrow [--only ROW...]
+
+den is the binary tools/fetch-den built at burrow-den.toml's pin, never
+edited; the server's git is den's pinned git 2.56.0 (.den/git, by digest).
+Every row makes its own run directory, its own client key (by
+burrow-keygen, for that run), its own sshd (oraclelib.Sshd, `AcceptEnv
+GIT_PROTOCOL`) and its own fixture in den's shape: service wrappers
+`upload`, `receive` and `upload-v0` that `exec env -i` into the pinned
+git with a fixed environment. Unlike den's own fixture (whose host sshd
+did not accept the variable, so its wrappers export `version=2`), these
+pass on only the GIT_PROTOCOL that arrived and log it, so every v2 row
+proves `SendEnv`, the `env` request and `AcceptEnv` carried it.
+
+Each row runs den twice, with PATH's `ssh` a link to burrow and then a
+link to the pinned ssh (one HOME, key and sshd; the server repositories
+reset from one template, the local destination at the same path), and
+compares den's exit code, stdout and stderr byte for byte, the local
+repository (HEAD, refs, objects, worktree files), the server repository
+(refs, objects, fsck) and the wrappers' log. Not compared byte for byte:
+the local `index` (stat data) and `logs/` (reflog times). A row prints
+`PASS <row>` or `FAIL <row> <why>` at column 0; the exit status is the
+number of failures (capped at 100).
+
+Private keys stay in the run directories (0711, the files 0600); rows print
+public lines and fingerprints only. Each row's sshd.log, compare.txt and
+protocol.log are copied to target/evidence/den-<tier>/<row>/, readable, and
+that copy is scanned for key files and private key text (`evidence`).
+"""
+import argparse
+import hashlib
+import os
+import pathlib
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tomllib
+import zlib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+
+ROOT = oraclelib.ROOT
+PIN = tomllib.loads((ROOT / "burrow-den.toml").read_text())
+DEN = ROOT / ".den" / "den" / "target" / "native" / "den"
+GIT_ROOT = ROOT / ".den" / "git"
+GIT_BIN = GIT_ROOT / "opt" / "git" / "bin"
+GIT = GIT_BIN / "git"
+EXEC_PATH = GIT_ROOT / "opt" / "git" / "libexec" / "git-core"
+USER = "burrowtest"
+ROWS = []
+WORK = None
+BIN = KEYGEN_BIN = None
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def tail(b, n=400):
+    s = b.decode("utf-8", "replace") if isinstance(b, bytes) else str(b)
+    return s.strip()[-n:].replace("\n", " | ")
+
+
+def sha(p):
+    return hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+
+
+def require_den():
+    """den and its git at their pins, by digest, or a named refusal."""
+    stamp = ROOT / ".den" / "STAMP"
+    if not stamp.exists() or not DEN.exists() or not GIT.exists():
+        raise SystemExit("check-den: .den/ is not staged: run tools/in-container tools/fetch-den")
+    if sha(GIT) != PIN["git"]["binary_sha256"]:
+        raise SystemExit(f"check-den: .den/git does not hold the pin ({sha(GIT)})")
+    lines = stamp.read_text().split("\n")
+    if lines[0] != f"den {PIN['den']['rev']} {sha(DEN)}":
+        raise SystemExit("check-den: .den/STAMP does not name this den binary at the pin: run tools/fetch-den")
+
+
+def ids():
+    p = pwd.getpwnam(USER)
+    return p.pw_uid, p.pw_gid
+
+
+def chown_tree(path):
+    uid, gid = ids()
+    os.chown(path, uid, gid)
+    for dirpath, dirnames, filenames in os.walk(path):
+        for n in dirnames + filenames:
+            os.chown(os.path.join(dirpath, n), uid, gid, follow_symlinks=False)
+
+
+def git_env(fx):
+    return {"PATH": f"{GIT_BIN}:/usr/bin:/bin", "GIT_EXEC_PATH": str(EXEC_PATH), "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(fx / "gitconfig-root"), "HOME": str(fx / "root-home"), "LC_ALL": "C", "TZ": "UTC",
+            "GIT_AUTHOR_NAME": "Den Tester", "GIT_AUTHOR_EMAIL": "den@example.invalid",
+            "GIT_COMMITTER_NAME": "Den Tester", "GIT_COMMITTER_EMAIL": "den@example.invalid",
+            "GIT_AUTHOR_DATE": "1700000000 +0000", "GIT_COMMITTER_DATE": "1700000000 +0000"}
+
+
+def git(fx, *args, cwd=None, data=b""):
+    """The pinned git, as root, on the row's own repositories."""
+    p = subprocess.run([str(GIT), *map(str, args)], cwd=cwd, input=data, env=git_env(fx), capture_output=True, timeout=60)
+    if p.returncode != 0:
+        raise Fail(f"git {' '.join(map(str, args))} exited {p.returncode}: {tail(p.stderr)}")
+    return p.stdout
+
+
+class Fixture:
+    """den's fixture shape under a row's directory: owned service wrappers
+    into the pinned git, and the repositories they serve."""
+
+    def __init__(self, d):
+        self.d = d
+        self.fx = d / "fixture"
+        for name in ("bin", "home", "root-home", "empty-template", "empty-hooks", "tmp", "template"):
+            (self.fx / name).mkdir(parents=True, exist_ok=True)
+        self.srv = d / "srv"
+        (self.fx / "gitconfig").write_text(
+            "[user]\n\tname = Den Tester\n\temail = den@example.invalid\n[core]\n\thooksPath = "
+            f"{self.fx / 'empty-hooks'}\n[init]\n\tdefaultBranch = main\n\ttemplateDir = {self.fx / 'empty-template'}\n")
+        (self.fx / "gitconfig-root").write_text((self.fx / "gitconfig").read_text() + "[safe]\n\tdirectory = *\n")
+        fixed = {"GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": str(self.fx / "gitconfig"),
+                 "GIT_EXEC_PATH": str(EXEC_PATH), "GIT_AUTHOR_NAME": "Den Tester", "GIT_AUTHOR_EMAIL": "den@example.invalid",
+                 "GIT_COMMITTER_NAME": "Den Tester", "GIT_COMMITTER_EMAIL": "den@example.invalid",
+                 "GIT_AUTHOR_DATE": "1700000000 +0000", "GIT_COMMITTER_DATE": "1700000000 +0000",
+                 "HOME": str(self.fx / "home"), "TMPDIR": str(self.fx / "tmp"), "LC_ALL": "C", "TZ": "UTC",
+                 "PATH": f"{GIT_BIN}:/usr/bin:/bin"}
+        assigns = " ".join(f"'{k}={v}'" for k, v in fixed.items())
+        self.log = self.fx / "protocol.log"
+        for name, service, keep in (("upload", "git-upload-pack", True), ("receive", "git-receive-pack", True),
+                                    ("upload-v0", "git-upload-pack", False)):
+            check((GIT_BIN / service).exists(), f"no {service} in the pinned git")
+            text = "#!/bin/sh\nset -eu\n"
+            if not keep:
+                text += "unset GIT_PROTOCOL\n"
+            text += (f"printf '%s %s\\n' {name} \"${{GIT_PROTOCOL-<unset>}}\" >>'{self.log}'\n"
+                     "proto=\n[ -z \"${GIT_PROTOCOL+x}\" ] || proto=\"GIT_PROTOCOL=$GIT_PROTOCOL\"\n"
+                     f"exec env -i {assigns} ${{proto:+\"$proto\"}} '{GIT_BIN / service}' \"$@\"\n")
+            p = self.fx / "bin" / name
+            p.write_text(text)
+            p.chmod(0o755)
+        self.upload = str(self.fx / "bin" / "upload")
+        self.receive = str(self.fx / "bin" / "receive")
+        self.upload_v0 = str(self.fx / "bin" / "upload-v0")
+        for name in ("home", "tmp"):
+            chown_tree(self.fx / name)
+        self.reset_log()
+
+    def reset_log(self):
+        self.log.write_text("")
+        uid, gid = ids()
+        os.chown(self.log, uid, gid)
+        os.chmod(self.log, 0o644)
+
+    def path(self, repo):
+        return self.fx / "template" / repo
+
+    def seed(self, repo="plain.git"):
+        """Two commits, `main` at the first (den's ssh-peer seed): their ids."""
+        path = self.path(repo)
+        git(self, "init", "-q", "--bare", "-b", "main", path)
+        commits = []
+        for data in (b"first\n", b"first\nsecond\n"):
+            blob = git(self, "hash-object", "-w", "--stdin", cwd=path, data=data).strip().decode()
+            tree = git(self, "mktree", cwd=path, data=f"100644 blob {blob}\ta\n".encode()).strip().decode()
+            parent = ["-p", commits[0]] if commits else []
+            commits.append(git(self, "commit-tree", tree, *parent, "-m", "second" if commits else "first", cwd=path).strip().decode())
+        git(self, "update-ref", "refs/heads/main", commits[0], cwd=path)
+        return commits
+
+    def empty(self, repo):
+        git(self, "init", "-q", "--bare", "-b", "main", self.path(repo))
+
+    def reset_server(self):
+        if self.srv.exists():
+            shutil.rmtree(self.srv)
+        shutil.copytree(self.fx / "template", self.srv, symlinks=True)
+        chown_tree(self.srv)
+        self.reset_log()
+
+    def served(self, repo):
+        return str(self.srv / repo)
+
+
+def repo_state(fx, repo, bare=True):
+    """HEAD, every ref and every object (id, kind, content digest), read by
+    the pinned git; the worktree's files for a checkout."""
+    repo = pathlib.Path(repo)
+    if not repo.exists():
+        return {"absent": True}
+    admin = repo if bare else repo / ".git"
+    head = (admin / "HEAD").read_text() if (admin / "HEAD").exists() else None
+    refs = git(fx, "--git-dir", admin, "for-each-ref", "--format=%(refname) %(objectname)").decode().splitlines()
+    names = git(fx, "--git-dir", admin, "rev-list", "--objects", "--all").decode().splitlines() if refs else []
+    objects = {}
+    for name in names:
+        oid = name.split(" ", 1)[0]
+        kind = git(fx, "--git-dir", admin, "cat-file", "-t", oid).strip().decode()
+        body = git(fx, "--git-dir", admin, "cat-file", kind, oid)
+        objects[oid] = (kind, hashlib.sha256(body).hexdigest())
+    fsck = subprocess.run([str(GIT), "--git-dir", str(admin), "fsck", "--full", "--no-dangling"], env=git_env(fx),
+                          capture_output=True, timeout=60)
+    state = {"head": head, "refs": refs, "objects": objects, "fsck": (fsck.returncode, fsck.stdout, fsck.stderr)}
+    if not bare:
+        files = {}
+        for p in sorted(repo.rglob("*")):
+            rel = p.relative_to(repo)
+            if rel.parts[0] == ".git":
+                continue
+            if p.is_file():
+                files[str(rel)] = hashlib.sha256(p.read_bytes()).hexdigest()
+        state["worktree"] = files
+    return state
+
+
+def write_objects(fx, local, source, head):
+    """A den repository (`den init --bare`) holding `source`'s objects, loose,
+    and `main` at `head` (den's ssh-test local_source)."""
+    r = subprocess.run([str(DEN), "init", "-q", "--bare", str(local)], capture_output=True, timeout=60)
+    check(r.returncode == 0, f"den init: {tail(r.stderr)}")
+    names = git(fx, "--git-dir", source, "rev-list", "--objects", "--all").decode().splitlines()
+    for name in names:
+        oid = name.split(" ", 1)[0]
+        kind = git(fx, "--git-dir", source, "cat-file", "-t", oid).strip().decode()
+        body = git(fx, "--git-dir", source, "cat-file", kind, oid)
+        raw = kind.encode() + b" " + str(len(body)).encode() + b"\0" + body
+        check(hashlib.sha1(raw).hexdigest() == oid, f"object {oid} does not hash to its id")
+        p = pathlib.Path(local) / "objects" / oid[:2] / oid[2:]
+        p.parent.mkdir(exist_ok=True)
+        p.write_bytes(zlib.compress(raw, 1))
+    (pathlib.Path(local) / "refs" / "heads" / "main").write_text(head + "\n")
+
+
+class Row:
+    """One row's directory, sshd, client HOME and fixture."""
+
+    def __init__(self, name):
+        self.name = name
+        self.d = WORK / name
+        if self.d.exists():
+            shutil.rmtree(self.d)
+        self.d.mkdir(parents=True)
+        os.chmod(self.d, 0o711)
+        self.home = self.d / "home"
+        (self.home / ".ssh").mkdir(parents=True, mode=0o700)
+        self.key = self.home / ".ssh" / "id_ed25519"
+        r = subprocess.run([str(KEYGEN_BIN), "-q", "-t", "ed25519", "-N", "", "-C", "den-row", "-f", str(self.key)],
+                           capture_output=True, timeout=60)
+        check(r.returncode == 0, f"burrow-keygen: {tail(r.stderr)}")
+        (self.home / ".gitconfig").write_text("[user]\n\tname = Den Tester\n\temail = den@example.invalid\n")
+        self.fx = Fixture(self.d)
+        for client, target in (("burrow", BIN), ("ssh", oraclelib.SSH)):
+            b = self.d / f"via-{client}"
+            b.mkdir()
+            (b / "ssh").symlink_to(target)
+        self.local = self.d / "local"
+        self.server = None
+
+    def __enter__(self):
+        self.server = oraclelib.Sshd(self.d / "sshd", ["AcceptEnv GIT_PROTOCOL"], authorized=[str(self.key) + ".pub"])
+        self.server.__enter__()
+        (self.home / ".ssh" / "known_hosts").write_text(self.server.known_hosts_line())
+        cfg = self.home / ".ssh" / "config"
+        cfg.write_text(f"Host fixture\n    HostName 127.0.0.1\n    Port {self.server.port}\n    User {USER}\n")
+        os.chmod(cfg, 0o600)
+        return self
+
+    def __exit__(self, *e):
+        self.server.__exit__(*e)
+
+    def uri(self, repo, user=True, alias=False):
+        if alias:
+            return f"ssh://fixture{self.fx.served(repo)}"
+        return f"ssh://{USER + '@' if user else ''}127.0.0.1:{self.server.port}{self.fx.served(repo)}"
+
+    def scp(self, repo, user=False):
+        return f"{USER + '@' if user else ''}fixture:{self.fx.served(repo)}"
+
+    def den(self, client, args, cwd):
+        env = {"PATH": f"{self.d / ('via-' + client)}:/usr/bin:/bin", "HOME": str(self.home), "LC_ALL": "C", "TZ": "UTC",
+               "TMPDIR": str(self.d / "tmp")}
+        (self.d / "tmp").mkdir(exist_ok=True)
+        try:
+            p = subprocess.run([str(DEN), *args], cwd=cwd, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+        except subprocess.TimeoutExpired:
+            raise Fail(f"den {args[0]} through {client} did not finish within 120 s")
+        return p.returncode, p.stdout, p.stderr
+
+    def pair(self, args, prepare=None, repos=(), local_bare=True, cwd_local=False):
+        """den `args` through burrow, then through the pinned ssh, from the
+        same starting state; returns {client: result}."""
+        out = {}
+        for client in ("burrow", "ssh"):
+            self.fx.reset_server()
+            if self.local.exists():
+                shutil.rmtree(self.local)
+            if prepare:
+                prepare(self.local)
+            r = self.den(client, [a(self) if callable(a) else a for a in args], cwd=self.local if cwd_local else self.d)
+            res = {"exit": r[0], "stdout": r[1], "stderr": r[2],
+                   "local": repo_state(self.fx, self.local, local_bare),
+                   "server": {repo: repo_state(self.fx, self.srv_path(repo)) for repo in repos},
+                   "protocol": self.fx.log.read_text()}
+            out[client] = res
+            kept = self.d / f"{client}-local"
+            if kept.exists():
+                shutil.rmtree(kept)
+            if self.local.exists():
+                self.local.rename(kept)
+        self.record(args, out)
+        same(out)
+        return out["burrow"]
+
+    def srv_path(self, repo):
+        return self.fx.srv / repo
+
+    def record(self, args, out):
+        lines = [f"row {self.name}", f"den {' '.join(a(self) if callable(a) else a for a in args)}"]
+        for client, r in out.items():
+            lines += [f"--- through {client}", f"exit {r['exit']}", f"stdout {r['stdout']!r}", f"stderr {r['stderr']!r}",
+                      f"protocol {r['protocol']!r}", f"local refs {r['local'].get('refs')}",
+                      f"local objects {len(r['local'].get('objects', {}))}"]
+            for repo, st in r["server"].items():
+                lines += [f"server {repo} refs {st.get('refs')}", f"server {repo} objects {len(st.get('objects', {}))}",
+                          f"server {repo} fsck {st.get('fsck', (None,))[0]}"]
+        (self.d / "compare.txt").write_text("\n".join(lines) + "\n")
+
+
+def same(out):
+    """Every compared field equal through both clients."""
+    b, s = out["burrow"], out["ssh"]
+    for field in ("exit", "stdout", "stderr", "protocol", "local", "server"):
+        if b[field] != s[field]:
+            bv, sv = b[field], s[field]
+            if field in ("stdout", "stderr"):
+                bv, sv = tail(bv), tail(sv)
+            raise Fail(f"{field} differs: through burrow {str(bv)[:300]!r}; through ssh {str(sv)[:300]!r}")
+
+
+def quiet(r):
+    check(r["exit"] == 0 and r["stdout"] == b"" and r["stderr"] == b"",
+          f"exit {r['exit']}, stdout {tail(r['stdout'])!r}, stderr {tail(r['stderr'])!r}")
+
+
+def v2(r, *services):
+    got = r["protocol"].splitlines()
+    want = [f"{s} version=2" for s in services]
+    check(got == want, f"the wrappers received {got}, wanted {want}")
+
+
+# ---- clone ---------------------------------------------------------------------
+def clone_row(name, url, repo="plain.git", bare=True):
+    with Row(name) as w:
+        first, _ = w.fx.seed(repo)
+        args = ["clone", "-q", *(["--bare"] if bare else []), "--upload-pack=" + w.fx.upload, url(w, repo), str(w.local)]
+        r = w.pair(args, repos=(repo,), local_bare=bare)
+        quiet(r)
+        v2(r, "upload")
+        check(r["local"]["objects"] == r["server"][repo]["objects"], "the clone's objects are not the server's")
+        check(f"refs/heads/main {first}" in r["local"]["refs"], f"the clone's refs {r['local']['refs']}")
+        if not bare:
+            check((w.d / "burrow-local" / "a").read_bytes() == b"first\n", "the checkout's a is not first")
+        return f"{len(r['local']['objects'])} objects, main {first[:12]}, both clients alike"
+
+
+@row
+def den_clone_uri():
+    """ssh://user@host:port/path."""
+    return clone_row("den-clone-uri", lambda w, repo: w.uri(repo))
+
+
+@row
+def den_clone_uri_alias():
+    """ssh://alias/path: HostName, Port and User from a Host block."""
+    return clone_row("den-clone-uri-alias", lambda w, repo: w.uri(repo, alias=True))
+
+
+@row
+def den_clone_scp():
+    """scp-like alias:path (the form has no port)."""
+    return clone_row("den-clone-scp", lambda w, repo: w.scp(repo))
+
+
+@row
+def den_clone_scp_user():
+    """scp-like user@alias:path; the user in the destination wins."""
+    return clone_row("den-clone-scp-user", lambda w, repo: w.scp(repo, user=True))
+
+
+@row
+def den_clone_checkout():
+    return clone_row("den-clone-checkout", lambda w, repo: w.uri(repo), bare=False)
+
+
+@row
+def den_clone_space_path():
+    return clone_row("den-clone-space-path", lambda w, repo: w.uri(repo), repo="space repo.git")
+
+
+@row
+def den_clone_quote_path():
+    return clone_row("den-clone-quote-path", lambda w, repo: w.uri(repo), repo="quote'repo.git")
+
+
+@row
+def den_clone_literal_path():
+    return clone_row("den-clone-literal-path", lambda w, repo: w.scp(repo), repo="semi;true.git")
+
+
+# ---- fetch ---------------------------------------------------------------------
+@row
+def den_fetch_incremental():
+    with Row("den-fetch-incremental") as w:
+        first, second = w.fx.seed()
+        tpl = w.fx.path("plain.git")
+        snapshot = w.d / "first.git"
+        git(w.fx, "clone", "-q", "--bare", "--no-local", tpl, snapshot)
+        git(w.fx, "update-ref", "refs/heads/main", second, cwd=tpl)
+        r = w.pair(["fetch", "-q", "--upload-pack=" + w.fx.upload, lambda w: w.uri("plain.git"),
+                    "refs/heads/main:refs/heads/main"],
+                   prepare=lambda local: write_objects(w.fx, local, snapshot, first), repos=("plain.git",), cwd_local=True)
+        quiet(r)
+        v2(r, "upload")
+        check(f"refs/heads/main {second}" in r["local"]["refs"], f"main after fetch: {r['local']['refs']}")
+        check(r["local"]["objects"] == r["server"]["plain.git"]["objects"], "the fetched objects are not the server's")
+        return f"main {first[:12]} -> {second[:12]}, {len(r['local']['objects'])} objects"
+
+
+# ---- push ----------------------------------------------------------------------
+def source_repo(w, head_at="second"):
+    """The local repository a push starts from: both commits' objects, main
+    at `head_at`."""
+    first, second = w.fx.seed()
+    tpl = w.fx.path("plain.git")
+    full = w.d / "full.git"
+    git(w.fx, "update-ref", "refs/heads/main", second, cwd=tpl)
+    git(w.fx, "clone", "-q", "--bare", "--no-local", tpl, full)
+    head = second if head_at == "second" else first
+    return first, second, (lambda local: write_objects(w.fx, local, full, head))
+
+
+def push_row(name, scp):
+    with Row(name) as w:
+        _, second, prep = source_repo(w)
+        w.fx.empty("push.git")
+        url = (lambda w: w.scp("push.git")) if scp else (lambda w: w.uri("push.git"))
+        r = w.pair(["push", "-q", "--receive-pack=" + w.fx.receive, url, "HEAD:refs/heads/main"],
+                   prepare=prep, repos=("push.git",), cwd_local=True)
+        quiet(r)
+        v2(r, "receive")
+        st = r["server"]["push.git"]
+        check(st["refs"] == [f"refs/heads/main {second}"], f"server refs {st['refs']}")
+        check(st["objects"] == r["local"]["objects"] and st["fsck"][0] == 0, "the server's objects or fsck")
+        return f"main {second[:12]}, {len(st['objects'])} objects, fsck clean"
+
+
+@row
+def den_push_uri():
+    return push_row("den-push-uri", scp=False)
+
+
+@row
+def den_push_scp():
+    return push_row("den-push-scp", scp=True)
+
+
+def lease_row(name, matching):
+    with Row(name) as w:
+        first, second, prep = source_repo(w, head_at="first")
+        expected = second if matching else first
+        r = w.pair(["push", "-q", "--receive-pack=" + w.fx.receive, f"--force-with-lease=refs/heads/main:{expected}",
+                    lambda w: w.uri("plain.git"), "HEAD:refs/heads/main"],
+                   prepare=prep, repos=("plain.git",), cwd_local=True)
+        st = r["server"]["plain.git"]
+        if matching:
+            quiet(r)
+            check(f"refs/heads/main {first}" in st["refs"], f"server refs {st['refs']}")
+            return f"exit 0, main rewound to {first[:12]}"
+        check(r["exit"] != 0 and b"stale info" in r["stderr"], f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(f"refs/heads/main {second}" in st["refs"], f"server refs changed: {st['refs']}")
+        return f"exit {r['exit']}, stale info, main kept at {second[:12]}"
+
+
+@row
+def den_lease_stale():
+    return lease_row("den-lease-stale", matching=False)
+
+
+@row
+def den_lease_matching():
+    return lease_row("den-lease-matching", matching=True)
+
+
+@row
+def den_push_atomic():
+    with Row("den-push-atomic") as w:
+        first, second, prep = source_repo(w)
+        tpl = w.fx.path("plain.git")
+        git(w.fx, "update-ref", "refs/heads/main", first, cwd=tpl)
+        r = w.pair(["push", "-q", "--atomic", "--receive-pack=" + w.fx.receive, lambda w: w.uri("plain.git"),
+                    "HEAD:refs/heads/a", "HEAD:refs/heads/b"],
+                   prepare=prep, repos=("plain.git",), cwd_local=True)
+        quiet(r)
+        st = r["server"]["plain.git"]
+        check(f"refs/heads/a {second}" in st["refs"] and f"refs/heads/b {second}" in st["refs"], f"server refs {st['refs']}")
+        return "a and b created together"
+
+
+@row
+def den_push_atomic_rejected():
+    with Row("den-push-atomic-rejected") as w:
+        first, second, prep = source_repo(w, head_at="first")
+        r = w.pair(["push", "-q", "--atomic", "--receive-pack=" + w.fx.receive, lambda w: w.uri("plain.git"),
+                    "HEAD:refs/heads/main", "HEAD:refs/heads/c"],
+                   prepare=prep, repos=("plain.git",), cwd_local=True)
+        st = r["server"]["plain.git"]
+        check(r["exit"] != 0, f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(st["refs"] == [f"refs/heads/main {second}"], f"server refs changed: {st['refs']}")
+        return f"exit {r['exit']}, neither ref changed"
+
+
+@row
+def den_push_rejected():
+    """A non-fast-forward without force."""
+    with Row("den-push-rejected") as w:
+        first, second, prep = source_repo(w, head_at="first")
+        r = w.pair(["push", "-q", "--receive-pack=" + w.fx.receive, lambda w: w.uri("plain.git"), "HEAD:refs/heads/main"],
+                   prepare=prep, repos=("plain.git",), cwd_local=True)
+        st = r["server"]["plain.git"]
+        check(r["exit"] != 0 and r["stderr"] != b"", f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(st["refs"] == [f"refs/heads/main {second}"], f"server refs changed: {st['refs']}")
+        return f"exit {r['exit']}: {tail(r['stderr'], 120)}"
+
+
+@row
+def den_push_server_rejected():
+    """--force to a server that denies non-fast-forwards: the server's refusal."""
+    with Row("den-push-server-rejected") as w:
+        first, second, prep = source_repo(w, head_at="first")
+        git(w.fx, "config", "receive.denyNonFastForwards", "true", cwd=w.fx.path("plain.git"))
+        r = w.pair(["push", "-q", "--force", "--receive-pack=" + w.fx.receive, lambda w: w.uri("plain.git"),
+                    "HEAD:refs/heads/main"],
+                   prepare=prep, repos=("plain.git",), cwd_local=True)
+        st = r["server"]["plain.git"]
+        check(r["exit"] != 0 and r["stderr"] != b"", f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(f"refs/heads/main {second}" in st["refs"], f"server refs changed: {st['refs']}")
+        return f"exit {r['exit']}: {tail(r['stderr'], 120)}"
+
+
+@row
+def den_v0_refusal():
+    with Row("den-v0-refusal") as w:
+        w.fx.seed()
+        r = w.pair(["clone", "-q", "--bare", "--upload-pack=" + w.fx.upload_v0, lambda w: w.uri("plain.git"), str(w.local)],
+                   repos=("plain.git",))
+        check(r["exit"] != 0 and b"does not advertise protocol v2" in r["stderr"], f"exit {r['exit']}, stderr {tail(r['stderr'])!r}")
+        check(r["protocol"].splitlines() == ["upload-v0 <unset>"], f"the wrapper received {r['protocol']!r}")
+        return f"exit {r['exit']}, refused by den alike"
+
+
+def keep_evidence(tier):
+    out = ROOT / "target" / "evidence" / f"den-{tier}"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    kept = 0
+    for d in sorted(p for p in WORK.iterdir() if p.is_dir()):
+        for rel in ("sshd/sshd.log", "compare.txt", "fixture/protocol.log"):
+            src = d / rel
+            if src.is_file():
+                dst = out / d.name / src.name
+                dst.parent.mkdir(exist_ok=True)
+                shutil.copyfile(src, dst)
+                kept += 1
+    bad = []
+    for p in [out.parent, out] + sorted(out.rglob("*")):
+        os.chmod(p, 0o755 if p.is_dir() else 0o644)
+        if p.is_file():
+            data = p.read_bytes()
+            if p.name.startswith(("host_", "id_")) or p.suffix == ".pub":
+                bad.append(f"{p.relative_to(ROOT)} is a key file")
+            elif b"PRIVATE KEY" in data or b"b3BlbnNzaC1rZXktdjE" in data:
+                bad.append(f"{p.relative_to(ROOT)} holds private key text")
+    for why in bad:
+        print(f"FAIL evidence {why}", flush=True)
+    if not bad:
+        print(f"check-den: {kept} evidence files in {out.relative_to(ROOT)}, readable, no key material")
+    return len(bad)
+
+
+def main():
+    global BIN, KEYGEN_BIN, WORK
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    KEYGEN_BIN = BIN.parent / "burrow-keygen"
+    for b in (BIN, KEYGEN_BIN):
+        if not b.exists():
+            print(f"FAIL setup no binary at {b}")
+            sys.exit(1)
+    oraclelib.require_oracle()
+    require_den()
+    os.umask(0o022)
+    tier = BIN.parent.name
+    WORK = ROOT / "target" / f"den-{tier}"
+    WORK.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK, 0o711)
+    print(f"check-den: den {PIN['den']['rev'][:12]} sha256 {sha(DEN)[:16]}; git {sha(GIT)[:16]}; burrow {tier} sha256 {sha(BIN)[:16]}",
+          flush=True)
+    fails = ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:  # a harness fault is a red row too, by name
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-den: {ran} rows, {fails} failed, 0 SKIP")
+    fails += keep_evidence(tier)
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
