@@ -273,8 +273,8 @@ receive-pack alike; nothing for the v0 wrapper). The black-box findings:
   byte.
 - den's clone holds the whole history in memory: through the pinned `ssh`,
   its peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and
-  12 GiB (the container's cap, SIGKILLed with 40 more large files) at 300.
-  `tools/measure-den`'s fixture is sized to that.
+  12 GiB (the container's cap, SIGKILLed with 40 more large files) at 300
+  (den#63). `tools/measure-den`'s fixture is sized to that.
 
 **GitHub, read only** (`tools/check-github`): its server offers
 `curve25519-sha256` (burrow's choice; the pinned `ssh` chooses

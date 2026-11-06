@@ -11,7 +11,7 @@ incompressible 256 KiB files in the first commit, repacked once. The size
 is den's, not burrow's: den's clone holds the whole history in memory, and
 its peak RSS grows faster than the history (measured through the pinned
 ssh at 30, 60, 120 and 300 commits: 348 MiB, 954 MiB, 3.3 GiB and the
-container's 12 GiB cap), so a 300-commit fixture is SIGKILLed. It is
+container's 12 GiB cap; den#63), so a 300-commit fixture is SIGKILLed. It is
 served by the row's own sshd through den's fixture wrappers, and den
 (`clone -q --bare`) runs through each client in turn, ROUNDS times each,
 interleaved. Timed: den's wall time, and its CPU from `wait4`, which
