@@ -61,7 +61,6 @@ pub struct Settings {
     verbose: int,
     command: List[str],
     config_file: str,
-    no_strict_kex: bool,
     traffic: int,
     preauth: bool,
     test_window: int,
@@ -212,7 +211,6 @@ pub fn empty() -> Settings {
         verbose: 0,
         command: List[str](),
         config_file: "",
-        no_strict_kex: false,
         traffic: 0,
         preauth: false,
         test_window: 0,
@@ -592,9 +590,12 @@ pub fn parse_args(args: List[str]) -> Settings {
                 destination(mut s, args[i])
             }
         } else if a.starts_with("--") {
-            if a == "--no-strict-kex" {
-                s.no_strict_kex = true
-            } else if a.starts_with("--test-window=") {
+            // The test options below are load and window size only (each
+            // held inert for security by a transport row). There is no
+            // strict-kex waiver here on any tier: B1's `--no-strict-kex` is
+            // an unknown option, and only the row program `src/kexprobe.lu`
+            // sets the transport's `allow_no_strict`.
+            if a.starts_with("--test-window=") {
                 s.test_window = a[14..a.len].to_int() else -1
                 if s.test_window < 1 || s.test_window > 2097152 {
                     refuse_as(mut s, "usage", "", "{a}: 1 to 2097152 bytes")

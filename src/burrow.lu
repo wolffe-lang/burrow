@@ -11,12 +11,13 @@
 // says; a refusal prints the pinned ssh's line for it where it has one,
 // then `burrow: <name>: <detail>`.
 //
-// Options for the transport rows: --no-strict-kex waives strict kex;
-// --test-traffic=BYTES sends that many bytes of IGNORE messages after
-// authentication, then a PING, and stops (the rekey rows' load); and
-// --test-preauth sends that traffic before authentication instead; and
-// --test-window=BYTES makes the session channel's own window that small
-// (the hostile rows' window refusal).
+// Options for the rows, each load or size only and held inert for security
+// by a transport row (`test-*-inert`): --test-traffic=BYTES sends that many
+// bytes of IGNORE messages after authentication, then a PING, and stops (the
+// rekey rows' load); --test-preauth sends that traffic once more before
+// authentication; and --test-window=BYTES makes the session channel's own
+// window that small (the hostile rows' window refusal). There is no
+// strict-kex waiver on any tier: `--no-strict-kex` is an unknown option.
 //
 // Clean room: RFCs 4250-4254, 4344, 8308, 8709, 8731, FIPS 180-4, RFC 2104
 // and OpenSSH's PROTOCOL notes and man pages (docs/SOURCES.md); no ssh
@@ -153,7 +154,6 @@ fn run(s: config.Settings) -> int {
     opts.strict = s.strict
     opts.hash_known = s.hash_known
     opts.key_alias = s.key_alias
-    opts.allow_no_strict = s.no_strict_kex
     opts.verbose = s.verbose
     if s.rekey_bytes > 0 {
         opts.rekey_bytes = s.rekey_bytes
