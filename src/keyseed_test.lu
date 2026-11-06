@@ -1,0 +1,30 @@
+//! member: false
+
+// The Ed25519 half of the key file (RFC 8032 §5.1.5): a key made from a
+// seed has that seed's public key, and a file whose seed does not give its
+// public key is refused (`key_mismatch`). Apart from keyfile_test for the
+// checked machine's step budget.
+use keyfile
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn main() {
+    let seed = x("9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60")
+    let pub1 = x("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
+    let k = keyfile.from_seed(seed, "burrow vector")
+    assert(wire.hex(k.public) == wire.hex(pub1))
+    // The same file with one seed bit flipped: A no longer follows.
+    var bad = copy k
+    bad.seed[3] = (bad.seed[3] as int ^ 1) as byte
+    let text = keyfile.encode(bad, x("01020304"))
+    var why = "ok"
+    let _ = keyfile.decode(text) else |e| {
+        why = "{e}"
+        k
+    }
+    assert(why == "key_mismatch")
+    print("keyseed: RFC 8032 TEST 1's public key from its seed; a wrong seed is key_mismatch")
+}
