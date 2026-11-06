@@ -285,6 +285,70 @@ den finds burrow as `ssh` on PATH, with `~/.ssh/id_ed25519`,
 `~/.ssh/known_hosts` and `~/.ssh/config` under a row's `HOME`; den needs no
 change.
 
+### The test options, after review
+
+Written 2026-11-06 01:33Z at `cd4313b`, before any change or run for it.
+Review asked which test options the release binary keeps, what each does,
+and whether any weakens a security property. Four options reach the
+transport or the session:
+
+- **`--no-strict-kex`** (B1's) sets the transport's `allow_no_strict`, so a
+  server that does not offer `kex-strict-s-v00@openssh.com` is accepted,
+  and with it the prefix-truncation exposure strict kex closes. It weakens
+  a security property. wolf 0.2.37 has no tier-conditional compilation (its
+  one `cfg` is `cfg(target)`, the host triple), and both tiers compile the
+  same source, so the release tier cannot drop the flag while the native
+  tier keeps it: it leaves burrow's command line on every tier. It is then
+  `option_unknown` (the pinned `ssh`'s `unknown option -- -` line, exit
+  255), refused before any connection. The transport keeps
+  `allow_no_strict` as a library option, and only `src/kexprobe.lu` sets
+  it: a row program built into `target/<tier>/rows/kexprobe`, never
+  installed, never built `--static`, never uploaded (CI keeps only
+  `target/tests` and `target/evidence`). It runs the exchange alone, so
+  `downgrade-caught` still proves that the tampered KEXINIT breaks H.
+- **`--test-traffic=BYTES`**, after the login, sends IGNORE messages of a
+  fixed 1000-byte pattern, then a PING, waits for the PONG and disconnects,
+  in place of a command. It is load only: the exchange, the host key, the
+  algorithms and the login run first and unchanged, and the payload holds
+  no key bytes.
+- **`--test-preauth`**, with `--test-traffic`, sends that traffic once more
+  before the login, after the first exchange and SERVICE_ACCEPT. Every
+  check before it is unchanged, and the login after it is unchanged.
+- **`--test-window=BYTES`** (1 to 2097152) sizes burrow's own window on the
+  session channel below the 2 MiB default. It only lowers what the server
+  may send before an adjustment.
+
+The rows, red first:
+
+- **`no-strict-kex-refused`** (`check-transport`): `--no-strict-kex`
+  against a running `sshd` exits 255 with `burrow: option_unknown:`, and
+  `sshd` logs no connection. Red at B1's command line, which accepts the
+  flag and logs in.
+- **`downgrade-caught`** runs `rows/kexprobe` beside the binary under test
+  in place of burrow's flag. Red until the probe exists.
+- **`test-traffic-inert`, `test-preauth-inert`, `test-window-inert`**
+  (`check-transport`): with the option, each of seven conditions is refused
+  by the same name as without it. The conditions:
+  - the server's strict kex stripped in flight (`strict_kex_missing`)
+  - an unknown host key (`host_key_unknown`, with known_hosts still empty)
+  - a changed host key (`host_key_changed`)
+  - a flipped signature (`host_key_bad_signature`)
+  - no common cipher (`no_common_cipher`)
+  - a client key the server does not authorize (`auth_refused`)
+  - a key file at mode 0644 (`key_permissions`, before any connection)
+
+  Each row also checks that an honest `sshd` is reached with the option in
+  effect, and that no line of the client's private key file appears in any
+  output. These rows pass before any change, since the options are inert
+  already. So they are seen red by a witness instead: a scratch build in
+  which each option also waives strict kex and host-key checking must fail
+  each row by name. The witness's log goes in the evidence index, and no
+  scratch code is committed.
+
+Predicted for the pinned `sshd`: a PING after SERVICE_ACCEPT and before the
+login, at the default rekey limits, is answered with its PONG. The login
+that follows is unchanged.
+
 ## Forbidden
 
 No ssh implementation's code or tests were read: no `.c` or `.h` file of any
