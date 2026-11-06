@@ -41,8 +41,8 @@
 #               release, held to the prediction's margins (a perf step: run
 #               the gauntlet with nothing beside it)
 #   measure-den den's clone of a mid-sized repository through release burrow
-#               against through the pinned ssh, interleaved, held to 2x (a
-#               perf step)
+#               against through the pinned ssh, interleaved, its CPU held to
+#               2x and its wall time reported (a perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release den-pin den den-release live-self-test github live static measure measure-den"
