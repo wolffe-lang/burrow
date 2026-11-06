@@ -31,8 +31,9 @@ through the pinned ssh where it says so:
 serving an empty repository through den's fixture wrappers, with that
 sshd's known_hosts line: the mechanics, before a fixture exists.
 
-When the row ends, no file it wrote outside its evidence may hold the URL,
-its names or the key's path (`leftovers`).
+When the row ends, its work directories are removed (den's clones name
+the URL in their config), and no file it wrote outside its evidence may
+hold the URL, its names or the key's path (`leftovers`).
 """
 import argparse
 import hashlib
@@ -228,7 +229,11 @@ def keep_evidence():
 
 def leftovers(dirs):
     """Nothing the row wrote outside its evidence keeps the URL, its names or
-    the key's path (den's clones name the URL in their config)."""
+    the key's path: den's clones name the URL in their config, so the work
+    directories go when the row ends, its evidence copied first."""
+    for d in dirs:
+        if d.exists():
+            shutil.rmtree(d)
     held = []
     for d in dirs:
         if d.exists():
