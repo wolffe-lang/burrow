@@ -63,7 +63,7 @@ The toolchain and the oracle are pinned by digest (`wolf-toolchain.toml`,
 
 ```sh
 tools/fetch-toolchain                 # wolf 0.2.37, lupin 0.1.59, the bundled std
-tools/build --all                     # target/{native,release}/{burrow,burrow-keygen}
+tools/build --all                     # target/{native,release}/{burrow,burrow-keygen}, rows/kexprobe
 tools/check-test                      # src/*_test.lu: checked machine, native, lupin
 tools/in-container tools/fetch-oracle # OpenSSH 10.0p2, built in the pinned image
 tools/gate                            # the whole gauntlet, in the container
@@ -84,7 +84,14 @@ for unknown and changed host keys, a bad signature, every negotiation
 failure, a stripped strict-kex indicator, injected messages under strict
 kex, a flipped tag byte, re-exchanges started by either side under traffic,
 and a byte comparison of the plaintext handshake with what the pinned `ssh`
-sends. The session rows (`tools/check-session`) hold authentication, keys,
+sends. burrow has no strict-kex waiver on any tier: `--no-strict-kex` is an
+unknown option, and only the row program `rows/kexprobe` (never installed)
+waives it, to show a stripped indicator still breaks the exchange hash.
+Each test option (`--test-traffic`, `--test-preauth`, `--test-window`)
+changes load or window size only, and a row holds each one inert for
+security: with the option given, strict kex, the host key checks,
+negotiation, the login and the key file's mode are refused as without it,
+and no private key line reaches the output. The session rows (`tools/check-session`) hold authentication, keys,
 known_hosts, the session and the command line to the pinned `sshd`, `ssh`
 and `ssh-keygen`: keys made by either tool, refused keys and servers, the
 banner, appended known_hosts lines read by the pinned `ssh`, 64 MiB through
