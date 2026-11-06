@@ -37,6 +37,7 @@
 //! `usage`. Each refusal carries, in `line`, the line the pinned `ssh`
 //! prints for it where it prints one.
 
+use hostkey
 
 /// Everything a run is configured with.
 pub struct Settings {
@@ -72,6 +73,41 @@ pub fn usage() -> str {
     "usage: ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
 }
 
+// ssh_config(5)'s keywords, lowercased, from the pinned 10.0p2's page.
+fn known_keyword(k: str) -> bool {
+    for w in [
+        "addkeystoagent", "addressfamily", "batchmode", "bindaddress", "bindinterface",
+        "canonicaldomains", "canonicalizefallbacklocal", "canonicalizehostname",
+        "canonicalizemaxdots", "canonicalizepermittedcnames", "casignaturealgorithms",
+        "certificatefile", "channeltimeout", "checkhostip", "ciphers", "clearallforwardings",
+        "compression", "connectionattempts", "connecttimeout", "controlmaster", "controlpath",
+        "controlpersist", "dynamicforward", "enableescapecommandline", "enablesshkeysign",
+        "escapechar", "exitonforwardfailure", "fingerprinthash", "forkafterauthentication",
+        "forwardagent", "forwardx11", "forwardx11timeout", "forwardx11trusted", "gatewayports",
+        "globalknownhostsfile", "gssapiauthentication", "gssapidelegatecredentials",
+        "hashknownhosts", "host", "hostbasedacceptedalgorithms", "hostbasedauthentication",
+        "hostkeyalgorithms", "hostkeyalias", "hostname", "identitiesonly", "identityagent",
+        "identityfile", "ignoreunknown", "include", "ipqos", "kbdinteractiveauthentication",
+        "kbdinteractivedevices", "kexalgorithms", "knownhostscommand", "localcommand",
+        "localforward", "loglevel", "logverbose", "macs", "match",
+        "nohostauthenticationforlocalhost", "numberofpasswordprompts", "obscurekeystroketiming",
+        "passwordauthentication", "permitlocalcommand", "permitremoteopen", "pkcs11provider",
+        "port", "preferredauthentications", "proxycommand", "proxyjump", "proxyusefdpass",
+        "pubkeyacceptedalgorithms", "pubkeyauthentication", "rekeylimit", "remotecommand",
+        "remoteforward", "requesttty", "requiredrsasize", "revokedhostkeys",
+        "securitykeyprovider", "sendenv", "serveralivecountmax", "serveraliveinterval",
+        "sessiontype", "setenv", "stdinnull", "streamlocalbindmask", "streamlocalbindunlink",
+        "stricthostkeychecking", "syslogfacility", "tag", "tcpkeepalive", "tunnel",
+        "tunneldevice", "updatehostkeys", "user", "userknownhostsfile", "verifyhostkeydns",
+        "versionaddendum", "visualhostkey", "xauthlocation",
+    ] {
+        if w == k {
+            return true
+        }
+    }
+    false
+}
+
 /// A fresh run, nothing set.
 pub fn empty() -> Settings {
     Settings {
@@ -103,25 +139,564 @@ pub fn empty() -> Settings {
     }
 }
 
-/// The command line (a stub until the CLI lands).
+fn refuse_as(mut s: Settings, name: str, line: str, detail: str) {
+    if s.refusal == "" {
+        s.refusal = name
+        s.line = line
+        s.detail = detail
+    }
+}
+
+fn was_set(s: Settings, k: str) -> bool {
+    for x in s.set {
+        if x == k {
+            return true
+        }
+    }
+    false
+}
+
+fn yes_no(v: str) -> int {
+    let l = v.lower()
+    if l == "yes" || l == "true" {
+        return 1
+    }
+    if l == "no" || l == "false" {
+        return 0
+    }
+    -1
+}
+
+// A byte count with an optional K, M or G suffix (RekeyLimit).
+fn byte_count(v: str) -> int {
+    if v.len == 0 {
+        return -1
+    }
+    let last = v[v.len - 1..v.len].lower()
+    var mult = 1
+    var digits = v
+    if last == "k" {
+        mult = 1024
+        digits = v[0..v.len - 1]
+    } else if last == "m" {
+        mult = 1048576
+        digits = v[0..v.len - 1]
+    } else if last == "g" {
+        mult = 1073741824
+        digits = v[0..v.len - 1]
+    }
+    let n = digits.to_int() else -1
+    if n < 16 {
+        return -1
+    }
+    n * mult
+}
+
+// The value words of a config line: whitespace-separated, a word in double
+// quotes kept whole.
+fn value_words(v: str) -> List[str] {
+    var out = List[str]()
+    var cur = List[byte]()
+    var quoted = false
+    var any = false
+    for b in v.bytes() {
+        let c = b as int
+        if c == 34 {
+            quoted = !quoted
+            any = true
+        } else if !quoted && (c == 32 || c == 9) {
+            if any {
+                (mut out).push(str_from_utf8(cur) else "")
+                cur = List[byte]()
+                any = false
+            }
+        } else {
+            (mut cur).push(b)
+            any = true
+        }
+    }
+    if any {
+        (mut out).push(str_from_utf8(cur) else "")
+    }
+    out
+}
+
+// `*` and `?` over an environment variable's name, case-sensitive.
+fn env_glob(p: List[byte], pi: int, n: List[byte], ni: int) -> bool {
+    var i = pi
+    var j = ni
+    while i < p.len {
+        let c = p[i] as int
+        if c == 42 {
+            var k = j
+            while k <= n.len {
+                if env_glob(p, i + 1, n, k) {
+                    return true
+                }
+                k += 1
+            }
+            return false
+        }
+        if j >= n.len || c != 63 && c != n[j] as int {
+            return false
+        }
+        i += 1
+        j += 1
+    }
+    j == n.len
+}
+
+/// Whether the `SendEnv` pattern `pat` names the variable `name`.
+pub fn env_match(pat: str, name: str) -> bool {
+    env_glob(pat.bytes(), 0, name.bytes(), 0)
+}
+
+fn has_token(v: str) -> bool {
+    v.contains("%") || v.contains("${")
+}
+
+// One keyword and its value, from `-o` (`src` is "command-line") or the
+// config file (`src` names the file and line). `active` is false for a
+// block that does not apply, whose lines are only checked for keywords
+// ssh does not know (it rejects those anywhere).
+fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
+    let k = key.lower()
+    let words = value_words(value)
+    let where = if cli then "command-line: line 0" else src
+    let vline = if cli then "command-line line 0" else src
+    let refusal = if cli then "option_unsupported" else "config_unsupported"
+    if !known_keyword(k) {
+        refuse_as(
+            mut s,
+            if cli then "option_unknown" else "config_unsupported",
+            "{where}: Bad configuration option: {k}",
+            "{key} is not an ssh_config(5) keyword",
+        )
+        return
+    }
+    if words.len == 0 {
+        refuse_as(mut s, refusal, "{vline}: missing argument.", "{key} needs a value")
+        return
+    }
+    let v = words[0]
+    if has_token(value) {
+        refuse_as(mut s, refusal, "", "{key} {value}: burrow expands no % tokens or environment variables")
+        return
+    }
+    let first = !was_set(s, k)
+    if k == "identityfile" {
+        if v.lower() == "none" {
+            s.no_identities = true
+        } else {
+            (mut s.identities).push(v)
+        }
+        return
+    }
+    if k == "sendenv" {
+        for w in words {
+            if w.starts_with("-") {
+                var keep = List[str]()
+                for p in s.send_env {
+                    if !env_match(w[1..w.len], p) {
+                        (mut keep).push(p)
+                    }
+                }
+                s.send_env = keep
+            } else {
+                (mut s.send_env).push(w)
+            }
+        }
+        return
+    }
+    if !first {
+        return
+    }
+    (mut s.set).push(k)
+    if k == "batchmode" || k == "clearallforwardings" || k == "identitiesonly" || k == "hashknownhosts" {
+        let b = yes_no(v)
+        if b < 0 {
+            refuse_as(mut s, refusal, "{vline}: unsupported option \"{v}\".", "{key} takes yes or no")
+            return
+        }
+        if k == "batchmode" {
+            s.batch = b == 1
+        }
+        if k == "hashknownhosts" {
+            s.hash_known = b == 1
+        }
+    } else if k == "stricthostkeychecking" {
+        let l = v.lower()
+        if l == "yes" || l == "ask" || l == "true" {
+            s.strict = "yes"
+        } else if l == "accept-new" {
+            s.strict = "accept-new"
+        } else if l == "no" || l == "off" || l == "false" {
+            s.strict = "no"
+        } else {
+            refuse_as(mut s, refusal, "{vline}: unsupported option \"{v}\".", "StrictHostKeyChecking {v}")
+        }
+    } else if k == "controlmaster" {
+        if v.lower() != "no" {
+            refuse_as(mut s, refusal, "", "ControlMaster {v}: burrow shares no connections (only no)")
+        }
+    } else if k == "controlpath" {
+        if v.lower() != "none" {
+            refuse_as(mut s, refusal, "", "ControlPath {v}: burrow shares no connections (only none)")
+        }
+    } else if k == "updatehostkeys" {
+        if v.lower() != "no" {
+            refuse_as(mut s, refusal, "", "UpdateHostKeys {v}: burrow learns no host keys from the server (only no)")
+        }
+    } else if k == "connecttimeout" {
+        let n = v.to_int() else -1
+        if n < 0 || n > 86400 {
+            refuse_as(mut s, refusal, "{vline}: invalid time value.", "ConnectTimeout {v}")
+            return
+        }
+        s.connect_timeout = n
+    } else if k == "port" {
+        let n = v.to_int() else -1
+        if n < 1 || n > 65535 {
+            refuse_as(mut s, refusal, "{vline}: Badly formatted port number.", "Port {v}")
+            return
+        }
+        s.port = n
+    } else if k == "user" {
+        s.user = v
+    } else if k == "hostname" {
+        s.hostname = v
+    } else if k == "hostkeyalias" {
+        s.key_alias = v
+    } else if k == "userknownhostsfile" {
+        var files = List[str]()
+        for w in words {
+            if w.lower() != "none" {
+                (mut files).push(w)
+            }
+        }
+        s.known_hosts = files
+    } else if k == "setenv" {
+        for w in words {
+            let eq = w.find("=") else -1
+            if eq <= 0 {
+                refuse_as(mut s, refusal, "", "SetEnv {w}: expected NAME=VALUE")
+                return
+            }
+            (mut s.set_env).push(w)
+        }
+    } else if k == "rekeylimit" {
+        if words[0].lower() != "default" {
+            let n = byte_count(words[0])
+            if n < 0 {
+                refuse_as(mut s, refusal, "{vline}: Bad RekeyLimit", "RekeyLimit {value}")
+                return
+            }
+            s.rekey_bytes = n
+        }
+        if words.len > 1 && words[1].lower() != "none" {
+            let t = words[1].to_int() else -1
+            if t < 0 {
+                refuse_as(mut s, refusal, "{vline}: Bad RekeyLimit", "RekeyLimit {value}")
+                return
+            }
+            s.rekey_seconds = t
+        }
+    } else {
+        refuse_as(mut s, refusal, "", "{key}: an ssh_config(5) keyword burrow does not take")
+    }
+}
+
+fn option(mut s: Settings, text: str) {
+    var key = text
+    var value = ""
+    let eq = text.find("=") else -1
+    let sp = text.find(" ") else -1
+    var cut = -1
+    if eq >= 0 && (sp < 0 || eq < sp) {
+        cut = eq
+    } else if sp >= 0 {
+        cut = sp
+    }
+    if cut >= 0 {
+        key = text[0..cut]
+        value = text[cut + 1..text.len].trim()
+    }
+    keyword(mut s, key.trim(), value, "", true)
+}
+
+fn destination(mut s: Settings, a: str) {
+    var d = a
+    if d.starts_with("ssh://") {
+        d = d[6..d.len]
+        if d.ends_with("/") {
+            d = d[0..d.len - 1]
+        }
+        let colon = d.rfind(":") else -1
+        let at = d.rfind("@") else -1
+        if colon > at {
+            let p = d[colon + 1..d.len].to_int() else -1
+            if p < 1 || p > 65535 {
+                refuse_as(mut s, "usage", "ssh: Bad port '{d[colon + 1..d.len]}'", a)
+                return
+            }
+            if !was_set(s, "port") {
+                s.port = p
+                (mut s.set).push("port")
+            }
+            d = d[0..colon]
+        }
+    }
+    let at = d.rfind("@") else -1
+    if at >= 0 {
+        s.user = d[0..at]
+        if !was_set(s, "user") {
+            (mut s.set).push("user")
+        }
+        d = d[at + 1..d.len]
+    }
+    if d.len == 0 {
+        refuse_as(mut s, "usage", usage(), "no host in {a}")
+        return
+    }
+    s.host = d
+}
+
+/// The command line after the program's name.
 pub fn parse_args(args: List[str]) -> Settings {
     var s = empty()
-    s.refusal = "usage"
-    s.detail = "{args.len} arguments"
+    var i = 0
+    var cli_user = ""
+    var cli_port = 0
+    while i < args.len && s.refusal == "" && s.host == "" {
+        let a = args[i]
+        if a == "--" {
+            i += 1
+            if i < args.len {
+                destination(mut s, args[i])
+            }
+        } else if a.starts_with("--") {
+            if a == "--no-strict-kex" {
+                s.no_strict_kex = true
+            } else if a.starts_with("--test-traffic=") {
+                s.traffic = byte_count(a[15..a.len])
+                if s.traffic < 0 {
+                    refuse_as(mut s, "usage", "", "{a}: not a size")
+                }
+            } else {
+                refuse_as(mut s, "option_unknown", "unknown option -- -", a)
+            }
+        } else if a.starts_with("-") && a.len > 1 {
+            var j = 1
+            while j < a.len && s.refusal == "" {
+                let f = a[j..j + 1]
+                if f == "T" {
+                    j += 1
+                } else if f == "v" {
+                    s.verbose += 1
+                    j += 1
+                } else if f == "p" || f == "l" || f == "o" || f == "i" || f == "F" {
+                    var v = a[j + 1..a.len]
+                    if v.len == 0 {
+                        if i + 1 >= args.len {
+                            refuse_as(mut s, "usage", "option requires an argument -- {f}", "-{f}")
+                            return s
+                        }
+                        i += 1
+                        v = args[i]
+                    }
+                    if f == "p" {
+                        let n = v.to_int() else -1
+                        if n < 1 || n > 65535 {
+                            refuse_as(mut s, "usage", "Bad port '{v}'", "-p {v}")
+                        }
+                        cli_port = n
+                    } else if f == "l" {
+                        cli_user = v
+                    } else if f == "o" {
+                        option(mut s, v)
+                    } else if f == "i" {
+                        if !has_token(v) {
+                            (mut s.identities).push(v)
+                        } else {
+                            refuse_as(mut s, "option_unsupported", "", "-i {v}: burrow expands no % tokens")
+                        }
+                    } else {
+                        s.config_file = v
+                    }
+                    j = a.len
+                } else if "46AaCfGgKkMNnqsttVXxYyBbcDEeIJLmOPQRSWw".contains(f) {
+                    refuse_as(mut s, "option_unsupported", "", "-{f}: an ssh(1) option burrow does not take")
+                } else {
+                    refuse_as(mut s, "option_unknown", "unknown option -- {f}", "-{f}")
+                }
+            }
+        } else {
+            destination(mut s, a)
+        }
+        i += 1
+    }
+    if s.refusal == "" && s.host == "" {
+        refuse_as(mut s, "usage", usage(), "no destination")
+        return s
+    }
+    // -p and -l apply where the destination named no port or user (an
+    // ssh:// port, user@host); the rows hold this to the pinned ssh.
+    if cli_port > 0 && !was_set(s, "port") {
+        s.port = cli_port
+        (mut s.set).push("port")
+    }
+    if cli_user != "" && !was_set(s, "user") {
+        s.user = cli_user
+        (mut s.set).push("user")
+    }
+    while i < args.len {
+        (mut s.command).push(args[i])
+        i += 1
+    }
     s
 }
 
-/// A config file's text (a stub).
+fn block_applies(patterns: List[str], name: str) -> bool {
+    var hit = false
+    for p in patterns {
+        if p.starts_with("!") {
+            if hostkey.glob(p[1..p.len], name) {
+                return false
+            }
+        } else if hostkey.glob(p, name) {
+            hit = true
+        }
+    }
+    hit
+}
+
+/// Applies the text of a config file (`file` names it in messages) to
+/// `s`, unless `-F none` was given.
 pub fn apply_config(mut s: Settings, text: str, file: str) {
-    s.detail = "{text.len} {file}"
+    if s.config_file.lower() == "none" {
+        return
+    }
+    var active = true
+    var n = 0
+    for raw in text.lines() {
+        n += 1
+        if s.refusal != "" {
+            return
+        }
+        let line = raw.trim()
+        if line.len == 0 || line.starts_with("#") {
+            continue
+        }
+        var key = line
+        var value = ""
+        var cut = -1
+        var i = 0
+        let b = line.bytes()
+        while i < b.len {
+            let c = b[i] as int
+            if c == 32 || c == 9 || c == 61 {
+                cut = i
+                break
+            }
+            i += 1
+        }
+        if cut >= 0 {
+            key = line[0..cut]
+            var rest = line[cut..line.len].trim()
+            if rest.starts_with("=") && line[cut..cut + 1] != "=" {
+                rest = rest[1..rest.len].trim()
+            } else if line[cut..cut + 1] == "=" {
+                rest = line[cut + 1..line.len].trim()
+            }
+            value = rest
+        }
+        let k = key.lower()
+        let src = "{file}: line {n}"
+        if k == "host" {
+            active = block_applies(value_words(value), s.host)
+            continue
+        }
+        if k == "match" {
+            let words = value_words(value)
+            if words.len == 1 && words[0].lower() == "all" {
+                active = true
+            } else if words.len == 2 && words[0].lower() == "host" {
+                let target = if s.hostname != "" then s.hostname else s.host
+                active = block_applies(words[1].split(","), target)
+            } else {
+                refuse_as(mut s, "config_unsupported", "", "{src}: Match {value}: burrow takes Match host and Match all only")
+            }
+            continue
+        }
+        if k == "include" {
+            refuse_as(mut s, "config_unsupported", "", "{src}: Include: burrow reads one file")
+            continue
+        }
+        if !known_keyword(k) {
+            refuse_as(mut s, "config_unsupported", "{src}: Bad configuration option: {k}", "{key}")
+            continue
+        }
+        if active {
+            keyword(mut s, key, value, src, false)
+        }
+    }
 }
 
-/// The defaults (a stub).
+fn expand(p: str, home: str) -> str {
+    if p == "~" {
+        return home
+    }
+    if p.starts_with("~/") {
+        return home + p[1..p.len]
+    }
+    p
+}
+
+/// The defaults for whatever is still unset (`home` is `$HOME`, `user`
+/// the local login name), and `~/` expanded.
 pub fn finish(mut s: Settings, home: str, user: str) {
-    s.detail = home + user
+    if s.hostname == "" {
+        s.hostname = s.host
+    }
+    if s.user == "" {
+        s.user = user
+    }
+    if s.port == 0 {
+        s.port = 22
+    }
+    if s.strict == "" {
+        s.strict = "yes"
+    }
+    var ids = List[str]()
+    if !s.no_identities {
+        if s.identities.len == 0 {
+            (mut ids).push(home + "/.ssh/id_ed25519")
+        }
+        for p in s.identities {
+            (mut ids).push(expand(p, home))
+        }
+    }
+    s.identities = ids
+    var kh = List[str]()
+    if !was_set(s, "userknownhostsfile") {
+        (mut kh).push(home + "/.ssh/known_hosts")
+        (mut kh).push(home + "/.ssh/known_hosts2")
+    }
+    for p in s.known_hosts {
+        (mut kh).push(expand(p, home))
+    }
+    s.known_hosts = kh
 }
 
-/// The remote command (a stub).
+/// The remote command: the words after the destination, joined by single
+/// spaces (`ssh(1)`).
 pub fn remote_command(s: Settings) -> str {
-    s.host
+    var out = ""
+    for w in s.command {
+        if out.len > 0 {
+            out += " "
+        }
+        out += w
+    }
+    out
 }
