@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""check-static — the static build PAX takes (B4).
+
+    tools/in-container sh -c 'tools/build --static && python3 -I tools/check-static'
+
+target/static/burrow and target/static/burrow-keygen (tools/build
+--static): each an x86-64 ELF executable with no program interpreter and
+no dynamic section (readelf), its sha256 printed for the px lane, and
+`burrow` run as `ssh` under two of den's rows (den-clone-uri,
+den-push-uri) against the pinned sshd, held to the pinned ssh as every
+den row is. A row prints `PASS <row>` or `FAIL <row> <why>` at column 0.
+"""
+import hashlib
+import pathlib
+import subprocess
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+STATIC = ROOT / "target" / "static"
+
+
+def main():
+    fails = 0
+    for name in ("burrow", "burrow-keygen"):
+        p = STATIC / name
+        if not p.exists():
+            print(f"FAIL static-{name} no binary at target/static/{name}: run tools/build --static")
+            fails += 1
+            continue
+        head = subprocess.run(["readelf", "-h", str(p)], capture_output=True, text=True).stdout
+        prog = subprocess.run(["readelf", "-l", "-W", str(p)], capture_output=True, text=True).stdout
+        dyn = subprocess.run(["readelf", "-d", str(p)], capture_output=True, text=True).stdout
+        why = []
+        if "Advanced Micro Devices X86-64" not in head or "EXEC" not in head and "DYN" not in head:
+            why.append("not an x86-64 ELF executable")
+        if "INTERP" in prog:
+            why.append("has a program interpreter")
+        if "There is no dynamic section" not in dyn:
+            why.append("has a dynamic section")
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()
+        if why:
+            print(f"FAIL static-{name} {'; '.join(why)}")
+            fails += 1
+        else:
+            kind = "EXEC" if "EXEC" in head else "DYN (static-pie)"
+            print(f"PASS static-{name} (sha256 {digest}, {p.stat().st_size} bytes, ELF {kind}, no interpreter, no dynamic section)")
+    if fails:
+        sys.exit(fails)
+    r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-den"), "--bin", str(STATIC / "burrow"),
+                        "--only", "den-clone-uri", "den-push-uri"])
+    sys.exit(min(fails + r.returncode, 100))
+
+
+if __name__ == "__main__":
+    main()
