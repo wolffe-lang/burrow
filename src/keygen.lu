@@ -1,7 +1,226 @@
 //! member: false
 
-// burrow-keygen — a stub until its implementation lands.
-fn main() -> int {
-    eprint("burrow-keygen: not yet implemented (B2)")
+// burrow-keygen — Ed25519 user keys in OpenSSH's format.
+//
+//   burrow-keygen -t ed25519 [-q] [-f path] [-C comment] [-N ""]
+//   burrow-keygen -y -f path       the public line of a private key file
+//   burrow-keygen -l -f path       its fingerprint, as ssh-keygen -l
+//
+// The private file is created new with mode 0600 and the public file
+// beside it (`path.pub`, 0644, both under the umask), as the pinned
+// ssh-keygen writes them; an existing file is refused (`exists`), never
+// overwritten, and nothing is written. The seed and the check word come
+// from /dev/urandom. Without -f the key goes to ~/.ssh/id_ed25519 (the
+// directory made 0700 if absent), without asking. A passphrase other than
+// "" is refused (`passphrase_unsupported`): burrow reads unencrypted keys
+// only. Exit 0, or 1 on any refusal, as ssh-keygen exits 1.
+//
+// No key byte is ever printed: only the public line and the fingerprint.
+use std.env
+use std.fs
+use entropy
+use keyfile
+
+struct Args {
+    kind: str,
+    path: str,
+    comment: str,
+    has_comment: bool,
+    passphrase: str,
+    quiet: bool,
+    show_public: bool,
+    show_fingerprint: bool,
+    error: str,
+}
+
+fn usage() -> str {
+    "usage: burrow-keygen -t ed25519 [-q] [-f path] [-C comment] [-N \"\"]\n       burrow-keygen -y -f path\n       burrow-keygen -l -f path"
+}
+
+fn fail(name: str, detail: str) -> int {
+    eprint("burrow-keygen: {name}: {detail}")
     1
+}
+
+fn parse(args: List[str]) -> Args {
+    var a = Args {
+        kind: "",
+        path: "",
+        comment: "",
+        has_comment: false,
+        passphrase: "",
+        quiet: false,
+        show_public: false,
+        show_fingerprint: false,
+        error: "",
+    }
+    var i = 0
+    while i < args.len && a.error == "" {
+        let x = args[i]
+        if x == "-q" {
+            a.quiet = true
+        } else if x == "-y" {
+            a.show_public = true
+        } else if x == "-l" {
+            a.show_fingerprint = true
+        } else if x == "-t" || x == "-f" || x == "-C" || x == "-N" {
+            if i + 1 >= args.len {
+                a.error = "option requires an argument -- {x[1..2]}"
+                return a
+            }
+            let v = args[i + 1]
+            i += 1
+            if x == "-t" {
+                a.kind = v
+            } else if x == "-f" {
+                a.path = v
+            } else if x == "-C" {
+                a.comment = v
+                a.has_comment = true
+            } else {
+                a.passphrase = v
+            }
+        } else {
+            a.error = "unknown option -- {x}"
+        }
+        i += 1
+    }
+    a
+}
+
+fn default_comment() -> str {
+    let user = env.get("USER") else ""
+    var host = env.get("HOSTNAME") else ""
+    if host == "" && fs.exists("/etc/hostname") {
+        host = (fs.read_text("/etc/hostname") else "").trim()
+    }
+    if host == "" {
+        return user
+    }
+    "{user}@{host}"
+}
+
+fn show(a: Args) -> int {
+    if a.path == "" {
+        return fail("usage", "-y and -l need -f path")
+    }
+    if a.show_fingerprint && a.path.ends_with(".pub") {
+        let text = fs.read_text(a.path) else { return fail("key_unreadable", a.path) }
+        let w = text.trim().words()
+        if w.len < 2 || w[0] != "ssh-ed25519" {
+            return fail("key_unsupported", "{a.path}: not an ssh-ed25519 public key")
+        }
+        var pub_key = keyfile.Key { seed: List[byte](), public: List[byte](), comment: "" }
+        pub_key.public = keyfile.public_of_line(text) else { return fail("key_malformed", a.path) }
+        if w.len > 2 {
+            var c = ""
+            var j = 2
+            while j < w.len {
+                if c.len > 0 {
+                    c += " "
+                }
+                c += w[j]
+                j += 1
+            }
+            pub_key.comment = c
+        }
+        print(keyfile.fingerprint_line(pub_key))
+        return 0
+    }
+    var bad = ""
+    let k = keyfile.load(a.path) else |e| {
+        bad = "{e}"
+        keyfile.Key { seed: List[byte](), public: List[byte](), comment: "" }
+    }
+    if bad != "" {
+        return fail(bad, "{a.path} (no key bytes are printed)")
+    }
+    if a.show_public {
+        var o = fs.stdout()
+        fs.write(mut o, keyfile.public_line(k.public, k.comment)) else {}
+    } else {
+        print(keyfile.fingerprint_line(k))
+    }
+    0
+}
+
+fn main() -> int {
+    let a = parse(env.args())
+    if a.error != "" {
+        eprint(a.error)
+        eprint(usage())
+        return 1
+    }
+    if a.show_public || a.show_fingerprint {
+        return show(a)
+    }
+    if a.kind != "" && a.kind != "ed25519" {
+        return fail("type_unsupported", "-t {a.kind}: burrow-keygen makes ed25519 keys only")
+    }
+    if a.passphrase != "" {
+        return fail("passphrase_unsupported", "-N: burrow reads unencrypted keys only; use -N \"\"")
+    }
+    var path = a.path
+    if path == "" {
+        let home = env.get("HOME") else ""
+        if home == "" {
+            return fail("usage", "no -f and no HOME")
+        }
+        if !fs.exists(home + "/.ssh") {
+            fs.create_dir_mode(home + "/.ssh", 0o700) else {
+                return fail("io", "{home}/.ssh cannot be made")
+            }
+        }
+        path = home + "/.ssh/id_ed25519"
+    }
+    let pub_path = path + ".pub"
+    if fs.exists(path) || fs.exists(pub_path) {
+        print("{if fs.exists(path) then path else pub_path} already exists.")
+        return fail(
+            "exists",
+            "refusing to overwrite {if fs.exists(path) then path else pub_path}; nothing written",
+        )
+    }
+    let comment = if a.has_comment then a.comment else default_comment()
+    var pool = entropy.system()
+    var failed = false
+    let seed = entropy.draw(mut pool, 32) else {
+        failed = true
+        List[byte]()
+    }
+    let check = entropy.draw(mut pool, 4) else {
+        failed = true
+        List[byte]()
+    }
+    if failed {
+        return fail("entropy_unavailable", "/dev/urandom cannot be read")
+    }
+    if !a.quiet {
+        print("Generating public/private ed25519 key pair.")
+    }
+    let k = keyfile.from_seed(seed, comment)
+    var f = fs.create_new_with_mode(path, 0o600) else |e| {
+        return fail("io", "{path} cannot be created ({e})")
+    }
+    fs.write(mut f, keyfile.encode(k, check)) else {
+        fs.close(take f) else {}
+        return fail("io", "{path} cannot be written")
+    }
+    fs.close(take f) else {}
+    var g = fs.create_new_with_mode(pub_path, 0o644) else |e| {
+        return fail("io", "{pub_path} cannot be created ({e})")
+    }
+    fs.write(mut g, keyfile.public_line(k.public, comment)) else {
+        fs.close(take g) else {}
+        return fail("io", "{pub_path} cannot be written")
+    }
+    fs.close(take g) else {}
+    if !a.quiet {
+        print("Your identification has been saved in {path}")
+        print("Your public key has been saved in {pub_path}")
+        print("The key fingerprint is:")
+        let fp = keyfile.fingerprint_line(k)
+        print(fp[4..fp.len - 10])
+    }
+    0
 }

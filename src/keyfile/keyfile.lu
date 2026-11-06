@@ -67,6 +67,22 @@ pub fn public_line(public: List[byte], comment: str) -> str {
     if comment.len == 0 then head + "\n" else head + " " + comment + "\n"
 }
 
+/// The Ed25519 public key of a public line (`ssh-ed25519 <base64> …`).
+pub fn public_of_line(line: str) -> List[byte] ! refuse.Refusal {
+    let w = line.trim().words()
+    if w.len < 2 || w[0] != "ssh-ed25519" {
+        return key_unsupported
+    }
+    let b = base64.decode(w[1]) else { return key_malformed }
+    var r = wire.reader(b)
+    let t = wire.read_string(mut r) else { return key_malformed }
+    let a = wire.read_string(mut r) else { return key_malformed }
+    if !is(t, "ssh-ed25519") || a.len != 32 || !wire.at_end(r) {
+        return key_malformed
+    }
+    a
+}
+
 /// `ssh-keygen -l`'s line: `256 SHA256:<fp> <comment> (ED25519)`.
 pub fn fingerprint_line(k: Key) -> str {
     let c = if k.comment.len == 0 then "no comment" else k.comment
