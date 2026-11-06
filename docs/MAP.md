@@ -240,7 +240,7 @@ Three black-box findings shape B1:
 | `tools/check-github` | GitHub's real server, read only, no key: the published host key and the refusal, against the pinned `ssh` |
 | `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted, its work files removed when it ends; `--self-test` against a loopback `sshd` |
 | `tools/check-static` | the static binaries: no interpreter, no dynamic section, their digests; den rows through the static `burrow` |
-| `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved, held to 2x |
+| `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved: CPU held to 2x, wall reported |
 | `tools/diag-command-form` | a read-only probe, run by hand: the live fixture's answer to den's old command form, git's, and den's own argv at the pin (taken from den by a recording `ssh`), through both clients, redacted |
 
 ## Machines
