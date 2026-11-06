@@ -291,6 +291,19 @@ and key path. The deploy key was made by `burrow-keygen` in the lane's own
 directory on the Linux host, and only its public line left it. The plant
 branch has no PR and no CI run.
 
+At the re-pin, den's ssh transport, CHANGELOG, toolchain and oracle pins
+and its vc22 note were read as the consumer's (SOURCES), and `sshd(8)`'s
+`command=` option, a section of a page already on the list; still no git
+source or git documentation. The live row's URL and key path reach the
+job only as environment variables, set inside it from the lane's 0600
+files on the Linux host. den's clones back from the fixture name the URL
+in their config, a file the row wrote: the row now removes its work
+directories when it ends, and `leftovers` fails by name if a work file
+keeps the URL, a name or the key's path. Every log, record and evidence
+copy of the lane's takes, and this repository's history, were scanned on
+the Linux host for the URL, its repository path and names, the key's path
+and the key's private lines, with only counts printed: none.
+
 ## Inputs verified
 
 Footprint: cross-cutting
@@ -298,10 +311,13 @@ Footprint: cross-cutting
 - The toolchain and OpenSSH pins are unchanged from trunk `2077c87` (wolf
   0.2.37, lupin 0.1.59, std `5b3a599`, OpenSSH 10.0p2), each held to its
   digest by `tools/fetch-toolchain` and `tools/fetch-oracle` in every take.
-- **A new pin, `burrow-den.toml`:** den at its trunk `ef0bb0c` (fetched by
-  that commit alone, checked out clean, built by den's own
-  `tools/fetch-toolchain` at its own pin, wolf 0.2.36 `5adf3d9` and std
-  `78b9d3c`, and its own `tools/build --native`), and den's git oracle,
+- **A new pin, `burrow-den.toml`:** den at its trunk `ac2332b`, after den#65
+  (the lane began at `ef0bb0c`, std `78b9d3c`; the move is `de66417`),
+  fetched by that commit alone, checked out clean, built by den's own
+  `tools/fetch-toolchain` at its own pin (wolf 0.2.36 `5adf3d9`, lupin
+  0.1.58, std `d4a4d4c`) and its own `tools/build --native`: den's binary
+  sha256 `9274a90c31cdbca22b11e006ba2a509af2d3780c3a8758092ed4f50d90393bf0`;
+  and den's git oracle,
   git 2.56.0 with binary sha256
   `c4848492938c4ebfffbefe1fbbaa68b9af90c86d1f6a20e76816c5ff37fcfa60`, the
   digest den's own `den-oracle.toml` pins (checked against it at the pin).
@@ -311,6 +327,11 @@ Footprint: cross-cutting
   from GitHub's meta API and its fingerprints page, by sha256 in SOURCES.
 - `tools/in-container` gains a pass-through for three variables, and the
   gate gains its B4 steps; CI's workflow is unchanged (R-bw03-3).
+
+| hardware | used for |
+|---|---|
+| Linux x86-64 desktop, i7-12700KF, 46 GiB | every B4 take: a six-CPU block under both of its lock names, the pinned container capped at 12 GiB, taskset inside; the measurement and the final record with the block's light lock held too |
+| Apple silicon laptop, macOS arm64 | editing, commits and pushes only |
 
 Commits, in order (the row first wherever a row exists):
 
@@ -330,14 +351,21 @@ Commits, in order (the row first wherever a row exists):
   server's command form (R-bw03-7).
 - `292e148` `9540a7d` README, `dd05cec` MAP, `c4a4dea` SOURCES, `4a27c96`
   CHANGELOG; and this note.
+- The re-pin: `cf7b9b0` its prediction; `132c0d3` the command recorder;
+  `22e551a` the `den-command-*` rows (red at `ef0bb0c`); `de66417` den at
+  `ac2332b`; `e54bcbc` the probe takes den's own argv; `9792aa8` the
+  leftovers check (red); `2bf1d0a` the work directories removed;
+  `23689ab` README, `3f94c57` MAP, `827a3f2` SOURCES, `1f6ed05` CHANGELOG;
+  and this note.
 
 ## Evidence index
 
-**The rows.** den's 18 rows (`tools/check-den`) pass on both of burrow's
-tiers, every compared field equal through burrow and through the pinned
-`ssh`; two of them pass again through the static `burrow`
-(`tools/check-static`). The GitHub rows (2) and the live row's loopback
-self-test (1) pass; the live row SKIPs by name without its variables. The
+**The rows.** den's 22 rows (`tools/check-den`: 18, and the four
+`den-command-*` rows) pass on both of burrow's tiers at den `ac2332b`,
+every compared field equal through burrow and through the pinned `ssh`;
+two of them pass again through the static `burrow` (`tools/check-static`).
+The GitHub rows (2), the live row's loopback self-test (1) and the live
+row (1) pass; the live row SKIPs by name without its variables. The
 existing families are unchanged in count and green: 14 unit rows, 25
 transport rows and 44 session rows on both tiers, 8 hostile-peer rows on
 both tiers.
@@ -352,6 +380,23 @@ both tiers.
   `8fecc2f`.
 - `cli-no-command` was red at `9b83991` (`sshd did not log the login before
   the refusal`) and passed after `8fecc2f`.
+- The `den-command-*` rows were red at `22e551a`, whose pin is den
+  `ef0bb0c`, three by name and the guard green, as predicted (paths
+  shortened here to `…`):
+
+  ```text
+  FAIL den-command-upload sshd was sent "'git-upload-pack' '…/srv/plain.git'\n", git's form is "git-upload-pack '…/srv/plain.git'\n"
+  FAIL den-command-receive sshd was sent "'git-receive-pack' '…/srv/push.git'\n", git's form is "git-receive-pack '…/srv/push.git'\n"
+  FAIL den-command-override sshd was sent "'…/fixture/bin/upload' '…/srv/plain.git'\n", git's form is "…/fixture/bin/upload '…/srv/plain.git'\n"
+  PASS den-command-override-quoted (sshd was sent "'…/fixture/bin/up load' '…/srv/plain.git'", both clients alike)
+  ```
+
+  Each clone and push still succeeded alike through both clients there: a
+  shell takes either form. All four passed on both tiers after `de66417`.
+- `leftovers` was red at `9792aa8`, in the loopback self-test, by name:
+  `FAIL leftovers target/live/after.git/config holds the fixture's URL, name
+  or key path`, and the same for `back-burrow.git` and `back-ssh.git`. It
+  passed after `2bf1d0a`.
 
 **The prediction, hit and missed.**
 
@@ -370,7 +415,13 @@ both tiers.
 | static binaries with no interpreter | hit: no `PT_INTERP`, no dynamic section; the static `burrow-keygen` also ran on a Linux host whose userland is not the image's (it made the deploy key) |
 | the measurement fixture: 300 commits and 40 large files, about 3,300 objects and a 13 MB pack, inside den's bounds | **miss**: 3,243 objects and a 17 MB pack, and den's clone through burrow was SIGKILLed at the container's 12 GiB cap. Through the pinned `ssh` alone, den's peak RSS was 348 MiB at 30 commits, 954 MiB at 60, 3.3 GiB at 120 and 12.2 GiB at 300 (no large files): den's, growing faster than the history, whichever client carries it (den#63, R-bw03-4). The fixture is 60 commits and 8 large files |
 | CPU through burrow / through `ssh` between 1.02x and 1.3x, wall between 0.95x and 1.4x, margins 2x | CPU hit (1.04x); wall a miss low (0.83x): den's wall time is mostly I/O and swings 10–45 s between rounds on a shared host, so the wall minimum is noise-bound; both inside the margins |
-| the live push and its clone-back alike through both clients | **blocked, by den's command form**: GitHub accepted the deploy key and refused den's first push, `Invalid command: 'git-receive-pack' '<live>'`, through either client (below; R-bw03-7) |
+| the live push and its clone-back alike through both clients | at den `ef0bb0c`, **blocked by den's command form**: GitHub accepted the deploy key and refused den's first push, `Invalid command: 'git-receive-pack' '<live>'`, through either client (below; R-bw03-7). At den `ac2332b`, hit (below) |
+| the re-pin: den's argv the same option words, then `-- HOST PROGRAM 'PATH'` with a plain program bare | hit: den starts `ssh` with 20 words after the program name (16 option words, `--`, the host, two command words), its command `git-receive-pack '<live>'`, `GIT_PROTOCOL` `version=2` |
+| the re-pin: the `den-command-*` rows red at `ef0bb0c` (three) with the guard green, all four green at `ac2332b` | hit (above) |
+| the re-pin: den's 18 rows green with no burrow change; `den-v0-refusal` leaves no destination, alike | hit |
+| the re-pin: den's old form refused, den's own argv accepted through both clients and git's form | hit (below) |
+| the re-pin: the live row green | hit (below) |
+| (not predicted) nothing the live row writes names the fixture | **miss**: den's clones back from the fixture name the URL in their config (three files in the take's work directory, found by the lane's scan); the row now removes its work directories, `leftovers` red first |
 
 **The live row, first take** (`tools/check-live` at `3beaf84`, the fixture
 private and empty, the deploy key added with write access). `<live>` is the
@@ -405,6 +456,36 @@ connection.) The change is den's (R-bw03-7); the live row waits on it, and
 nothing on the fixture changed: it is still empty. Every log, record and
 evidence file of these runs was scanned for the URL, the repository path
 and name, the key's path and private key text: none.
+
+**The live row at den `ac2332b`** (`e54bcbc`, one take: the den rows on
+both tiers, the self-test, GitHub, the static rows, then the probe and the
+live row). The probe:
+
+```text
+diag: den at the pin starts ssh with 20 words; its command "git-receive-pack '<live>'"; GIT_PROTOCOL 'version=2'
+diag: ssh    den's old form: exit 1, stdout 0 bytes (first pkt-len ''), stderr first line "Invalid command: 'git-receive-pack' '<live>'"
+diag: ssh    git's form: exit 0, stdout 299 bytes (first pkt-len '0127'), stderr first line ''
+diag: burrow git's form: exit 0, stdout 297 bytes (first pkt-len '0125'), stderr first line ''
+diag: ssh    den's argv at the pin: exit 0, stdout 297 bytes (first pkt-len '0125'), stderr first line ''
+diag: burrow den's argv at the pin: exit 0, stdout 299 bytes (first pkt-len '0127'), stderr first line ''
+diag: den's command at the pin is git's form: yes
+diag: den's argv at the pin accepted through both clients
+```
+
+The advertisement's size moves between connections whichever client
+carries it (296 to 299 bytes over the lane's runs). Then the live row: the
+base push created `burrow-live-base`, den pushed the run's synthetic
+commit through burrow and through the pinned `ssh` with exit, stdout and
+stderr alike, cloned the fixture back through each client with both refs
+at that commit and its 6 objects alike, and deleted both refs through
+burrow:
+
+```text
+PASS live-push (commit … pushed alike through both clients, cloned back alike (6 objects), deleted)
+check-live: evidence in target/evidence/live, readable, no key material, no fixture name
+```
+
+The final record's `live` step, in the PR body, is the merge's take.
 
 **The measurement** (`tools/measure-den`, release burrow, at `292e148`, on a
 quiet block of the Linux x86-64 host with its light lock held, so nothing
@@ -485,7 +566,9 @@ check through `wire.ct_eq`; the user key's signature is not constant time
   live row. Recommended and accepted: (a), as den's change in its transport
   lane (vc22, red first: a plain service word sent bare, a non-plain
   override still quoted). bw03 then moves `burrow-den.toml` to that den
-  commit, reruns den's rows and takes the live row.
+  commit, reruns den's rows and takes the live row. **Applied:** den#65
+  merged (den trunk `ac2332b`); `de66417` moves the pin, after the
+  `den-command-*` rows, red at `ef0bb0c`; the live row is green.
 
 **Issues** (none filed by this lane):
 
@@ -536,14 +619,13 @@ What it needs from here:
   byte for byte to the pinned `ssh`: clone over both URL forms, a port, a
   user, an alias, a checkout and three hard paths; incremental fetch; push
   over both forms; both leases; `--atomic` accepted and refused; a push den
-  rejects and one the server rejects; the v0 refusal. 18 rows, both tiers;
-  den unchanged.
+  rejects and one the server rejects; the v0 refusal; the command `sshd` is
+  sent, in git's form. 22 rows, both tiers; den unchanged.
 - [x] GitHub's real server, read only, with no key: the published host key,
   and the refusal held to the pinned `ssh` (R-bw03-1, red first).
-- [ ] The live push to the fixture and its clone-back, through both clients.
-  The row and its self-test are green, the deploy key logs in, and git's
-  command form reaches GitHub's receive-pack through both clients; den's own
-  form is refused by GitHub, and the row waits on den's change (R-bw03-7).
+- [x] The live push to the fixture and its clone-back, through both clients,
+  at den `ac2332b` (R-bw03-7 applied in den#65); den's command form held
+  to git's by the `den-command-*` rows, red first at `ef0bb0c`.
 - [x] For PAX: `tools/build --static`, its shape and digests, and the px
   lane's first items (above).
 - [x] Measured: den's clone through burrow against the pinned `ssh`, with
