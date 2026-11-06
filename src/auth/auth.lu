@@ -1,45 +1,103 @@
 //! member: true
 //!
-//! burrow.auth — user authentication. A stub until its implementation
-//! lands: every builder answers nothing and every login is refused.
+//! burrow.auth — user authentication (RFC 4252) with the `publickey`
+//! method and `ssh-ed25519` keys (RFC 8709), after the `ssh-userauth`
+//! service is accepted.
+//!
+//! **The order** (§7): for each identity, the query (`USERAUTH_REQUEST`
+//! with FALSE and no signature), then on `USERAUTH_PK_OK` the signed
+//! request; `USERAUTH_SUCCESS` ends it. With no identity at all, one
+//! `none` request (§5.2) asks which methods could continue, so the refusal
+//! names them as the pinned `ssh` does (`Permission denied (…)`).
+//!
+//! **What is refused, by name:** `auth_sig_alg_unsupported` (the server's
+//! `server-sig-algs`, RFC 8308 §3.1, lacks `ssh-ed25519`: no request is
+//! sent), `auth_no_publickey` (USERAUTH_FAILURE lists no `publickey`),
+//! `auth_partial` (partial success: burrow does one method),
+//! `auth_success_unrequested` (USERAUTH_SUCCESS in answer to a query, or
+//! before any request), `auth_refused` (every identity tried), and
+//! `message_unexpected` for anything else, including any connection
+//! message before SUCCESS. A `USERAUTH_PK_OK` that echoes another key is
+//! `malformed`.
+//!
+//! **The banner** (§5.4) is written to stderr as the pinned `ssh` writes
+//! it in the C locale: TAB, LF, CR and printable ASCII as they are, every
+//! other byte (control characters, DEL, and bytes from 0x80 up) as `\ooo`
+//! (measured).
+//!
+//! ct: signing is wolf-std's `curve25519.sign` (deterministic, RFC 8032
+//! §5.1.6), whose scalar multiplication adds under a branch on each secret
+//! bit (std's own `ct:` line names it a recorded obligation): one
+//! signature per login is not constant time. Nothing else here touches a
+//! secret.
 
+use std.fs
+use std.x.crypto.curve25519
 use keyfile
 use refuse
 use transport
+use wire
 
-/// The method burrow authenticates with.
+/// The method burrow authenticates with, and its one key type.
 pub fn method() -> str {
     "publickey"
 }
 
-/// RFC 4252 §5.2's `none` request (stub).
+fn head(user: str, m: str) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_userauth_request())
+    wire.put_text(mut p, user)
+    wire.put_text(mut p, "ssh-connection")
+    wire.put_text(mut p, m)
+    p
+}
+
+/// RFC 4252 §5.2's `none` request.
 pub fn none_request(user: str) -> List[byte] {
-    let _ = user.len
-    List[byte]()
+    head(user, "none")
 }
 
-/// RFC 4252 §7's query (stub).
+/// RFC 4252 §7's query: the key, and FALSE for "no signature yet".
 pub fn query(user: str, blob: List[byte]) -> List[byte] {
-    let _ = user.len + blob.len
-    List[byte]()
+    var p = head(user, method())
+    wire.put_bool(mut p, false)
+    wire.put_text(mut p, "ssh-ed25519")
+    wire.put_string(mut p, blob)
+    p
 }
 
-/// The data the signature covers (stub).
+/// The data the signature covers (§7): the session identifier, then the
+/// signed request's fields up to the key.
 pub fn signed_data(session_id: List[byte], user: str, blob: List[byte]) -> List[byte] {
-    let _ = session_id.len + user.len + blob.len
-    List[byte]()
+    var d = List[byte]()
+    wire.put_string(mut d, session_id)
+    let h = head(user, method())
+    wire.put_raw(mut d, h)
+    wire.put_bool(mut d, true)
+    wire.put_text(mut d, "ssh-ed25519")
+    wire.put_string(mut d, blob)
+    d
 }
 
-/// The signed request (stub).
+/// The signed request, its signature blob being RFC 8709 §6's
+/// `string "ssh-ed25519", string signature`.
 pub fn signed_request(user: str, blob: List[byte], sig: List[byte]) -> List[byte] {
-    let _ = user.len + blob.len + sig.len
-    List[byte]()
+    var p = head(user, method())
+    wire.put_bool(mut p, true)
+    wire.put_text(mut p, "ssh-ed25519")
+    wire.put_string(mut p, blob)
+    var sb = List[byte]()
+    wire.put_text(mut sb, "ssh-ed25519")
+    wire.put_string(mut sb, sig)
+    wire.put_string(mut p, sb)
+    p
 }
 
-/// The signed request for `key` (stub).
+/// The signed request for `key` under `session_id`.
 pub fn sign_request(session_id: List[byte], user: str, key: keyfile.Key) -> List[byte] {
-    let _ = session_id.len + user.len + key.seed.len
-    List[byte]()
+    let blob = keyfile.blob(key.public)
+    let sig = curve25519.sign(key.seed, signed_data(session_id, user, blob))
+    signed_request(user, blob, sig)
 }
 
 /// What a USERAUTH_FAILURE says.
@@ -48,25 +106,47 @@ pub struct Failure {
     partial: bool,
 }
 
-/// USERAUTH_FAILURE's fields (stub).
+/// USERAUTH_FAILURE's method list and partial-success flag (§5.1).
 pub fn failure(p: List[byte]) -> Failure ! refuse.Refusal {
-    let _ = p.len
-    malformed
+    var r = wire.reader(p[1..p.len])
+    let m = wire.read_name_list(mut r) else { return malformed }
+    let partial = wire.read_bool(mut r) else { return malformed }
+    Failure { methods: m, partial: partial }
 }
 
 /// Whether `names` holds `name`.
 pub fn lists(names: List[str], name: str) -> bool {
-    let _ = names.len + name.len
+    for n in names {
+        if n == name {
+            return true
+        }
+    }
     false
 }
 
-/// The banner's text as shown (stub).
+/// The banner's text as the pinned `ssh` writes it to stderr in the C
+/// locale: TAB, LF, CR and printable ASCII as they are, any other byte as
+/// `\ooo`.
 pub fn banner_bytes(p: List[byte]) -> List[byte] ! refuse.Refusal {
-    let _ = p.len
-    malformed
+    var r = wire.reader(p[1..p.len])
+    let text = wire.read_string(mut r) else { return malformed }
+    var out = List[byte]()
+    for b in text {
+        let v = b as int
+        if v == 9 || v == 10 || v == 13 || v >= 32 && v < 127 {
+            (mut out).push(b)
+        } else {
+            (mut out).push(92 as byte)
+            (mut out).push((48 + v / 64) as byte)
+            (mut out).push((48 + v / 8 % 8) as byte)
+            (mut out).push((48 + v % 8) as byte)
+        }
+    }
+    out
 }
 
-/// The state of one login.
+/// The state of one login: which identity is in play and what was last
+/// sent (0 nothing, 1 the `none` request, 2 a query, 3 a signed request).
 pub struct Login {
     index: int,
     sent: int,
@@ -78,14 +158,136 @@ pub fn start() -> Login {
     Login { index: 0, sent: 0, last_methods: List[str]() }
 }
 
-/// What to do after a message (stub: nothing is understood).
+/// What to do after a message: 1 print the banner, 2 sign and send the
+/// signed request, 3 try the next identity, 4 done.
 pub fn step(mut l: Login, p: List[byte], blob: List[byte]) -> int ! refuse.Refusal {
-    l.index += p.len + blob.len
+    let t = p[0] as int
+    if t == refuse.msg_userauth_banner() {
+        return 1
+    }
+    if t == refuse.msg_userauth_success() {
+        if l.sent == 3 || l.sent == 1 {
+            return 4
+        }
+        return auth_success_unrequested
+    }
+    if t == refuse.msg_userauth_pk_ok() {
+        if l.sent != 2 {
+            return message_unexpected
+        }
+        var r = wire.reader(p[1..p.len])
+        let alg = wire.read_string(mut r) else { return malformed }
+        let b = wire.read_string(mut r) else { return malformed }
+        if !wire.ct_eq(alg, wire.bytes_of("ssh-ed25519")) ||
+            !wire.ct_eq(b, blob) ||
+            !wire.at_end(r) {
+            return malformed
+        }
+        return 2
+    }
+    if t == refuse.msg_userauth_failure() {
+        if l.sent == 0 {
+            return message_unexpected
+        }
+        let f = failure(p)?
+        l.last_methods = copy f.methods
+        if f.partial {
+            return auth_partial
+        }
+        if !lists(f.methods, method()) {
+            return auth_no_publickey
+        }
+        return 3
+    }
     message_unexpected
 }
 
-/// Logs in (stub: refused).
-pub fn login(mut c: transport.Conn, user: str, host: str, keys: List[keyfile.Key]) -> () ! refuse.Refusal {
-    transport.note(mut c, "not yet implemented: {user}@{host}, {keys.len} keys")
-    auth_refused
+fn say(c: transport.Conn, msg: str) {
+    if c.opts.verbose > 0 {
+        eprint("debug1: {msg}")
+    }
+}
+
+fn joined(xs: List[str]) -> str {
+    var out = ""
+    for x in xs {
+        if out.len > 0 {
+            out += ","
+        }
+        out += x
+    }
+    out
+}
+
+/// Logs `user` in with the first of `keys` the server accepts. On
+/// `auth_refused`, `auth_no_publickey` and `auth_partial` the pinned
+/// `ssh`'s line (`user@host: Permission denied (…).`) is printed first.
+pub fn login(
+    mut c: transport.Conn,
+    user: str,
+    host: str,
+    keys: List[keyfile.Key],
+) -> () ! refuse.Refusal {
+    if keys.len > 0 && !transport.server_accepts(c, "ssh-ed25519") {
+        transport.note(
+            mut c,
+            "the server's server-sig-algs does not list ssh-ed25519 ({joined(c.sig_algs)}); no request was sent",
+        )
+        return auth_sig_alg_unsupported
+    }
+    var l = start()
+    var errfile = fs.stderr()
+    if keys.len == 0 {
+        transport.send(mut c, none_request(user))?
+        l.sent = 1
+        say(c, "no identity: sent the none request")
+    } else {
+        transport.send(mut c, query(user, keyfile.blob(keys[0].public)))?
+        l.sent = 2
+        say(c, "Offering public key: ED25519 {keyfile.fingerprint_line(keys[0])}")
+    }
+    loop {
+        let p = transport.next(mut c)?
+        let blob = if l.index < keys.len then keyfile.blob(keys[l.index].public) else List[byte]()
+        if transport.kind(p) == refuse.msg_userauth_failure() {
+            // The pinned ssh's line for the two refusals a failure carries.
+            let f = failure(p)?
+            let methods = joined(f.methods)
+            transport.note(
+                mut c,
+                "methods that can continue: {methods}; {l.index} of {keys.len} identities tried",
+            )
+            if f.partial || !lists(f.methods, method()) {
+                eprint("{user}@{host}: Permission denied ({methods}).")
+            }
+        } else {
+            transport.note(mut c, "message {transport.kind(p)} in authentication")
+        }
+        let verdict = step(mut l, p, blob)?
+        if verdict == 1 {
+            let text = banner_bytes(p)?
+            fs.write_chunk(mut errfile, text) else {}
+        } else if verdict == 2 {
+            say(c, "Server accepts key: ED25519 {keyfile.fingerprint_line(keys[l.index])}")
+            transport.send(mut c, sign_request(c.session_id, user, keys[l.index]))?
+            l.sent = 3
+        } else if verdict == 3 {
+            l.index += 1
+            if l.index >= keys.len {
+                let methods = joined(l.last_methods)
+                eprint("{user}@{host}: Permission denied ({methods}).")
+                transport.note(
+                    mut c,
+                    "methods that can continue: {methods}; {keys.len} identities tried",
+                )
+                return auth_refused
+            }
+            transport.send(mut c, query(user, keyfile.blob(keys[l.index].public)))?
+            l.sent = 2
+            say(c, "Offering public key: ED25519 {keyfile.fingerprint_line(keys[l.index])}")
+        } else if verdict == 4 {
+            say(c, "Authentication succeeded ({if l.sent == 1 then "none" else "publickey"}).")
+            return
+        }
+    }
 }
