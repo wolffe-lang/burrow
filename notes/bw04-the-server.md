@@ -487,6 +487,116 @@ does not change.
 | Linux x86-64 laptop, 8 cores | the oracle rows in the pinned container, one slot, when the host is free |
 | Linux x86-64 desktop, i7-12700KF | the oracle rows and the measurement, a six-CPU block by its lock names; the measurement with the block's light lock held |
 
+## For B6: burrowd on PAX
+
+Read at PAX's trunk `db516c6` (its README, `docs/BOOT.md`,
+`kernel/README.md`, `kernel/kmain_console.lu`'s header, and `user/su` and
+`user/sudo` for the call they make), against what burrowd needs.
+
+**What PAX has already.** Static x86-64 Linux binaries run unchanged, and
+`tools/build --static` makes `target/static/burrowd` (`tools/check-static`
+holds its shape and runs three server rows through it). `fork` (each page
+copied, no copy-on-write), `execve`, `wait4`, pipes, `poll`; TCP with
+`listen`, `accept` and 256 connections, IPv4 only; real, effective, saved
+and file-system ids, set-ID as `execve(2)` has it; `/etc/passwd` and
+`/etc/group` with `root`, `pax` (1000) and `lobo` (990); pelt as PID 1;
+den installed as `git`, with `/bin/git-upload-pack` and
+`/bin/git-receive-pack` as two-line wrappers (`exec /bin/den upload-pack
+"$1"`) that a shell finds on `PATH`. PAX's own `su` and `sudo` drop to
+another user through the runtime's `os_set_ids`, the call std's
+`process.set_ids` makes, so burrowd's worker and session drops are the
+same call on PAX. `os.name()` is `pax` there (`uname`'s sysname), and
+burrowd's start refuses root only where it is neither `linux` nor `pax`.
+
+**What B6 needs, item by item:**
+
+1. **Starting at boot, and staying up.** PAX's init is the first line of
+   `/etc/pax-run`, run as PID 1 with the console as its terminal, and
+   nothing supervises a service. burrowd never detaches (`-D` is
+   accepted and changes nothing) and reaps its own children, so the boot
+   script pelt runs as PID 1 starts it in the background in a loop that
+   restarts it, before the console login, with its log in a file:
+
+   ```sh
+   ( while :; do /bin/burrowd -D -E /var/log/burrowd.log; sleep 1; done ) &
+   ```
+
+   PID 1 must reap what reaches it (pelt does, as init). A row: kill
+   burrowd's listener by pid, and a login works again within two seconds.
+2. **The accounts.** An unprivileged `burrowd` account (no home, a shell
+   that runs nothing) in the image's `/etc/passwd` and `/etc/group`;
+   without it burrowd as root refuses to start (`preauth_user_missing`).
+   Each user's `~/.ssh/authorized_keys` under StrictModes (the home, `~/.ssh`
+   and the file owned by the user and not group- or world-writable). Root is
+   refused over the network always; root's work goes through `sudo` after a
+   login as `pax`.
+3. **Set-ID into the user.** The session runs `process.set_ids(uid, gid,
+   groups)` before the user's shell, and the worker drops to `burrowd` the
+   same way. PAX's set-ID holds for honest programs but is not yet a
+   boundary against an attacker (px103's words), so on PAX the separation is
+   defence in depth. A row: `id` inside a session prints the user's uid, gid
+   and groups, and the worker's and session's `/proc/PID/status` ids, as
+   `priv-worker` does on linux.
+4. **The listening socket.** burrowd listens on loopback by default;
+   reaching PAX from another machine is `ListenAddress 0.0.0.0` (PAX has no
+   IPv6: burrowd serves when one of its two loopback addresses binds) in
+   `/etc/burrowd/burrowd_config`, written by the installer on purpose and
+   named in its log. The network must be up first (`/etc/pax-net`'s DHCP or
+   static line); burrowd's `listen_failed` at start would otherwise end the
+   loop's turn, so the loop above also covers a late address.
+   `MaxStartups 10:30:100` sits inside PAX's 256 connections; the
+   thousand-connection row is sized to PAX's cap there.
+5. **The first-boot host key.** burrowd never makes a key. The boot script
+   makes one when none exists, before starting burrowd, and shows its
+   fingerprint on the console:
+
+   ```sh
+   [ -f /etc/burrowd/ssh_host_ed25519_key ] ||
+       /bin/burrow-keygen -q -t ed25519 -N '' -C "$(hostname)" -f /etc/burrowd/ssh_host_ed25519_key
+   /bin/burrow-keygen -l -f /etc/burrowd/ssh_host_ed25519_key
+   ```
+
+   The directory `/etc/burrowd` root's, mode 0755; the key root's, 0600
+   (burrowd refuses anything else, `host_key_permissions`). burrow-keygen
+   reads `/dev/urandom`.
+6. **git's two commands mapped to den.** A client runs `git-upload-pack
+   'PATH'` and `git-receive-pack 'PATH'`; burrowd hands the command to the
+   user's shell (`pelt -c`), whose `PATH` (burrowd's fixed
+   `/usr/bin:/bin:/usr/sbin:/sbin`) finds PAX's two wrappers, so den serves
+   both. `GIT_PROTOCOL` passes through `env` (`AcceptEnv GIT_PROTOCOL`). A
+   row: clone, fetch and push from Linux's pinned git to a bare repository
+   on PAX through burrowd, compared with the same through den over
+   `file://` on PAX, as `tools/check-server-git` compares burrowd with
+   `sshd`.
+7. **The client's address.** PAX has no `/proc/net`, so burrowd's log
+   line and `SSH_CLIENT` say `UNKNOWN` and port 0 there until wolf-std#140
+   gives `getpeername` (which PAX answers).
+8. **Measured on PAX.** A fork on PAX copies every page, and burrowd forks
+   four processes per connection: connect to the first byte through
+   burrowd on PAX, against the same through burrowd on Linux under the same
+   QEMU, before any default listens beyond loopback.
+
+**The px lane's items, drafted** (each red first, each held to burrowd on
+Linux as the oracle):
+
+- `/bin/burrowd` in the images from `target/static/burrowd` at a burrow
+  pin, its digest in `/etc/pax-release`; the `burrowd` account in the
+  image's passwd and group.
+- The boot script: the first-boot host key and its fingerprint on the
+  console; burrowd started in a restart loop with its log file; a row
+  that kills the listener and logs in again.
+- The installer's choice to listen beyond loopback, written to
+  `/etc/burrowd/burrowd_config`, off by default.
+- Rows from Linux into PAX under QEMU (`hostfwd` to the guest's port, the
+  guest listening on its own address): a command and its exit status, 64
+  MiB through `cat`, root refused, an unlisted key refused, StrictModes,
+  `id` in the session, every refused request; the hostile rows sized to
+  PAX's 256 connections.
+- git through it: clone, fetch and push to a bare repository on PAX, the
+  repositories compared with den's own over `file://`.
+- The measurement above, and the log line's `UNKNOWN` address named until
+  wolf-std#140 lands.
+
 ## Forbidden
 
 No ssh implementation's code or tests were read: no `.c` or `.h` file of
