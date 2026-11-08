@@ -1,0 +1,127 @@
+//! member: false
+
+// B5: authorized_keys as sshd(8) documents it, what burrowd honours of its
+// options (the first line naming the key decides, and an option burrowd
+// cannot honour admits nothing), AuthorizedKeysFile's tokens, and
+// StrictModes' verdicts.
+use akeys
+use kexvec
+use std.base64
+use std.fs
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn line(opts: str, blob: List[byte]) -> str {
+    let k = "ssh-ed25519 " + base64.encode(blob) + " row@host"
+    if opts == "" then k else opts + " " + k
+}
+
+fn verdict(text: str, blob: List[byte]) -> str {
+    let f = akeys.find(text, blob)
+    if f.ok {
+        return if f.has_command then "ok {f.line} command={f.command}" else "ok {f.line}"
+    }
+    if f.line == 0 {
+        return "none"
+    }
+    "refused {f.line}: {f.why}"
+}
+
+fn info(mode: int, uid: int) -> fs.Info {
+    fs.Info {
+        kind: 1,
+        size: 0,
+        modified_ms: 0,
+        have: 0,
+        mode: mode,
+        nlink: 1,
+        uid: uid,
+        gid: 0,
+        blocks: 0,
+        dev: 0,
+        ino: 0,
+        rdev: 0,
+        atime_s: 0,
+        atime_ns: 0,
+        mtime_s: 0,
+        mtime_ns: 0,
+        ctime_s: 0,
+        ctime_ns: 0,
+        btime_s: 0,
+        btime_ns: 0,
+    }
+}
+
+fn main() {
+    let blob = x(kexvec.user_blob())
+    let other = x(kexvec.k_s())
+    // A plain line, after comments and blank lines.
+    assert(verdict("# keys\n\n" + line("", blob) + "\n", blob) == "ok 3")
+    // Another key, an RSA line, and a line with no key do not match.
+    assert(verdict(line("", other), blob) == "none")
+    assert(verdict("ssh-rsa AAAAB3NzaC1yc2E= rsa\n" + "garbage\n", blob) == "none")
+    // command="…", a quote inside it, the restrictions burrowd takes anyway.
+    assert(verdict(line("command=\"echo hi\"", blob), blob) == "ok 1 command=echo hi")
+    assert(
+        verdict(line("restrict,No-Pty,command=\"say \\\"a b\\\"\"", blob), blob) ==
+            "ok 1 command=say \"a b\"",
+    )
+    assert(
+        verdict(
+            line("no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-user-rc", blob),
+            blob,
+        ) ==
+            "ok 1",
+    )
+    // An option burrowd cannot honour: the line admits nothing, and a later
+    // plain line for the same key is never consulted.
+    let restricted = line("from=\"10.0.0.1\"", blob) + "\n" + line("", blob) + "\n"
+    assert(
+        verdict(restricted, blob) ==
+            "refused 1: the option from on line 1, which burrowd does not honour",
+    )
+    assert(
+        verdict(
+            line("environment=\"A=b\"", blob),
+            blob,
+        ).starts_with("refused 1: the option environment"),
+    )
+    assert(verdict(line("pty,restrict", blob), blob).starts_with("refused 1: the option pty"))
+    // An unterminated quote swallows the key: the line names none.
+    assert(verdict(line("command=\"open", blob), blob) == "none")
+    // A line over 8 KiB is not read.
+    var long = "#"
+    while long.len < 8200 {
+        long += "x"
+    }
+    assert(verdict(line("command=\"" + long + "\"", blob), blob) == "none")
+    // The options field and the key are split where sshd(8) says.
+    let parts = akeys.split_options("command=\"a b\",no-pty ssh-ed25519 AAAA c")
+    assert(parts[0] == "command=\"a b\",no-pty" && parts[1] == "ssh-ed25519 AAAA c")
+    // AuthorizedKeysFile: the default, tokens, absolute paths.
+    let d = akeys.paths(".ssh/authorized_keys .ssh/authorized_keys2", "/home/u", "u")
+    assert(
+        d.len == 2 &&
+            d[0] == "/home/u/.ssh/authorized_keys" &&
+            d[1] == "/home/u/.ssh/authorized_keys2",
+    )
+    let t = akeys.paths("%h/keys /etc/keys/%u %%x", "/home/u", "u")
+    assert(t.len == 3 && t[0] == "/home/u/keys" && t[1] == "/etc/keys/u" && t[2] == "/home/u/%x")
+    assert(akeys.paths("%d/keys", "/home/u", "u").len == 0)
+    // StrictModes.
+    assert(akeys.mode_problem("/home/u", info(0o755, 1000), 1000) == "")
+    assert(akeys.mode_problem("/home/u", info(0o755, 0), 1000) == "")
+    assert(akeys.mode_problem("/home/u", info(0o775, 1000), 1000) == "/home/u is group-writable")
+    assert(
+        akeys.mode_problem("/home/u/.ssh", info(0o777, 1000), 1000) ==
+            "/home/u/.ssh is group-writable",
+    )
+    assert(akeys.mode_problem("/k", info(0o602, 1000), 1000) == "/k is world-writable")
+    assert(
+        akeys.mode_problem("/k", info(0o600, 1001), 1000) ==
+            "/k is owned by uid 1001, not the account's 1000 or root's",
+    )
+}
