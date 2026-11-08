@@ -379,3 +379,38 @@ pub fn decode_ext_info(p: List[byte]) -> ExtInfo ! refuse.Refusal {
     }
     ExtInfo { names: names, sig_algs: sig_algs }
 }
+
+// ---- B5: the server's side (stubs; the rows come first).
+
+/// burrowd's kex list.
+pub fn server_kex() -> List[str] {
+    List[str]()
+}
+
+/// burrowd's proposal with `cookie`.
+pub fn server_proposal(cookie: List[byte]) -> Proposal {
+    our_proposal(cookie)
+}
+
+/// Negotiation from the server's side.
+pub fn negotiate_server(client: Proposal, server: Proposal, initial: bool) -> Chosen ! refuse.Refusal {
+    negotiate(server, client, initial)
+}
+
+/// The client's KEX_ECDH_INIT: its Q_C.
+pub fn decode_init(payload: List[byte]) -> List[byte] ! refuse.Refusal {
+    if payload.len < 0 {
+        return malformed
+    }
+    List[byte]()
+}
+
+/// burrowd's KEX_ECDH_REPLY.
+pub fn ecdh_reply(k_s: List[byte], q_s: List[byte], sig_blob: List[byte]) -> List[byte] {
+    List[byte]()
+}
+
+/// burrowd's EXT_INFO.
+pub fn ext_info_server() -> List[byte] {
+    List[byte]()
+}

@@ -171,3 +171,21 @@ pub fn parse(line: List[byte]) -> Ident ! refuse.Refusal {
     }
     Ident { proto: proto, software: software, comments: comments }
 }
+
+/// burrowd's identification string, without CR LF (stub).
+pub fn server_ident() -> str {
+    ""
+}
+
+/// burrowd's identification line as sent (stub).
+pub fn server_line() -> List[byte] {
+    List[byte]()
+}
+
+/// Scans the client's first bytes (stub).
+pub fn scan_client(buf: List[byte]) -> Scan ! refuse.Refusal {
+    if buf.len < 0 {
+        return version_malformed
+    }
+    Scan { found: false, line: List[byte](), consumed: 0, banners: List[str]() }
+}

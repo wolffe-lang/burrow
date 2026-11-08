@@ -1,0 +1,164 @@
+//! member: false
+
+// B5, the server's side of the shared transport modules, held to
+// vectorgen's independent vectors: burrowd's identification and KEXINIT,
+// negotiation with the client's lists first (RFC 4253 §7.1) and strict kex
+// required, KEX_ECDH_INIT parsed, the exchange hash burrowd signs, its
+// signature blob (RFC 8709 §6), KEX_ECDH_REPLY and EXT_INFO (RFC 8308 §3.1).
+use hostkey
+use kex
+use kexvec
+use version
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn list(csv: str) -> List[str] {
+    wire.split_names(wire.bytes_of(csv)) else List[str]()
+}
+
+fn ours() -> kex.Proposal {
+    kex.server_proposal(x("f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"))
+}
+
+fn client() -> kex.Proposal {
+    kex.decode(x(kexvec.i_c())) else {
+        assert(false, "the client vector does not decode")
+        return ours()
+    }
+}
+
+fn verdict(theirs: kex.Proposal, initial: bool) -> str {
+    let c = kex.negotiate_server(theirs, ours(), initial) else |e| {
+        return "{e}"
+    }
+    "{c.kex} {c.hostkey} {c.cipher_c2s} {c.cipher_s2c} {c.comp_c2s} strict={c.strict} ext={c.ext_info} ignore={c.ignore_guess}"
+}
+
+fn scan(s: str) -> str {
+    let r = version.scan_client(wire.bytes_of(s)) else |e| {
+        return "{e}"
+    }
+    if !r.found {
+        return "more"
+    }
+    "{str_from_utf8(r.line) else "?"} {r.consumed}"
+}
+
+fn main() {
+    // burrowd's identification and KEXINIT, byte for byte.
+    assert(wire.hex(wire.bytes_of(version.server_ident())) == kexvec.srv_v_s())
+    let line = version.server_line()
+    assert(line.len == 23 && line[21] as int == 13 && line[22] as int == 10)
+    assert(wire.hex(kex.encode(ours())) == kexvec.srv_i_s())
+    // The client's lists first: burrow's client against burrowd.
+    assert(
+        verdict(client(), true) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com none strict=true ext=true ignore=false",
+    )
+    // The pinned ssh leads with a hybrid method burrowd lacks: the first of
+    // the client's names burrowd has is chosen.
+    var t = client()
+    t.kex = list(
+        "mlkem768x25519-sha256,sntrup761x25519-sha512,curve25519-sha256@libssh.org,curve25519-sha256,ext-info-c,kex-strict-c-v00@openssh.com",
+    )
+    assert(
+        verdict(t, true) ==
+            "curve25519-sha256@libssh.org ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com none strict=true ext=true ignore=false",
+    )
+    // Strict kex is the client's to offer, and burrowd's to require (the
+    // caller refuses strict_kex_missing on strict=false).
+    t = client()
+    t.kex = list("curve25519-sha256,ext-info-c")
+    assert(
+        verdict(t, true) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com none strict=false ext=true ignore=false",
+    )
+    // In a re-exchange the indicators are ignored (PROTOCOL §1.10, RFC 8308 §2.1).
+    assert(
+        verdict(client(), false) ==
+            "curve25519-sha256 ssh-ed25519 chacha20-poly1305@openssh.com chacha20-poly1305@openssh.com none strict=false ext=false ignore=false",
+    )
+    // Refusals by name.
+    t = client()
+    t.kex = list("mlkem768x25519-sha256,ecdh-sha2-nistp256,ext-info-c,kex-strict-c-v00@openssh.com")
+    assert(verdict(t, true) == "no_common_kex")
+    t = client()
+    t.hostkey = list("rsa-sha2-512,ecdsa-sha2-nistp256")
+    assert(verdict(t, true) == "no_common_hostkey")
+    t = client()
+    t.cipher_c2s = list("aes128-ctr")
+    assert(verdict(t, true) == "no_common_cipher")
+    t = client()
+    t.comp_s2c = list("zlib@openssh.com")
+    assert(verdict(t, true) == "no_common_compression")
+    // A client's wrong guess is ignored; a right one is not (§7.1).
+    t = client()
+    t.follows = true
+    t.kex = list("mlkem768x25519-sha256,curve25519-sha256,kex-strict-c-v00@openssh.com")
+    assert(verdict(t, true).ends_with("ignore=true"))
+    t = client()
+    t.follows = true
+    assert(verdict(t, true).ends_with("ignore=false"))
+    // KEX_ECDH_INIT: Q_C, 32 bytes, or refused by name.
+    let q_c = kex.decode_init(x(kexvec.srv_ecdh_init())) else List[byte]()
+    assert(wire.hex(q_c) == kexvec.q_c())
+    var short = List[byte]()
+    wire.put_u8(mut short, 30)
+    wire.put_string(mut short, q_c[0..31])
+    var why = "none"
+    let _ = kex.decode_init(short) else |e| {
+        why = "{e}"
+        List[byte]()
+    }
+    assert(why == "kex_failed")
+    var trailing = x(kexvec.srv_ecdh_init())
+    (mut trailing).push(0 as byte)
+    why = "none"
+    let _ = kex.decode_init(trailing) else |e| {
+        why = "{e}"
+        List[byte]()
+    }
+    assert(why == "malformed")
+    // The exchange hash burrowd computes is the one burrow's client
+    // computes (the same function, V_S and I_S burrowd's), and its
+    // signature is RFC 8032's deterministic one.
+    let q_s = kex.public_value(x(kexvec.srv_secret()))
+    assert(wire.hex(q_s) == kexvec.q_s())
+    let agreed = kex.agree(x(kexvec.srv_secret()), q_c) else List[byte]()
+    let h = kex.exchange_hash(
+        x(kexvec.v_c()),
+        x(kexvec.srv_v_s()),
+        x(kexvec.i_c()),
+        x(kexvec.srv_i_s()),
+        x(kexvec.k_s()),
+        q_c,
+        q_s,
+        agreed,
+    )
+    assert(wire.hex(h) == kexvec.srv_h())
+    let sig = hostkey.sign_blob(x(kexvec.srv_host_seed()), h)
+    assert(wire.hex(sig) == kexvec.srv_sig_blob())
+    assert(wire.hex(kex.ecdh_reply(x(kexvec.k_s()), q_s, sig)) == kexvec.srv_ecdh_reply())
+    assert(wire.hex(hostkey.ed25519_blob(x(kexvec.host_pub()))) == kexvec.k_s())
+    // EXT_INFO: server-sig-algs and ping, and burrow's own reader takes it.
+    let ext = kex.ext_info_server()
+    assert(wire.hex(ext) == kexvec.srv_ext_info())
+    let info = kex.decode_ext_info(ext) else kex.ExtInfo { names: List[str](), sig_algs: "" }
+    assert(info.sig_algs == "ssh-ed25519" && info.names.len == 2)
+    // The client's identification: no line before it (RFC 4253 §4.2 lets
+    // only the server send other lines), at most 255 bytes.
+    assert(scan("SSH-2.0-OpenSSH_10.0\r\nrest") == "SSH-2.0-OpenSSH_10.0 22")
+    assert(scan("SSH-2.0-x\n") == "SSH-2.0-x 10")
+    assert(scan("SSH-2.0-OpenSSH") == "more")
+    assert(scan("SS") == "more")
+    assert(scan("hello\r\nSSH-2.0-x\r\n") == "version_malformed")
+    assert(scan("GET / HTTP/1.1") == "version_malformed")
+    var long = "SSH-2.0-"
+    while long.len < 260 {
+        long += "a"
+    }
+    assert(scan(long) == "version_too_long")
+}

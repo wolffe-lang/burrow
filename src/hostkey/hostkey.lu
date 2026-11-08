@@ -220,3 +220,13 @@ pub fn entry_line(name: str, k_s: List[byte], hashed: bool, salt: List[byte]) ->
     let mac = sha1.hmac(salt, wire.bytes_of(name))
     "|1|" + base64.encode(salt) + "|" + base64.encode(mac) + tail
 }
+
+/// An `ssh-ed25519` key blob (RFC 8709 §4) for the public key `public` (stub).
+pub fn ed25519_blob(public: List[byte]) -> List[byte] {
+    List[byte]()
+}
+
+/// The signature blob on `h` by the host key whose seed is `seed` (stub).
+pub fn sign_blob(seed: List[byte], h: List[byte]) -> List[byte] {
+    List[byte]()
+}
