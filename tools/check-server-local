@@ -171,7 +171,8 @@ def local_other_user():
 def local_no_command():
     r = L.ssh([])
     check(r[0] == 255, f"exit {r[0]}")
-    return "burrow refuses a shell by name"
+    check(any("shell_refused" in x for x in L.lines()), "burrowd's log does not name shell_refused")
+    return "burrowd refuses the shell by name (shell_refused), burrow exits 255"
 
 
 @row
