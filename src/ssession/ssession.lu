@@ -432,7 +432,11 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
         }
     }
     let st = if flow.started then status_text(pr.status) else "status -"
-    Result { status: st, refused: schannel.refusals(ch), failure: str_from_utf8(failed) else "io" }
+    var refused = schannel.refusals(ch)
+    if nologin != "" && flow.started {
+        (mut refused).push("nologin")
+    }
+    Result { status: st, refused: refused, failure: str_from_utf8(failed) else "io" }
 }
 
 fn wire_bytes(s: str) -> List[byte] {
