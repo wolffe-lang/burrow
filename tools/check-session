@@ -502,6 +502,180 @@ def kh_alias():
     check(rb[0] == rs[0] == 0 and lb == ls and lb.startswith("alias.example ssh-ed25519 "), f"burrow {lb!r} ssh {ls!r}")
 
 
+# ---- the system known_hosts files (burrow#5) -------------------------------------
+# ssh_config(5): GlobalKnownHostsFile defaults to these two, read after the
+# user's files. The pinned build's own default is under its configure
+# prefix, so the rows give it the page's default (or the row's file) by -o.
+SYSTEM_KH = (pathlib.Path("/etc/ssh/ssh_known_hosts"), pathlib.Path("/etc/ssh/ssh_known_hosts2"))
+PAGE_DEFAULT = "GlobalKnownHostsFile=" + " ".join(str(p) for p in SYSTEM_KH)
+
+
+class SystemFile:
+    """One system known_hosts file for one row: written as the container's
+    root and removed after, with /etc/ssh if the row made it."""
+
+    def __init__(self, path, text):
+        self.path, self.text, self.made = pathlib.Path(path), text, False
+
+    def __enter__(self):
+        if os.environ.get("BURROW_IN_CONTAINER") != "1" or os.geteuid() != 0:
+            raise Fail(f"{self.path} is written only as root in the pinned container")
+        check(not any(p.exists() for p in SYSTEM_KH), "a system known_hosts file is already there")
+        self.made = not self.path.parent.exists()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(self.text)
+        os.chmod(self.path, 0o644)
+        return self.path
+
+    def __exit__(self, *e):
+        self.path.unlink(missing_ok=True)
+        if self.made:
+            self.path.parent.rmdir()
+
+
+def other_line(d, s):
+    """A line naming the row's sshd with a key it does not hold."""
+    other = d / "other"
+    keypair(other)
+    algo, blob = other.with_suffix(".pub").read_text().split()[:2]
+    return f"[127.0.0.1]:{s.port} {algo} {blob}\n"
+
+
+def ssh_default_global():
+    """What the pinned build reads by default, from `ssh -G` (evidence)."""
+    r = subprocess.run([SSH, "-G", "-F", "none", "127.0.0.1"], capture_output=True, timeout=60)
+    got = [x for x in lines(r.stdout) if x.startswith("globalknownhostsfile ")]
+    return got[0] if got else f"ssh -G exit {r.returncode}"
+
+
+def both_connect(d, rb, rs, kh, what):
+    compare(d, f"{what}\nburrow exit {rb[0]} stdout {rb[1]!r}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}"
+               f"\nssh exit {rs[0]} stdout {rs[1]!r}\nssh stderr:\n{rs[2].decode('utf-8', 'replace')}"
+               f"\nuser file after: {kh.read_text()!r}\n")
+    check(rs[0] == 0 and rs[1] == b"ran", f"the pinned ssh: exit {rs[0]} {rs[1]!r} {tail(rs[2])}")
+    check(rb[0] == 0 and rb[1] == b"ran", f"burrow: exit {rb[0]} {rb[1]!r} {tail(rb[2])}")
+
+
+@row
+def kh_global_default():
+    """No option: a host known only in /etc/ssh/ssh_known_hosts connects."""
+    d = run_dir("kh-global-default")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        with SystemFile(SYSTEM_KH[0], s.known_hosts_line()):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "printf ran"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "printf ran"])
+    both_connect(d, rb, rs, kh, f"the host only in {SYSTEM_KH[0]}; the pinned build's {ssh_default_global()}")
+    check(kh.read_text() == "", "a line was appended to the user's file")
+    return f"the pinned build's own {ssh_default_global()}"
+
+
+@row
+def kh_global_known2():
+    d = run_dir("kh-global-known2")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        with SystemFile(SYSTEM_KH[1], s.known_hosts_line()):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "printf ran"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "printf ran"])
+    both_connect(d, rb, rs, kh, f"the host only in {SYSTEM_KH[1]}")
+
+
+@row
+def kh_global_option():
+    d = run_dir("kh-global-option")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        g = d / "global"
+        g.write_text(s.known_hosts_line())
+        args = common(s, kh, d / "id_user") + ["-o", f"GlobalKnownHostsFile={d / 'none-here'} {g}", "127.0.0.1", "printf ran"]
+        rb = burrow(d, args)
+        rs = ssh(d, args)
+    both_connect(d, rb, rs, kh, "the host only in the second file -o GlobalKnownHostsFile names")
+
+
+@row
+def kh_global_config():
+    d = run_dir("kh-global-config")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        g = d / "global"
+        g.write_text(s.known_hosts_line())
+        cfg = d / "config"
+        cfg.write_text(f"Host 127.0.0.1\n    GlobalKnownHostsFile {g}\nHost *\n    GlobalKnownHostsFile {d / 'not-this'}\n")
+        args = common(s, kh, d / "id_user") + ["127.0.0.1", "printf ran"]
+        rb = proc([str(BIN), "-F", str(cfg)] + args, env=envfor(d))
+        rs = ssh(d, args, config=str(cfg))
+    both_connect(d, rb, rs, kh, "the host only in the file a Host block's GlobalKnownHostsFile names")
+
+
+@row
+def kh_neither():
+    """The strict default holds: a host in neither file refuses."""
+    d = run_dir("kh-neither")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+        rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "true"])
+    refused(rb, "host_key_unknown")
+    return same_verdict(rb, rs, d, "the host in neither file")
+
+
+@row
+def kh_global_changed():
+    d = run_dir("kh-global-changed")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        with SystemFile(SYSTEM_KH[0], other_line(d, s)):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "true"])
+    refused(rb, "host_key_changed")
+    return same_verdict(rb, rs, d, "another key for the host in the system file only")
+
+
+@row
+def kh_user_over_global():
+    """The user's file matches, the system file holds another key: sshd(8),
+    accepted if valid information is found in either file."""
+    d = run_dir("kh-user-over-global")
+    with Server(d) as s:
+        kh = known(d, s)
+        with SystemFile(SYSTEM_KH[0], other_line(d, s)):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "printf ran"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "printf ran"])
+    both_connect(d, rb, rs, kh, "the user's file matches; the system file holds another key")
+
+
+@row
+def kh_global_over_user():
+    d = run_dir("kh-global-over-user")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        changed = other_line(d, s)
+        kh.write_text(changed)
+        with SystemFile(SYSTEM_KH[0], s.known_hosts_line()):
+            rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "printf ran"])
+            rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "printf ran"])
+    both_connect(d, rb, rs, kh, "the system file matches; the user's file holds another key")
+    check(kh.read_text() == changed, "the user's file changed")
+
+
+@row
+def kh_global_accept_new():
+    """accept-new and a host the system file knows: nothing is appended."""
+    d = run_dir("kh-global-accept-new")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        with SystemFile(SYSTEM_KH[0], s.known_hosts_line()):
+            args = common(s, kh, d / "id_user") + ["-o", "StrictHostKeyChecking=accept-new"]
+            rb = burrow(d, args + ["127.0.0.1", "printf ran"])
+            after_b = kh.read_text()
+            rs = ssh(d, args + ["-o", PAGE_DEFAULT, "127.0.0.1", "printf ran"])
+            after_s = kh.read_text()
+    both_connect(d, rb, rs, kh, "accept-new, the host only in the system file")
+    check(after_b == after_s == "", f"appended: burrow {after_b!r}, ssh {after_s!r}")
+
+
 # ---- the session ------------------------------------------------------------------
 def session_server(d, extra=()):
     return Server(d, ["AcceptEnv GIT_PROTOCOL FOO"] + list(extra))
