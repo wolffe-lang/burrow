@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""measure-server — burrowd against the pinned sshd on the same host, timed.
+
+    tools/in-container python3 -I tools/measure-server --bin target/release/burrowd
+
+Through the pinned ssh, interleaved rounds against release burrowd, the
+pinned sshd and the one-process row program (rows/burrowd-oneproc, R-bw04-2's
+(B)), all with one host key and one account:
+
+- connect to the first byte of `echo`: the wall time from starting ssh to
+  its first stdout byte, the mean of 20 logins a round, the minimum of the
+  rounds; and the server's CPU per login, from the listener's reaped
+  children (`/proc/PID/stat`'s cutime and cstime) over those 20 logins;
+- 64 MiB through `cat`: wall, and the server's CPU the same way.
+
+The ratios are held to the prediction's margins (login wall 6x, login CPU
+25x, cat wall 12x, cat CPU 50x, burrowd over sshd); (A) over (B) is
+reported. A perf step: run it with nothing beside it (the timed-rows rule).
+"""
+import argparse
+import os
+import pathlib
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+import serverlib  # noqa: E402
+from serverlib import USER  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "measure-server"
+TICK = os.sysconf("SC_CLK_TCK")
+MARGINS = {"login wall": 6.0, "login cpu": 25.0, "cat wall": 12.0, "cat cpu": 50.0}
+
+
+def children_cpu(pid):
+    """Seconds of CPU of `pid`'s reaped descendants."""
+    f = pathlib.Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+    return (int(f[13]) + int(f[14])) / TICK
+
+
+def settle(pid, before, wait=3.0):
+    """The listener's children CPU once its last connections are reaped."""
+    deadline = time.monotonic() + wait
+    last = children_cpu(pid)
+    while time.monotonic() < deadline:
+        time.sleep(0.2)
+        now = children_cpu(pid)
+        if now == last and now >= before:
+            break
+        last = now
+    return last
+
+
+def first_byte(argv, env):
+    t0 = time.monotonic()
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    b = p.stdout.read(1)
+    t = time.monotonic() - t0
+    p.communicate(timeout=60)
+    if p.returncode != 0 or b != b"x":
+        raise SystemExit(f"FAIL measure-server a login failed: exit {p.returncode}")
+    return t
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--rounds", type=int, default=5)
+    ap.add_argument("--logins", type=int, default=20)
+    ap.add_argument("--cat-rounds", type=int, default=3)
+    a = ap.parse_args()
+    bin_ = pathlib.Path(a.bin).resolve()
+    one = bin_.parent / "rows" / "burrowd-oneproc"
+    for b in (bin_, one):
+        if not b.exists():
+            print(f"FAIL setup no binary at {b}")
+            sys.exit(1)
+    oraclelib.require_oracle()
+    serverlib.ensure_accounts()
+    os.umask(0o022)
+    with serverlib.Pair(bin_, WORK / "pair") as p:
+        with serverlib.Burrowd(one, WORK / "oneproc", p.sshd.dir / "host_ed25519") as o:
+            kh = p.kh.read_text()
+            p.kh.write_text(kh + kh.splitlines()[0].replace(f"[127.0.0.1]:{p.sshd.port} ", f"[127.0.0.1]:{o.port} ") + "\n")
+            servers = {"burrowd": (p.burrowd.port, p.burrowd.proc.pid), "sshd": (p.sshd.port, p.sshd.proc.pid),
+                       "oneproc": (o.port, o.proc.pid)}
+            env = p.env()
+            argv = lambda port, cmd: [serverlib.SSH, "-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+                                      "-o", f"UserKnownHostsFile={p.kh}", "-i", str(p.key), "-p", str(port), "-l",
+                                      USER, "127.0.0.1"] + cmd
+            login = {k: [] for k in servers}
+            login_cpu = {k: [] for k in servers}
+            for r in range(a.rounds):
+                for name, (port, pid) in servers.items():
+                    before = settle(pid, 0)
+                    times = [first_byte(argv(port, ["echo", "x"]), env) for _ in range(a.logins)]
+                    after = settle(pid, before)
+                    login[name].append(sum(times) / len(times))
+                    login_cpu[name].append((after - before) / a.logins)
+                    print(f"measure-server: round {r + 1} {name:8} first byte {login[name][-1] * 1000:.1f} ms, "
+                          f"server cpu {login_cpu[name][-1] * 1000:.1f} ms a login", flush=True)
+            data = os.urandom(64 * 1024 * 1024)
+            cat = {k: [] for k in ("burrowd", "sshd")}
+            cat_cpu = {k: [] for k in ("burrowd", "sshd")}
+            for r in range(a.cat_rounds):
+                for name in ("burrowd", "sshd"):
+                    port, pid = servers[name]
+                    before = settle(pid, 0)
+                    t0 = time.monotonic()
+                    rr = serverlib.run(argv(port, ["cat"]), inp=data, env=env, timeout=600)
+                    wall = time.monotonic() - t0
+                    after = settle(pid, before)
+                    if rr[0] != 0 or rr[1] != data:
+                        print(f"FAIL measure-server cat through {name}: exit {rr[0]}")
+                        sys.exit(1)
+                    cat[name].append(wall)
+                    cat_cpu[name].append(after - before)
+                    print(f"measure-server: cat round {r + 1} {name:8} wall {wall:.2f} s, server cpu {after - before:.2f} s",
+                          flush=True)
+    m = lambda xs: min(xs)
+    ratios = {
+        "login wall": m(login["burrowd"]) / m(login["sshd"]),
+        "login cpu": m(login_cpu["burrowd"]) / max(m(login_cpu["sshd"]), 1e-6),
+        "cat wall": m(cat["burrowd"]) / m(cat["sshd"]),
+        "cat cpu": m(cat_cpu["burrowd"]) / max(m(cat_cpu["sshd"]), 1e-6),
+    }
+    print(f"measure-server: first byte: burrowd {m(login['burrowd']) * 1000:.1f} ms, sshd {m(login['sshd']) * 1000:.1f} ms, "
+          f"one process {m(login['oneproc']) * 1000:.1f} ms")
+    print(f"measure-server: server cpu a login: burrowd {m(login_cpu['burrowd']) * 1000:.1f} ms, sshd "
+          f"{m(login_cpu['sshd']) * 1000:.1f} ms, one process {m(login_cpu['oneproc']) * 1000:.1f} ms")
+    print(f"measure-server: 64 MiB cat: burrowd {m(cat['burrowd']):.2f} s (cpu {m(cat_cpu['burrowd']):.2f} s), sshd "
+          f"{m(cat['sshd']):.2f} s (cpu {m(cat_cpu['sshd']):.2f} s)")
+    print("measure-server: burrowd / sshd: " + ", ".join(f"{k} {v:.2f}x (margin {MARGINS[k]:.0f}x)" for k, v in ratios.items()))
+    ab = m(login["burrowd"]) / m(login["oneproc"])
+    abc = m(login_cpu["burrowd"]) / max(m(login_cpu["oneproc"]), 1e-6)
+    print(f"measure-server: R-bw04-2, separate processes (A) / one process (B): first byte {ab:.2f}x, server cpu {abc:.2f}x (reported)")
+    fails = 0
+    for k, v in ratios.items():
+        if v > MARGINS[k]:
+            print(f"FAIL measure-server {k} ratio {v:.2f}x over {MARGINS[k]:.0f}x")
+            fails += 1
+    sys.exit(fails)
+
+
+if __name__ == "__main__":
+    main()
