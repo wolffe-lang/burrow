@@ -3,12 +3,15 @@
 
     tools/in-container sh -c 'tools/build --static && python3 -I tools/check-static'
 
-target/static/burrow and target/static/burrow-keygen (tools/build
---static): each an x86-64 ELF executable with no program interpreter and
-no dynamic section (readelf), its sha256 printed for the px lane, and
-`burrow` run as `ssh` under two of den's rows (den-clone-uri,
+target/static/burrow, target/static/burrow-keygen and target/static/burrowd
+(tools/build --static): each an x86-64 ELF executable with no program
+interpreter and no dynamic section (readelf), its sha256 printed for the
+px lane; `burrow` run as `ssh` under two of den's rows (den-clone-uri,
 den-push-uri) against the pinned sshd, held to the pinned ssh as every
-den row is. A row prints `PASS <row>` or `FAIL <row> <why>` at column 0.
+den row is; and the static `burrowd` under three of the server rows
+(server-true, auth-accepted, session-cat-64m), held to the pinned sshd as
+every server row is. A row prints `PASS <row>` or `FAIL <row> <why>` at
+column 0.
 """
 import hashlib
 import pathlib
@@ -21,7 +24,7 @@ STATIC = ROOT / "target" / "static"
 
 def main():
     fails = 0
-    for name in ("burrow", "burrow-keygen"):
+    for name in ("burrow", "burrow-keygen", "burrowd"):
         p = STATIC / name
         if not p.exists():
             print(f"FAIL static-{name} no binary at target/static/{name}: run tools/build --static", flush=True)
@@ -48,7 +51,9 @@ def main():
         sys.exit(fails)
     r = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-den"), "--bin", str(STATIC / "burrow"),
                         "--only", "den-clone-uri", "den-push-uri"])
-    sys.exit(min(fails + r.returncode, 100))
+    s = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-server"), "--bin", str(STATIC / "burrowd"),
+                        "--only", "server-true", "auth-accepted", "session-cat-64m"])
+    sys.exit(min(fails + r.returncode + s.returncode, 100))
 
 
 if __name__ == "__main__":
