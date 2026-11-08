@@ -1,0 +1,95 @@
+//! member: true
+//!
+//! burrow.worker — burrowd's worker: the unprivileged process that parses
+//! every byte a client sends before authentication (R-bw04-2). After
+//! `transport.serve` it runs the service request (RFC 4253 §10:
+//! `ssh-userauth` only) and authentication (RFC 4252, `src/sauth`),
+//! asking the monitor, over two pipes, what only the monitor may decide:
+//! whether a key is authorized for the user (`query`) and whether a
+//! signature verifies over the session identifier the monitor signed
+//! (`verify`). It holds no host key, reads no user's file, and cannot
+//! become anyone.
+
+use std.fs
+use pipe
+use refuse
+use sauth
+use transport
+use wire
+
+/// Who authenticated, with which key.
+pub struct Authed {
+    user: str,
+    blob: List[byte],
+}
+
+fn ask(
+    mut to: fs.File,
+    mut from: fs.File,
+    kind: int,
+    fields: List[List[byte]],
+) -> bool ! refuse.Refusal {
+    pipe.send(mut to, kind, fields) else { return io }
+    let got = pipe.receive(mut from) else { return io }
+    if got.kind != pipe.k_answer() || got.fields.len != 1 || got.fields[0].len != 1 {
+        return io
+    }
+    got.fields[0][0] as int == 1
+}
+
+/// The service request, then authentication, until a user is
+/// authenticated or the connection is refused by name
+/// (`service_refused`, `auth_changed`, `auth_tries_exceeded`,
+/// `message_unexpected` for a connection message before it, and the
+/// transport's). USERAUTH_SUCCESS is sent before this returns.
+pub fn authenticate(
+    mut c: transport.Conn,
+    mut st: sauth.State,
+    mut to: fs.File,
+    mut from: fs.File,
+) -> Authed ! refuse.Refusal {
+    let first = transport.next(mut c)?
+    if transport.kind(first) != refuse.msg_service_request() {
+        transport.note(mut c, "message {transport.kind(first)} where the service request belongs")
+        return message_unexpected
+    }
+    var r = wire.reader(first[1..first.len])
+    let service = wire.read_utf8(mut r) else { return malformed }
+    if service != "ssh-userauth" || !wire.at_end(r) {
+        transport.note(mut c, "the client asked for the service {service}")
+        return service_refused
+    }
+    transport.send(mut c, sauth.service_accept_msg(service))?
+    loop {
+        let p = transport.next(mut c)?
+        let t = transport.kind(p)
+        if t != refuse.msg_userauth_request() {
+            transport.note(mut c, "message {t} before authentication")
+            return message_unexpected
+        }
+        let q = sauth.parse(p)?
+        transport.note(mut c, "the user or service changed between requests")
+        let d = sauth.decide(mut st, q)?
+        if d == "query" {
+            var f = List[List[byte]]()
+            (mut f).push(wire.bytes_of(q.user))
+            (mut f).push(copy q.blob)
+            if ask(mut to, mut from, pipe.k_query(), f)? {
+                transport.send(mut c, sauth.pk_ok_msg(q.alg, q.blob))?
+                continue
+            }
+        } else if d == "verify" {
+            var f = List[List[byte]]()
+            (mut f).push(wire.bytes_of(q.user))
+            (mut f).push(copy q.blob)
+            (mut f).push(copy q.sig)
+            if ask(mut to, mut from, pipe.k_verify(), f)? {
+                transport.send(mut c, sauth.success_msg())?
+                return Authed { user: q.user, blob: copy q.blob }
+            }
+        }
+        transport.note(mut c, "{st.failures + 1} failed attempts, MaxAuthTries {st.max_tries}")
+        sauth.failed(mut st, q)?
+        transport.send(mut c, sauth.failure_msg())?
+    }
+}

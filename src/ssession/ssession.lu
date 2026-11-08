@@ -1,0 +1,381 @@
+//! member: true
+//!
+//! burrow.ssession — burrowd's session, as the authenticated user: the
+//! connection protocol on one `session` channel (`src/schannel`), and the
+//! one command it runs, until the channel closes.
+//!
+//! **The command** runs as `sshd(8)` describes (LOGIN PROCESS): the user's
+//! login shell with `-c` and the command, in the user's home directory, with
+//! the environment the caller built (HOME, USER, LOGNAME, SHELL, PATH,
+//! MAIL, SSH_CONNECTION, SSH_ORIGINAL_COMMAND under a forced command) and
+//! the `env` names the channel accepted. It is a `fork` of this process
+//! followed by `exec`, so it holds nothing of burrowd's. Its stdin, stdout
+//! and stderr are three pipes; the stdin end is non-blocking, so a command
+//! that does not read never stalls the connection, and burrowd's window
+//! gives back only what the command has read. When `/etc/nologin` exists
+//! the command is not run: its text goes to stderr and the status is 1
+//! (LOGIN PROCESS, step 3; root, who could pass, never logs in).
+//!
+//! **Waiting.** wolf-std at the pin has no one wait over a socket and
+//! files (wolf-std#134): an idle turn waits up to 5 ms on the socket, then
+//! up to 5 ms on the command's pipes and its end (SIGCHLD). A turn that
+//! moved bytes waits on neither.
+//!
+//! **The end** (RFC 4254 §5.3, §6.10): the command's stdout and stderr both
+//! at their end, EOF; the command reaped, `exit-status` (or `exit-signal`),
+//! then CLOSE; the client's CLOSE answered once. A client that closes
+//! first leaves the command to finish on its own.
+
+use std.env
+use std.fs
+use std.net
+use std.process
+use std.signal
+use pipe
+use refuse
+use schannel
+use transport
+
+/// What the session runs, and as whom.
+pub struct Plan {
+    shell: str,
+    argv0: str,
+    home: str,
+    command: str,
+    forced: bool,
+    env: List[str],
+    verbose: int,
+}
+
+/// How the session ended, for the log: `status N`, `signal NAME` or
+/// `status -`, and the refusals by name.
+pub struct Result {
+    status: str,
+    refused: List[str],
+}
+
+/// The command's process and pipes.
+struct Running {
+    child: process.Child,
+    running: bool,
+    stdin: fs.File,
+    stdout: fs.File,
+    stderr: fs.File,
+    in_open: bool,
+    out_eof: bool,
+    err_eof: bool,
+    status: int,
+}
+
+fn say(p: Plan, msg: str) {
+    if p.verbose > 0 && msg.len > 0 {
+        eprint("debug1: {msg}")
+    }
+}
+
+fn none_running() -> Running {
+    Running {
+        child: process.Child { slot: -1 },
+        running: false,
+        stdin: fs.File { fd: -1 },
+        stdout: fs.File { fd: -1 },
+        stderr: fs.File { fd: -1 },
+        in_open: false,
+        out_eof: true,
+        err_eof: true,
+        status: -1,
+    }
+}
+
+// The command's process, forked and exec'd with its three pipes.
+fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
+    let pin = process.pipe() else { return io }
+    let pout = process.pipe() else { return io }
+    let perr = process.pipe() else { return io }
+    var envs = copy plan.env
+    for e in schannel.environment(ch) {
+        (mut envs).push(e)
+    }
+    if plan.forced {
+        let original = str_from_utf8(ch.command) else ""
+        (mut envs).push("SSH_ORIGINAL_COMMAND={original}")
+    }
+    let asked = str_from_utf8(ch.command) else ""
+    let command = if plan.forced then plan.command else asked
+    let f = process.fork() else { return io }
+    if process.is_child(f) {
+        var errf = copy perr.write
+        signal.reset(signal.broken_pipe()) else {}
+        env.set_cwd(plan.home) else {
+            fs.write(
+                mut errf,
+                "Could not chdir to home directory {plan.home}: No such file or directory\n",
+            ) else {}
+            env.set_cwd("/") else {}
+        }
+        var argv = List[str]()
+        (mut argv).push(plan.argv0)
+        (mut argv).push("-c")
+        (mut argv).push(command)
+        var c = process.from_argv(argv)
+        process.set_stdin(mut c, copy pin.read)
+        process.set_stdout(mut c, copy pout.write)
+        process.set_stderr(mut c, copy perr.write)
+        os_exec(plan.shell, c.argv, envs, c.fds) else {}
+        fs.write(mut errf, "{plan.shell}: cannot be executed\n") else {}
+        process.exit(1)
+    }
+    var r = copy pin.read
+    fs.close(take r) else {}
+    var w1 = copy pout.write
+    fs.close(take w1) else {}
+    var w2 = copy perr.write
+    fs.close(take w2) else {}
+    var w = copy pin.write
+    fs.set_nonblock(mut w, true) else {}
+    Running {
+        child: copy f.child,
+        running: true,
+        stdin: w,
+        stdout: copy pout.read,
+        stderr: copy perr.read,
+        in_open: true,
+        out_eof: false,
+        err_eof: false,
+        status: -1,
+    }
+}
+
+fn sock_ready(c: transport.Conn, ms: int) -> bool ! refuse.Refusal {
+    if transport.buffered(c) {
+        return true
+    }
+    var fds = List[int]()
+    (mut fds).push(transport.sock_fd(c))
+    let ready = net.wait(fds, ms) else { return io }
+    ready.len > 0
+}
+
+// The command's output files still open, in order: stdout, stderr.
+fn outputs(pr: Running) -> List[fs.File] {
+    var out = List[fs.File]()
+    if !pr.out_eof {
+        (mut out).push(copy pr.stdout)
+    }
+    if !pr.err_eof {
+        (mut out).push(copy pr.stderr)
+    }
+    out
+}
+
+fn reap(mut pr: Running) -> () ! refuse.Refusal {
+    if !pr.running {
+        return
+    }
+    // An end by a signal is -N, or -(256 + N) with a core (`poll_core`).
+    let cc = process.poll_core() else { return io }
+    if cc.change.changed {
+        let v = cc.change.status.value
+        pr.status = if v < 0 && cc.core then v - 256 else v
+        pr.running = false
+    }
+}
+
+fn status_text(v: int) -> str {
+    if v >= 0 {
+        return "status {v}"
+    }
+    let n = if v <= -256 then -v - 256 else -v
+    let name = schannel.signal_name(n)
+    if name == "" then "signal {n}" else "signal {name}"
+}
+
+/// What the turns of a session carry between them.
+struct Flow {
+    started: bool,
+    close_in: bool,
+}
+
+// One turn: a message from the client if one is there, the command's
+// input as far as its pipe takes it, its output within the client's
+// window, its end; `moved` says whether any byte moved.
+fn turn_once(
+    mut c: transport.Conn,
+    mut ch: schannel.Chan,
+    mut pr: Running,
+    mut pending: List[byte],
+    mut flow: Flow,
+    plan: Plan,
+    nologin: str,
+) -> bool ! refuse.Refusal {
+    var moved = false
+    if sock_ready(c, 0)? {
+        let p = transport.next(mut c)?
+        let s = schannel.on(mut ch, p)?
+        say(plan, s.info)
+        for r in s.replies {
+            transport.write(mut c, r)?
+        }
+        if s.start && nologin != "" {
+            if s.want_reply {
+                transport.write(mut c, schannel.success_msg(ch))?
+            }
+            transport.write(mut c, schannel.start_msg(mut ch))?
+            let text = wire_bytes(nologin)
+            if text.len <= schannel.room(ch) {
+                transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
+            }
+            flow.started = true
+            pr.status = 1
+        } else if s.start {
+            var ok = true
+            let got = start_command(plan, ch) else |e| {
+                ok = false
+                say(plan, "exec_failed: {e}")
+                none_running()
+            }
+            if s.want_reply {
+                let answer = if ok then schannel.success_msg(ch) else schannel.failure_msg(ch)
+                transport.write(mut c, answer)?
+            }
+            if ok {
+                pr.child = copy got.child
+                pr.running = true
+                pr.stdin = copy got.stdin
+                pr.stdout = copy got.stdout
+                pr.stderr = copy got.stderr
+                pr.in_open = true
+                pr.out_eof = false
+                pr.err_eof = false
+                flow.started = true
+                transport.write(mut c, schannel.start_msg(mut ch))?
+            }
+        }
+        for b in s.input {
+            (mut pending).push(b)
+        }
+        if s.close_input {
+            flow.close_in = true
+        }
+        moved = true
+    }
+    // The command's input: as much as its pipe takes now.
+    if pr.in_open && pending.len > 0 {
+        let n = fs.write_some(mut pr.stdin, pending) else |e| match e {
+            busy => 0,
+            _ => {
+                // The command closed its input: what it would have read is dropped.
+                pr.in_open = false
+                pending.len
+            },
+        }
+        if n > 0 {
+            pipe.drop_front(mut pending, n)
+            schannel.consumed(mut ch, n)
+            let adj = schannel.adjust_msg(mut ch)
+            if adj.len > 0 {
+                transport.write(mut c, adj)?
+            }
+            moved = true
+        }
+    } else if !pr.in_open && pending.len > 0 {
+        schannel.consumed(mut ch, pending.len)
+        (mut pending).reset()
+    }
+    if pr.in_open && flow.close_in && pending.len == 0 {
+        var w = copy pr.stdin
+        fs.close(take w) else {}
+        pr.in_open = false
+    }
+    // The command's output, within the client's window.
+    let room = schannel.room(ch)
+    if flow.started && room > 0 {
+        let outs = outputs(pr)
+        if outs.len > 0 {
+            let w = signal.wait_fds(outs, signal.child(), 0) else { return io }
+            if w.ready >= 0 {
+                let is_out = !pr.out_eof && w.ready == 0
+                var f = if is_out then copy pr.stdout else copy pr.stderr
+                var eof = false
+                let got = fs.read_chunk(mut f, room) else {
+                    eof = true
+                    List[byte]()
+                }
+                if eof || got.len == 0 {
+                    if is_out {
+                        pr.out_eof = true
+                    } else {
+                        pr.err_eof = true
+                    }
+                    fs.close(take f) else {}
+                } else {
+                    transport.write(mut c, schannel.data_msg(mut ch, if is_out then 0 else 1, got))?
+                }
+                moved = true
+            }
+        }
+    }
+    reap(mut pr)?
+    // The end: EOF once the output has ended, then the status and CLOSE.
+    if flow.started && pr.out_eof && pr.err_eof && !pr.running && !ch.got_close && !ch.sent_close {
+        if !ch.sent_eof {
+            transport.write(mut c, schannel.eof_msg(mut ch))?
+        }
+        let v = pr.status
+        if v >= 0 {
+            transport.write(mut c, schannel.exit_status_msg(ch, v))?
+        } else {
+            let n = if v <= -256 then -v - 256 else -v
+            let name = schannel.signal_name(n)
+            transport.write(
+                mut c,
+                schannel.exit_signal_msg(ch, if name == "" then "{n}" else name, v <= -256),
+            )?
+        }
+        transport.write(mut c, schannel.close_msg(mut ch))?
+        moved = true
+    }
+    if !moved {
+        if !sock_ready(c, 5)? && flow.started && (pr.running || outputs(pr).len > 0) {
+            let _ = signal.wait_fds(outputs(pr), signal.child(), 5) else { return io }
+        }
+    }
+    moved
+}
+
+/// Serves the channel until it closes. Returns the command's end.
+pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result ! refuse.Refusal {
+    signal.listen(signal.child()) else { return io }
+    signal.ignore(signal.broken_pipe()) else {}
+    var pr = none_running()
+    var pending = List[byte]()
+    var flow = Flow { started: false, close_in: false }
+    var nologin = ""
+    if fs.exists("/etc/nologin") {
+        nologin = fs.read_text("/etc/nologin") else "/etc/nologin exists\n"
+    }
+    while !schannel.done(ch) {
+        region turn {
+            let _ = turn_once(mut c, mut ch, mut pr, mut pending, mut flow, plan, nologin)?
+        }
+    }
+    // Packets already whole after both CLOSEs are still read, so data after
+    // the client's CLOSE is refused by name rather than dropped unseen.
+    loop {
+        let p = transport.try_next(mut c)?
+        if p.len == 0 {
+            break
+        }
+        let _ = schannel.on(mut ch, p)?
+    }
+    let st = if flow.started then status_text(pr.status) else "status -"
+    Result { status: st, refused: schannel.refusals(ch) }
+}
+
+fn wire_bytes(s: str) -> List[byte] {
+    var out = List[byte]()
+    for b in s.bytes() {
+        (mut out).push(b)
+    }
+    out
+}
