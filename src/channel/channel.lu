@@ -7,7 +7,10 @@
 //! initial window of 2 MiB and a maximum packet of 32768 (§5.1). Then
 //! `env` requests (want reply FALSE, §6.4) and one `exec` with want reply
 //! TRUE (§6.5), whose `CHANNEL_SUCCESS` or `CHANNEL_FAILURE`
-//! (`exec_refused`) is awaited before any input is sent.
+//! (`exec_refused`) is awaited before any input is sent. With no command,
+//! one `shell` request instead (§6.5, want reply TRUE, no `pty-req` before
+//! it: burrow allocates no pseudo-terminal), awaited the same way
+//! (`shell_refused`).
 //!
 //! **Windows** (§5.2): burrow sends no more than the server's window and
 //! maximum packet allow, and adjusts its own window by what it has written
@@ -62,6 +65,7 @@ pub struct Chan {
     consumed: int,
     exec_wanted: bool,
     exec_ok: bool,
+    shell: bool,
     sent_eof: bool,
     got_eof: bool,
     sent_close: bool,
@@ -93,6 +97,7 @@ pub fn sized(window: int, max: int) -> Chan {
         consumed: 0,
         exec_wanted: false,
         exec_ok: false,
+        shell: false,
         sent_eof: false,
         got_eof: false,
         sent_close: false,
@@ -153,6 +158,14 @@ pub fn exec_msg(mut ch: Chan, command: List[byte]) -> List[byte] {
     var p = request_head(ch, "exec", true)
     wire.put_string(mut p, command)
     p
+}
+
+/// The `shell` request (§6.5), want reply TRUE: the user's default shell,
+/// with no pseudo-terminal. It is the one request outstanding, as `exec`.
+pub fn shell_msg(mut ch: Chan) -> List[byte] {
+    ch.exec_wanted = true
+    ch.shell = true
+    request_head(ch, "shell", true)
 }
 
 /// How many bytes burrow may send in one data message now.
@@ -380,13 +393,18 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
         }
         return s
     }
-    // CHANNEL_SUCCESS or CHANNEL_FAILURE: only burrow's exec asked for one.
+    // CHANNEL_SUCCESS or CHANNEL_FAILURE: only burrow's exec or shell
+    // asked for one.
     if !ch.exec_wanted {
         note(mut ch, "message {t} with no request outstanding")
         return message_unexpected
     }
     ch.exec_wanted = false
     if t == refuse.msg_channel_failure() {
+        if ch.shell {
+            note(mut ch, "the server refused the shell request")
+            return shell_refused
+        }
         note(mut ch, "the server refused the exec request")
         return exec_refused
     }
