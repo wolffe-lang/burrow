@@ -1,0 +1,207 @@
+//! member: false
+
+// B5: burrowd's session channel. The messages it builds are vectorgen's;
+// the client's requests are answered as the module says, refusals by name;
+// windows both ways; EOF and CLOSE in either order.
+use kexvec
+use schannel
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn step(mut ch: schannel.Chan, p: List[byte]) -> schannel.Step {
+    schannel.on(mut ch, p) else |e| {
+        return schannel.Step {
+            replies: List[List[byte]](),
+            input: List[byte](),
+            start: false,
+            want_reply: false,
+            close_input: false,
+            info: "refused {e}",
+        }
+    }
+}
+
+fn why(mut ch: schannel.Chan, p: List[byte]) -> str {
+    let _ = schannel.on(mut ch, p) else |e| {
+        return "{e}"
+    }
+    "ok"
+}
+
+fn open(kind: str, sender: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, 90)
+    wire.put_text(mut p, kind)
+    wire.put_u32(mut p, sender)
+    wire.put_u32(mut p, 65536)
+    wire.put_u32(mut p, 16384)
+    p
+}
+
+fn request(kind: str, want: bool) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, 98)
+    wire.put_u32(mut p, 0)
+    wire.put_text(mut p, kind)
+    wire.put_bool(mut p, want)
+    p
+}
+
+fn data(n: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, 94)
+    wire.put_u32(mut p, 0)
+    var d = List[byte]()
+    var i = 0
+    while i < n {
+        (mut d).push((i % 256) as byte)
+        i += 1
+    }
+    wire.put_string(mut p, d)
+    p
+}
+
+fn main() {
+    // The messages, byte for byte.
+    var ch = schannel.new()
+    let s = step(mut ch, open("session", 0))
+    assert(s.replies.len == 1 && wire.hex(s.replies[0]) == kexvec.srv_chan_confirm())
+    assert(wire.hex(schannel.exit_status_msg(ch, 127)) == kexvec.srv_exit_status())
+    assert(wire.hex(schannel.exit_signal_msg(ch, "TERM", false)) == kexvec.srv_exit_signal())
+    assert(wire.hex(schannel.open_failure_msg(1)) == kexvec.srv_open_failure())
+    // A second session, any other channel type: refused by name.
+    let second = step(mut ch, open("session", 1))
+    assert(wire.hex(second.replies[0]) == kexvec.srv_open_failure())
+    let fwd = step(mut ch, open("direct-tcpip", 1))
+    assert(
+        second.replies.len == 1 &&
+            fwd.replies.len == 1 &&
+            schannel.refusals(ch)[0] == "session_limit" &&
+            schannel.refusals(ch)[1] == "channel_type_refused",
+    )
+    // Data before the command runs is past burrowd's window (0).
+    var early = schannel.new()
+    let _ = step(mut early, open("session", 0))
+    assert(why(mut early, data(1)) == "window_exceeded")
+    // env: GIT_PROTOCOL only, before exec; others refused by name.
+    var env = request("env", true)
+    wire.put_text(mut env, "GIT_PROTOCOL")
+    wire.put_text(mut env, "version=2")
+    let e1 = step(mut ch, env)
+    assert(
+        e1.replies.len == 1 &&
+            e1.replies[0][0] as int == 99 &&
+            schannel.environment(ch).len == 1 &&
+            schannel.environment(ch)[0] == "GIT_PROTOCOL=version=2",
+    )
+    var lang = request("env", false)
+    wire.put_text(mut lang, "LANG")
+    wire.put_text(mut lang, "C.UTF-8")
+    let e2 = step(mut ch, lang)
+    assert(
+        e2.replies.len == 0 &&
+            schannel.environment(ch).len == 1 &&
+            schannel.refusals(ch)[2] == "env_refused",
+    )
+    // pty-req, shell, subsystem, x11-req, the agent: CHANNEL_FAILURE, named.
+    let pty = step(mut ch, request("pty-req", true))
+    assert(
+        pty.replies.len == 1 &&
+            pty.replies[0][0] as int == 100 &&
+            schannel.refusals(ch)[3] == "pty_refused",
+    )
+    let _ = step(mut ch, request("shell", true))
+    let _ = step(mut ch, request("subsystem", true))
+    let _ = step(mut ch, request("x11-req", false))
+    let _ = step(mut ch, request("auth-agent-req@openssh.com", false))
+    assert(
+        schannel.refusals(ch)[4] == "shell_refused" &&
+            schannel.refusals(ch)[5] == "subsystem_refused",
+    )
+    assert(schannel.refusals(ch)[6] == "x11_refused" && schannel.refusals(ch)[7] == "agent_refused")
+    // A global forward request.
+    var g = List[byte]()
+    wire.put_u8(mut g, 80)
+    wire.put_text(mut g, "tcpip-forward")
+    wire.put_bool(mut g, true)
+    let gs = step(mut ch, g)
+    assert(
+        gs.replies.len == 1 &&
+            gs.replies[0][0] as int == 82 &&
+            schannel.refusals(ch)[8] == "forward_refused",
+    )
+    // exec: the command, then the window opens; a second exec is refused.
+    var ex = request("exec", true)
+    wire.put_text(mut ex, "cat")
+    let es = step(mut ch, ex)
+    assert(es.start && es.want_reply && wire.hex(ch.command) == wire.hex(wire.bytes_of("cat")))
+    let adj = schannel.start_msg(mut ch)
+    assert(adj[0] as int == 93 && ch.lwin == 2097152)
+    var ex2 = request("exec", true)
+    wire.put_text(mut ex2, "id")
+    let es2 = step(mut ch, ex2)
+    assert(
+        !es2.start && es2.replies[0][0] as int == 100 && schannel.refusals(ch)[9] == "exec_twice",
+    )
+    // env after the command started is refused.
+    var late = request("env", false)
+    wire.put_text(mut late, "GIT_PROTOCOL")
+    wire.put_text(mut late, "version=1")
+    let _ = step(mut ch, late)
+    assert(schannel.environment(ch).len == 1)
+    // Input flows within burrowd's window and is given back at half.
+    let d1 = step(mut ch, data(32768))
+    assert(d1.input.len == 32768 && ch.lwin == 2097152 - 32768)
+    assert(why(mut ch, data(32769)) == "channel_packet_too_large")
+    schannel.consumed(mut ch, 32768)
+    assert(schannel.adjust_msg(mut ch).len == 0)
+    var k = 0
+    while k < 31 {
+        let _ = step(mut ch, data(32768))
+        schannel.consumed(mut ch, 32768)
+        k += 1
+    }
+    let back = schannel.adjust_msg(mut ch)
+    assert(back.len == 9 && ch.lwin == 2097152 && ch.consumed == 0)
+    // Output within the client's window (65536) and maximum packet (16384).
+    assert(schannel.room(ch) == 16384)
+    var out = List[byte]()
+    var i = 0
+    while i < 16384 {
+        (mut out).push(7 as byte)
+        i += 1
+    }
+    let m = schannel.data_msg(mut ch, 1, out)
+    assert(m[0] as int == 95 && ch.rwin == 65536 - 16384)
+    // EOF from the client ends the command's input; data after it is refused.
+    let eof = step(mut ch, x("6000000000"))
+    assert(eof.close_input)
+    assert(why(mut ch, data(1)) == "channel_closed")
+    // CLOSE is answered once, whichever came first.
+    let close = step(mut ch, x("6100000000"))
+    assert(close.replies.len == 1 && close.replies[0][0] as int == 97 && schannel.done(ch))
+    var other = schannel.new()
+    let _ = step(mut other, open("session", 5))
+    let _ = schannel.close_msg(mut other)
+    let c2 = step(mut other, x("6100000000"))
+    assert(c2.replies.len == 0 && schannel.done(other))
+    // A message for a channel burrowd did not confirm; an adjustment past 2^32 − 1.
+    var none = schannel.new()
+    assert(why(mut none, data(1)) == "channel_unknown")
+    var big = List[byte]()
+    wire.put_u8(mut big, 93)
+    wire.put_u32(mut big, 0)
+    wire.put_u32(mut big, 4294967295)
+    var w2 = schannel.new()
+    let _ = step(mut w2, open("session", 0))
+    assert(why(mut w2, big) == "window_overflow")
+    // The signal names exit-signal carries.
+    assert(
+        schannel.signal_name(15) == "TERM" &&
+            schannel.signal_name(9) == "KILL" &&
+            schannel.signal_name(10) == "",
+    )
+}
