@@ -67,6 +67,11 @@ fn main() {
     assert(a.identities.len == 1 && a.identities[0] == "/home/u/.ssh/id_ed25519")
     assert(a.known_hosts.len == 2 && a.known_hosts[0] == "/home/u/.ssh/known_hosts")
     assert(a.known_hosts[1] == "/home/u/.ssh/known_hosts2")
+    // The system files after the user's (ssh_config(5), GlobalKnownHostsFile).
+    assert(a.global_known_hosts.len == 2)
+    assert(a.global_known_hosts[0] == "/etc/ssh/ssh_known_hosts")
+    assert(a.global_known_hosts[1] == "/etc/ssh/ssh_known_hosts2")
+    assert(!a.no_tty)
     // Shapes 2 and 3: a port, and user@host.
     let b = ready(den_argv("2222", "git@example.test"), "")
     assert(b.refusal == "" && b.port == 2222 && b.user == "git" && b.host == "example.test")
@@ -78,6 +83,7 @@ fn main() {
     assert(c.refusal == "" && c.user == "me" && c.verbose == 2)
     assert(c.identities.len == 2 && c.identities[0] == "/home/u/k1" && c.identities[1] == "/abs/k2")
     assert(config.remote_command(c) == "echo a b")
+    assert(c.no_tty)
     assert(ready(["-l", "me", "git@h.test", "x"], "").user == "me")
     assert(ready(["-o", "RekeyLimit=1G", "h", "x"], "").rekey_bytes == 1073741824)
     let d = ready(["ssh://git@h.test:2200", "true"], "")
@@ -118,6 +124,21 @@ fn main() {
             f.known_hosts[1] == "/etc/kh2",
     )
     assert(f.send_env.len == 2 && f.send_env[0] == "LANG" && f.send_env[1] == "GIT_*")
+    // The global files: -o first, then the config; ~/ expanded; a
+    // UserKnownHostsFile leaves them be.
+    let gk = ready(["-o", "GlobalKnownHostsFile=/srv/kh ~/sys", "h.test", "x"], text)
+    assert(gk.refusal == "" && gk.known_hosts.len == 2 && gk.known_hosts[0] == "/home/u/.ssh/kh test")
+    assert(
+        gk.global_known_hosts.len == 2 &&
+            gk.global_known_hosts[0] == "/srv/kh" &&
+            gk.global_known_hosts[1] == "/home/u/sys",
+    )
+    let gc = ready(
+        ["h.test", "x"],
+        "Host h.test\n  GlobalKnownHostsFile /one\nHost *\n  GlobalKnownHostsFile /two\n",
+    )
+    assert(gc.refusal == "" && gc.global_known_hosts.len == 1 && gc.global_known_hosts[0] == "/one")
+    assert(gc.known_hosts.len == 2 && gc.known_hosts[0] == "/home/u/.ssh/known_hosts")
     let g = ready(["bad.test", "true"], text)
     assert(g.refusal == "" && g.port == 2299 && g.user == "localuser")
     // Hostname, HostKeyAlias, SetEnv, RekeyLimit, the strictness words.
@@ -149,6 +170,10 @@ fn main() {
     // No strict-kex waiver on any tier: B1's flag is an unknown option.
     assert(refused(["--no-strict-kex", "h", "x"], "", "option_unknown", "unknown option -- -"))
     assert(refused(["-t", "h", "x"], "", "option_unsupported", ""))
+    assert(refused(["-t", "h"], "", "option_unsupported", ""))
+    // No pty before B7: RequestTTY is refused by name, whatever its value.
+    assert(refused(["-o", "RequestTTY=no", "h"], "", "option_unsupported", ""))
+    assert(refused(["h"], "Host *\n  RequestTTY yes\n", "config_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
     assert(
@@ -189,5 +214,5 @@ fn main() {
     )
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
-    print("config: den's argv shapes, ssh's flags, Host and Match host, 18 refusals")
+    print("config: den's argv shapes, ssh's flags, Host and Match host, the global known_hosts, 21 refusals")
 }
