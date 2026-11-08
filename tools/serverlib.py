@@ -102,6 +102,7 @@ class Burrowd:
         self.config = list(config)
         self.port = port or free_port()
         self.proc = None
+        self.skip = 0
 
     def __enter__(self):
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -124,6 +125,12 @@ class Burrowd:
                 time.sleep(0.05)
         else:
             raise RuntimeError("burrowd did not listen within 15 s")
+        # The probe above is a connection too, logged when its monitor ends:
+        # wait for its line, then leave it out of conn_lines.
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not self._lines():
+            time.sleep(0.05)
+        self.skip = len(self._lines())
         return self
 
     def __exit__(self, *exc):
@@ -147,12 +154,15 @@ class Burrowd:
             pass
         return (self.dir / "burrowd.log").read_bytes().decode("utf-8", "replace")
 
+    def _lines(self):
+        return [x for x in self.log_text().splitlines() if " from " in x]
+
     def conn_lines(self, settle=3.0):
-        """The per-connection log lines (` from `), once the monitors have
-        written them."""
+        """The per-connection log lines (` from `) after the readiness
+        probe's, once the monitors have written them."""
         deadline = time.monotonic() + settle
         while True:
-            got = [x for x in self.log_text().splitlines() if " from " in x]
+            got = self._lines()[self.skip:]
             if got or time.monotonic() > deadline:
                 return got
             time.sleep(0.1)
