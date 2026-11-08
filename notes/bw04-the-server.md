@@ -545,7 +545,28 @@ their modules), but the hostile rows themselves were written after the
 server (`a3395fc`). So each was then seen red against burrowd with its one
 check removed: a take that builds one mutant per check from the checkout,
 never committed, runs that check's rows, and then the clean build's rows
-(`mutants-inner.sh` in the lane's rig; its result below).
+(`mutants-inner.sh` in the lane's rig, at `cba3519`, before the rebase
+onto the trunk that took the client's shell with no pty; the server's code
+the rebase brought no change to). Every mutant was red at its rows:
+
+| mutant: the one check removed | red |
+|---|---|
+| LoginGraceTime ignored (the worker's deadline and the monitor's) | `hostile-never-kex`: the connection ended after 10.0 s, wanted about 2 |
+| the strict-kex refusal | `hostile-no-strict-kex`: no DISCONNECT; the exchange went on to EXT_INFO |
+| the 262144-byte packet bound, four times larger | `hostile-oversize-packet`: no DISCONNECT |
+| any 64-byte signature accepted | `hostile-wrong-session`, `hostile-other-key`: USERAUTH_SUCCESS |
+| a message before authentication skipped | `hostile-exec-before-auth`: no DISCONNECT |
+| a changed user adopted | `hostile-user-changed`: USERAUTH_FAILURE, no DISCONNECT |
+| data for a channel not yet confirmed | `hostile-data-before-open`: refused as `window_exceeded`, not `channel_unknown` |
+| 4 MiB more than burrowd's window | `hostile-data-before-exec`, `hostile-window-overrun`: no DISCONNECT |
+| MaxStartups never drops | `hostile-thousand`: 808 monitors at once, past 100 |
+
+The clean build's rows in that take had four red, all the harness's: three
+read the readiness probe's log line (`outcome closed`) before the row's
+own, and `hostile-no-strict-kex` lost the DISCONNECT that the scripted
+client's `kex()` had read while waiting for the ECDH reply. The probe's line
+is now left out (`serverlib`), and the client keeps every message it
+receives (`fakeclient`).
 
 **macOS** (`tools/check-server-local` at `7aa1faa`, on the 8-core laptop):
 10 rows, all passed: a command and both streams byte for byte, exit codes,
