@@ -121,11 +121,12 @@ def hostile_no_strict_kex():
         c = FakeClient(s.port)
         try:
             c.kex(strict=False)
-            got = c.until_end()
+            c.until_end()
         except (ValueError, EOFError, OSError):
-            got = c.until_end()
+            c.until_end()
         c.close()
-        note = refused(got, 3, "strict_kex_missing")
+        # The DISCONNECT arrives where kex() waits for the ECDH reply.
+        note = refused(c.received, 3, "strict_kex_missing")
         s.outcome("strict_kex_missing")
         return note
 

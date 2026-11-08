@@ -43,6 +43,14 @@ class FakeClient:
         self.s = socket.create_connection(("127.0.0.1", port), timeout=timeout)
         self.w = Wire(self.s)
         self.session_id = None
+        # Every message received, as (type, payload), whichever step read
+        # it: a DISCONNECT that ends kex() early is still the row's to see.
+        self.received = []
+
+    def _recv(self):
+        p = self.w.recv()
+        self.received.append((p[0], p))
+        return p
 
     def close(self):
         try:
@@ -56,13 +64,13 @@ class FakeClient:
         kexl = ["curve25519-sha256"] + (["ext-info-c"] if ext_info else []) + (["kex-strict-c-v00@openssh.com"] if strict else [])
         i_c = v.kexinit(os.urandom(16), kexl, ["ssh-ed25519"], ["chacha20-poly1305@openssh.com"], ["hmac-sha2-256"], ["none"])
         self.w.send(i_c)
-        i_s = self.w.recv()
+        i_s = self._recv()
         if i_s[0] != 20:
             raise ValueError(f"message {i_s[0]} instead of KEXINIT")
         secret = os.urandom(32)
         q_c = v.x25519_base(secret)
         self.w.send(bytes([30]) + string(q_c))
-        reply = self.w.recv()
+        reply = self._recv()
         if reply[0] != 31:
             raise ValueError(f"message {reply[0]} instead of KEX_ECDH_REPLY")
         r = Reader(reply[1:])
@@ -73,7 +81,7 @@ class FakeClient:
                            + string(q_c) + string(q_s) + k_mp).digest()
         self.session_id = h
         self.w.send(bytes([21]))
-        if self.w.recv() != bytes([21]):
+        if self._recv() != bytes([21]):
             raise ValueError("no NEWKEYS from the server")
         self.w.tx_key, self.w.rx_key = v.derive(k_mp, h, b"C", h, 64), v.derive(k_mp, h, b"D", h, 64)
         self.w.tx_seq = self.w.rx_seq = 0
@@ -83,7 +91,7 @@ class FakeClient:
     def recv(self):
         """The next message, skipping EXT_INFO and global requests."""
         while True:
-            p = self.w.recv()
+            p = self._recv()
             if p[0] in (7, 80, 2):
                 continue
             return p
@@ -129,7 +137,7 @@ class FakeClient:
         got = []
         try:
             while True:
-                p = self.w.recv()
+                p = self._recv()
                 got.append((p[0], p))
                 if p[0] == 1:
                     break
