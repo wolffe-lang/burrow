@@ -1103,6 +1103,22 @@ def shell_no_tty_pipe():
 
 
 @row
+def shell_no_tty_when():
+    """When the pseudo-terminal line comes: with nothing listening, both
+    clients print it, or neither does."""
+    d = run_dir("shell-no-tty-when")
+    port = oraclelib.free_port()
+    rb = burrow(d, ["-p", str(port), "127.0.0.1"])
+    rs = ssh(d, ["-p", str(port), "127.0.0.1"])
+    line = "Pseudo-terminal will not be allocated because stdin is not a terminal."
+    hb, hs = line in lines(rb[2]), line in lines(rs[2])
+    compare(d, f"nothing listens; no -T, no command, stdin /dev/null\nburrow exit {rb[0]} stderr {rb[2]!r}\nssh exit {rs[0]} stderr {rs[2]!r}\n")
+    check(rb[0] == rs[0] == 255, f"exits burrow {rb[0]} ssh {rs[0]}")
+    check(hb == hs, f"the pseudo-terminal line: burrow {hb}, ssh {hs}")
+    return "both print it before connecting" if hs else "neither prints it before a connection"
+
+
+@row
 def shell_terminal_t():
     """-T with stdin a terminal (how a person checks a key at a console):
     the shell runs with no pty, reading what is typed."""
