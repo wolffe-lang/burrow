@@ -22,6 +22,15 @@
 #   session-release     the same rows, release
 #   hostile     a scripted server that misbehaves (tools/fakeserver.py), native
 #   hostile-release     the same rows, release
+#   server      burrowd held to the pinned sshd (tools/check-server): the
+#               transport's server role, the host key, authentication, the
+#               session, the limits, the log and the privileges, native
+#   server-release      the same rows, release
+#   server-hostile      burrowd against a scripted client that misbehaves
+#               (tools/check-server-hostile), native
+#   server-hostile-release  the same rows, release
+#   server-git  git clones, fetches and pushes through burrowd and through
+#               the pinned sshd, the repositories compared (the image's git), native
 #   den-pin     den at burrow-den.toml's pin, built by its own tools, and its
 #               git oracle, by digest (tools/fetch-den)
 #   den         den's ssh rows with burrow as `ssh`, each held byte for byte to
@@ -40,12 +49,15 @@
 #   measure     login to first byte and cat throughput against the pinned ssh,
 #               release, held to the prediction's margins (a perf step: run
 #               the gauntlet with nothing beside it)
+#   measure-server  connect to first byte and cat through release burrowd
+#               against the pinned sshd, and the one-process program (R-bw04-2),
+#               interleaved, held to the prediction's margins (a perf step)
 #   measure-den den's clone of a mid-sized repository through release burrow
 #               against through the pinned ssh, interleaved, its CPU held to
 #               2x and its wall time reported (a perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release den-pin den den-release live-self-test github live static measure measure-den"
+ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -73,6 +85,11 @@ run() {
     session-release) tools/in-container python3 -I tools/check-session --bin target/release/burrow ;;
     hostile) tools/in-container python3 -I tools/check-hostile --bin target/native/burrow ;;
     hostile-release) tools/in-container python3 -I tools/check-hostile --bin target/release/burrow ;;
+    server) tools/in-container python3 -I tools/check-server --bin target/native/burrowd ;;
+    server-release) tools/in-container python3 -I tools/check-server --bin target/release/burrowd ;;
+    server-hostile) tools/in-container python3 -I tools/check-server-hostile --bin target/native/burrowd ;;
+    server-hostile-release) tools/in-container python3 -I tools/check-server-hostile --bin target/release/burrowd ;;
+    server-git) tools/in-container python3 -I tools/check-server-git --bin target/native/burrowd ;;
     den-pin) tools/in-container tools/fetch-den ;;
     den) tools/in-container python3 -I tools/check-den --bin target/native/burrow ;;
     den-release) tools/in-container python3 -I tools/check-den --bin target/release/burrow ;;
@@ -81,6 +98,7 @@ run() {
     live) tools/in-container python3 -I tools/check-live --bin target/native/burrow ;;
     static) tools/in-container sh -c 'tools/build --static && python3 -I tools/check-static' ;;
     measure) tools/in-container python3 -I tools/measure-session --bin target/release/burrow ;;
+    measure-server) tools/in-container python3 -I tools/measure-server --bin target/release/burrowd ;;
     measure-den) tools/in-container python3 -I tools/measure-den --bin target/release/burrow ;;
     *)
         echo "gate: no step $1 (steps: $ALL)"
