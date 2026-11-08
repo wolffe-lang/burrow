@@ -16,10 +16,12 @@ speaks and refuses, and what is measured where. Sources are in
 
 `burrow` logs in with an Ed25519 key, runs one command on a session channel
 with stdin, stdout and stderr as raw bytes, and exits with the command's
-status (255 for every refusal), taking the command line den passes. It
-starts no interactive shell: with no command it logs in, then refuses
-(`shell_unsupported`), so a keyless probe is refused authentication as
-`ssh` refuses it. Linked as `ssh` on PATH, it carries den's
+status (255 for every refusal), taking the command line den passes. With
+no command it starts the login shell with no pseudo-terminal (under `-T`,
+or when stdin is not a terminal), as `ssh -T` does, so `ssh -T
+git@github.com` shows GitHub's greeting and exits with GitHub's status; at a
+terminal without `-T` it refuses by name before connecting
+(`pty_unsupported`). Linked as `ssh` on PATH, it carries den's
 clone, fetch and push byte for byte as the pinned `ssh` does
 (`tools/check-den`).
 
@@ -82,7 +84,7 @@ the reason code below when the connection can still carry one, and exits 255.
 | `kex_failed` | an all-zero X25519 output, a Q_S that is not 32 bytes, or a re-exchange the server answers with UNIMPLEMENTED | 3 |
 | `host_key_unsupported` | a host key or signature that is not `ssh-ed25519` | 3 |
 | `host_key_bad_signature` | the server's signature on H does not verify | 3 |
-| `host_key_unknown` | no known_hosts entry names this host with an `ssh-ed25519` key | 9 |
+| `host_key_unknown` | no known_hosts entry, in the user's files or the system's, names this host with an `ssh-ed25519` key | 9 |
 | `host_key_changed` | an `ssh-ed25519` entry for this host holds another key, a `@revoked` line names this key, or the key changes in a re-exchange | 9 |
 | `known_hosts_unreadable` | a known_hosts file exists and cannot be read | 9 |
 | `service_refused`, `auth_refused` | the server does not accept the service, or the rows' `none` login | 7, 14 |
@@ -95,12 +97,12 @@ the reason code below when the connection can still carry one, and exits 255.
 | `auth_sig_alg_unsupported` | the server's `server-sig-algs` lacks `ssh-ed25519`: no request is sent | 14 |
 | `auth_success_unrequested` | USERAUTH_SUCCESS in answer to a query, or before any request | 2 |
 | `key_unreadable`, `key_malformed`, `key_encrypted`, `key_count`, `key_checkint`, `key_unsupported`, `key_mismatch`, `key_permissions` | an identity file that cannot be used: refused before any connection, and no key byte printed | (no connection) |
-| `channel_open_failed`, `exec_refused` | the server refuses the session channel or the command | 2 |
+| `channel_open_failed`, `exec_refused`, `shell_refused` | the server refuses the session channel, the command or the shell | 2 |
 | `channel_unknown` | a message for a channel burrow did not open | 2 |
 | `channel_closed` | data after the server's EOF or CLOSE (never written out) | 2 |
 | `window_exceeded`, `channel_packet_too_large`, `window_overflow` | data past burrow's window or maximum packet, or an adjustment past 2^32 − 1 | 2 |
 | `option_unknown`, `option_unsupported`, `config_unsupported`, `usage` | the command line or `~/.ssh/config`: a flag or keyword `ssh` lacks (its "Bad configuration option" line), one burrow lacks, a value burrow does not take, a config construct burrow does not read, no destination | (no connection) |
-| `shell_unsupported` | no command: refused after the login, before any channel opens | 11 |
+| `pty_unsupported` | no command, stdin a terminal and no `-T`: an interactive shell needs a pseudo-terminal, which burrow does not allocate yet (B7) | (no connection) |
 
 Where the pinned `ssh` prints a line for the same failure, burrow prints that
 line first, with the program's own name where `ssh` prints its own
@@ -145,9 +147,9 @@ and the `key_*` names for `-y` and `-l`.
 | RFC 4254 §5.1, §6.1 | the session channel; clients reject server-opened sessions | done; every server-opened channel is refused (OPEN_FAILURE 1) |
 | RFC 4254 §5.2 | windows to 2^32 − 1, maximum packet, extended data | done; burrow offers 2 MiB and 32768, adjusts at half, and refuses data past either by name |
 | RFC 4254 §5.3 | EOF and CLOSE, CLOSE answered once | done, in both orders; data after EOF or CLOSE refused |
-| RFC 4254 §6.4, §6.5 | `env`, `exec` | done (`SendEnv`, `SetEnv`; `exec` wants a reply, awaited before any input) |
+| RFC 4254 §6.4, §6.5 | `env`, `exec`, `shell` | done (`SendEnv`, `SetEnv`; `exec`, or with no command `shell`, wants a reply, awaited before any input; no `pty-req` before the shell) |
 | RFC 4254 §6.10 | `exit-status`, `exit-signal` | the status is the exit code; a signal is 255, as the pinned `ssh` exits |
-| RFC 4254 §6.2, §6.3, §6.5 `shell` and `subsystem` | pty, X11, shell, subsystem | never requested (`-t` is refused; no command is `shell_unsupported`) |
+| RFC 4254 §6.2, §6.3, §6.5 `subsystem` | pty, X11, subsystem | never requested (`-t`, `RequestTTY`, and no command at a terminal without `-T`, are refused by name) |
 | `PROTOCOL` §2.1 | `eow@openssh.com` | honoured: burrow sends no more input |
 | `PROTOCOL` §2.2, §2.5 | `no-more-sessions@openssh.com`, `hostkeys-00@openssh.com` | not sent; the server's host key list is declined (`UpdateHostKeys` is `no` only) |
 
@@ -230,7 +232,7 @@ Three black-box findings shape B1:
 | `tools/vectorgen.py` | the independent vectors, regenerated and compared byte for byte |
 | `tools/oracle-probe` | what the pinned `sshd` offers, through the pinned `ssh -vvv` |
 | `tools/fetch-oracle`, `tools/in-container` | the pinned OpenSSH, built by digest in the pinned image |
-| `tools/check-session` | B2 and B3's rows: authentication, keys, known_hosts, the session and the command line, against the pinned `sshd`, `ssh` and `ssh-keygen` |
+| `tools/check-session` | B2 and B3's rows: authentication, keys, known_hosts (the user's and the system's files), the session, the shell with no pty, and the command line, against the pinned `sshd`, `ssh` and `ssh-keygen` |
 | `tools/check-hostile` | a scripted server that misbehaves (`tools/fakeserver.py`, built on `tools/vectorgen.py`'s primitives) |
 | `tools/nistvec.py` | NIST's SHA-1 and HMAC-SHA1 vectors (`ci/vectors/nist-sha1.rsp`), regenerated and compared |
 | `tools/measure-session` | login to first byte and `cat` throughput against the pinned `ssh`, held to stated margins |
@@ -313,6 +315,7 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
 | entropy | burrow reads `/dev/urandom`, refused by name (`entropy_unavailable`) where absent |
 | the network | the console kernel's network is a PAX gap of its own |
 | `$HOME` | `~/.ssh` is read from `$HOME`: PAX needs no passwd database |
+| GitHub's host key | `/etc/ssh/ssh_known_hosts` is read by default, after `~/.ssh`'s files, so a published line pinned there needs no `~/.ssh/config` |
 | a root store | not needed: ssh has no X.509 |
 
 ## Gaps, named
@@ -325,8 +328,9 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   Its `sign` is not constant time (above).
 - wolf-std has no one wait over a socket and a file at the pin: the session
   waits up to 5 ms on each in turn when idle (`src/session`).
-- No interactive shell, pty, agent, forwarding, certificates, or RSA and
-  ECDSA keys; each is refused by name.
+- No pty (so no interactive shell at a terminal; `-T` runs the shell
+  without one), agent, forwarding, certificates, or RSA and ECDSA keys;
+  each is refused by name.
 - No resolver on PAX (wolf-lang#831, wolf-std#4): `HostName` and
   `HostKeyAlias` let den's `git@github.com:…` reach an address under
   GitHub's own host key (above).
