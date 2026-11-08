@@ -487,6 +487,72 @@ does not change.
 | Linux x86-64 laptop, 8 cores | the oracle rows in the pinned container, one slot, when the host is free |
 | Linux x86-64 desktop, i7-12700KF | the oracle rows and the measurement, a six-CPU block by its lock names; the measurement with the block's light lock held |
 
+## Evidence: the prediction's hits and misses
+
+**The first take of `tools/check-server`** (at `c4fbb53`, the pinned
+container, a six-CPU block): 40 of 43 rows passed. The three that failed,
+and what changed:
+
+- `server-refused-kex` (a miss in the prediction): the pinned `sshd`'s
+  KEXINIT carries `ext-info-s` even with one host key, and the pinned `ssh`
+  prints the server's whole kex offer when it refuses
+  (`… Their offer: curve25519-sha256,curve25519-sha256@libssh.org,ext-info-s,kex-strict-s-v00@openssh.com`).
+  burrowd now offers `ext-info-s` (the vector first, red, `c13b5e4`; then
+  `5428781`), and reads and ignores a client's EXT_INFO.
+- `session-env` (a miss): the pinned `sshd`'s session `PATH` ends with its
+  own `bin` directory (`/usr/bin:/bin:/usr/sbin:/sbin:<prefix>/bin`, its
+  build's default); the row strips that one element and names it. The
+  predicted difference, `SSH_CLIENT` set by `sshd` and not by burrowd, was
+  a hit.
+- `log-line` (a harness miss): the rows' readiness probe is a connection
+  too, and logs `outcome closed`; the row reads the lines for its own user.
+- `auth-grace` passed only because both clients outlived the row's timeout:
+  the relay that holds the client's bytes closed its sockets without
+  shutting them down, so neither server's close reached `ssh`. The relay
+  now shuts its sockets down (`5e2d118`), and the row needs `ssh` to end.
+
+**Other misses, held equal through both servers but not as predicted:**
+
+- `auth-tries`: the second line is `Disconnected from 127.0.0.1 port PORT`,
+  not `Disconnected from authenticating user …`.
+- `limits-startups`: a dropped connection reads `kex_exchange_identification:
+  read: Connection reset by peer` and `Connection reset by 127.0.0.1 port
+  PORT`, not `Connection closed by remote host`.
+- `session-shell-refused`: the pinned `ssh` prints `Pseudo-terminal will not
+  be allocated because stdin is not a terminal.` before `shell request
+  failed on channel 0`.
+- `session-x11-refused`: in the container there is no `xauth`, so the
+  pinned `ssh` (with `-Y`) sends no `x11-req` at all and prints `Warning:
+  untrusted X11 forwarding setup failed: xauth key data not generated`
+  against either server; `x11_refused` is shown by the hostile client's
+  `hostile-requests-refused` row instead.
+- `hostkey-owner`: the pinned `sshd -t` accepts a 0600 host key that
+  another user owns; burrowd refuses it (`host_key_permissions`), stricter on
+  purpose, as predicted for burrowd.
+
+**Rows built otherwise than predicted:** `server-strict-kex-required`
+became the hostile client's `hostile-no-strict-kex` (a scripted client that
+leaves the indicator out, rather than a relay that strips it);
+`priv-session` is `session-id` (`id` and `/proc/self/status`'s ids,
+groups, capabilities and `NoNewPrivs` inside the session, held to `sshd`'s);
+`auth-nologin` and the exchange count in `server-rekey` (at least 15, from
+the pinned `ssh`'s own `SSH2_MSG_NEWKEYS received` lines) were added after
+the first take, at `4567a22`.
+
+**Hostile clients, red first.** The checks each hostile row holds were red
+first in the unit rows (`sauth_test`, `schannel_test`, `slog_test`, before
+their modules), but the hostile rows themselves were written after the
+server (`a3395fc`). So each was then seen red against burrowd with its one
+check removed: a take that builds one mutant per check from the checkout,
+never committed, runs that check's rows, and then the clean build's rows
+(`mutants-inner.sh` in the lane's rig; its result below).
+
+**macOS** (`tools/check-server-local` at `7aa1faa`, on the 8-core laptop):
+10 rows, all passed: a command and both streams byte for byte, exit codes,
+64 MiB through `cat`, a signal, `GIT_PROTOCOL`, an unlisted key, root
+refused with only the running user served, no command, git's clone and push
+through burrowd, and the log line.
+
 ## For B6: burrowd on PAX
 
 Read at PAX's trunk `db516c6` (its README, `docs/BOOT.md`,
