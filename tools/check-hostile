@@ -54,7 +54,7 @@ def burrow(f, *extra, inp=None, cmd="true", timeout=60):
     kh.write_text(f.host_line())
     oraclelib.keygen(d / "id", "ed25519")
     args = [str(BIN), "-F", "none", "-p", str(f.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(d / "id"),
-            "-l", "row"] + list(extra) + ["127.0.0.1", cmd]
+            "-l", "row"] + list(extra) + ["127.0.0.1"] + ([cmd] if cmd is not None else [])
     r = subprocess.run(args, input=inp if inp is not None else b"", capture_output=True, timeout=timeout,
                        env={"PATH": "/usr/bin:/bin", "HOME": str(d)})
     shutil.rmtree(d)
@@ -196,6 +196,21 @@ def x11_and_agent_opens():
     check(answers == [(92, 3, 1), (92, 4, 1)], f"the server saw {answers}; {f.record['error']}")
     check(r.returncode == 0 and r.stdout == b"ok", f"exit {r.returncode} stdout {r.stdout!r} {tail(r.stderr)}")
     check(r.stderr.count(b"channel_open_refused") == 2, "no channel_open_refused debug lines")
+
+
+@row
+def shell_refused():
+    """`-T` with no command: a CHANNEL_FAILURE to the shell request is
+    refused by name, exit 255, and no pty was asked for first."""
+    def script(s, w):
+        s.drain(w, seconds=5)
+
+    with fakeserver.FakeServer(script, shell="refuse") as f:
+        r = burrow(f, "-T", cmd=None)
+    refused(r, "shell_refused")
+    asked = [e[1] for e in f.record["events"] if e[0] == "request"]
+    check(asked == ["shell"], f"requests {asked}; server {f.record['error']}")
+    return "requests " + ", ".join(asked)
 
 
 def main():
