@@ -544,8 +544,9 @@ and what changed:
   limit.
 - `git-fetch` (a harness miss): the row's setup fetched into the account's
   server copy from root's seed repository as the account, which git refuses
-  (another user's repository); the setup names that seed safe on git's
-  command line.
+  (another user's repository), and a `safe.directory` on git's command line
+  did not reach the side that reads the seed. The setup now fetches as root
+  and gives the copy back to the account.
 
 **Rows built otherwise than predicted:** `server-strict-kex-required`
 became the hostile client's `hostile-no-strict-kex` (a scripted client that
