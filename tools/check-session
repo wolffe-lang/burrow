@@ -1143,9 +1143,13 @@ def shell_terminal_refused():
     d = run_dir("shell-terminal-refused")
     with session_server(d) as s:
         kh = known(d, s)
+        # sshd has logged the harness's readiness probe; only what burrow's
+        # run adds counts.
+        before = len(s.log_text())
         rb = on_pty([str(BIN), "-F", "none"] + common(s, kh, d / "id_user") + ["127.0.0.1"], b"", envfor(d))
-        log = s.log_text()
-    compare(d, f"burrow exit {rb[0]} stderr {rb[2]!r}\n")
+        time.sleep(0.5)
+        log = s.log_text()[before:]
+    compare(d, f"burrow exit {rb[0]} stderr {rb[2]!r}\nsshd's log during burrow's run: {log!r}\n")
     refused(rb, "pty_unsupported")
     check(b"-T" in rb[2], f"the refusal does not point at -T: {tail(rb[2])}")
     check("Connection from" not in log, "burrow connected before refusing")
