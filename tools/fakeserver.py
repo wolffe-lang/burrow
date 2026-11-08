@@ -117,8 +117,9 @@ class FakeServer:
     function (server, wire) run once the session's exec is accepted (or, for
     `stage="auth"`, right after SERVICE_ACCEPT)."""
 
-    def __init__(self, script, stage="session", window=2097152, maxpkt=32768):
+    def __init__(self, script, stage="session", window=2097152, maxpkt=32768, shell="accept"):
         self.script, self.stage, self.window, self.maxpkt = script, stage, window, maxpkt
+        self.shell = shell
         self.seed = os.urandom(32)
         self.host_pub = v.ed25519_public(self.seed)
         self.k_s = string(b"ssh-ed25519") + string(self.host_pub)
@@ -216,6 +217,10 @@ class FakeServer:
                 if kind == b"exec":
                     self.event("command", r.string().decode())
                     w.send(bytes([99]) + u32(self.client_channel))
+                    break
+                if kind == b"shell":
+                    # RFC 4254 §6.5; `shell="refuse"` answers CHANNEL_FAILURE.
+                    w.send(bytes([100 if self.shell == "refuse" else 99]) + u32(self.client_channel))
                     break
         self.script(self, w)
 
