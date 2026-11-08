@@ -489,7 +489,8 @@ does not change.
 
 ## Evidence: the prediction's hits and misses
 
-**The first take of `tools/check-server`** (at `c4fbb53`, the pinned
+**The first take of `tools/check-server`** (at `c4fbb53`, before the
+rebase onto `1d022ae`, where it is `371d8d2`; the pinned
 container, a six-CPU block): 40 of 43 rows passed. The three that failed,
 and what changed:
 
@@ -497,8 +498,8 @@ and what changed:
   KEXINIT carries `ext-info-s` even with one host key, and the pinned `ssh`
   prints the server's whole kex offer when it refuses
   (`… Their offer: curve25519-sha256,curve25519-sha256@libssh.org,ext-info-s,kex-strict-s-v00@openssh.com`).
-  burrowd now offers `ext-info-s` (the vector first, red, `c13b5e4`; then
-  `5428781`), and reads and ignores a client's EXT_INFO.
+  burrowd now offers `ext-info-s` (the vector first, red, `13f9b6e`; then
+  `514c113`), and reads and ignores a client's EXT_INFO.
 - `session-env` (a miss): the pinned `sshd`'s session `PATH` ends with its
   own `bin` directory (`/usr/bin:/bin:/usr/sbin:/sbin:<prefix>/bin`, its
   build's default); the row strips that one element and names it. The
@@ -509,7 +510,7 @@ and what changed:
 - `auth-grace` passed only because both clients outlived the row's timeout:
   the relay that holds the client's bytes closed its sockets without
   shutting them down, so neither server's close reached `ssh`. The relay
-  now shuts its sockets down (`5e2d118`), and the row needs `ssh` to end.
+  now shuts its sockets down (`15022ca`), and the row needs `ssh` to end.
 
 **Other misses, held equal through both servers but not as predicted:**
 
@@ -555,17 +556,17 @@ leaves the indicator out, rather than a relay that strips it);
 groups, capabilities and `NoNewPrivs` inside the session, held to `sshd`'s);
 `auth-nologin` and the exchange count in `server-rekey` (at least 15, from
 the pinned `ssh`'s own `SSH2_MSG_NEWKEYS received` lines) were added after
-the first take, at `4567a22`.
+the first take, at `493b982`.
 
 **Hostile clients, red first.** The checks each hostile row holds were red
 first in the unit rows (`sauth_test`, `schannel_test`, `slog_test`, before
 their modules), but the hostile rows themselves were written after the
-server (`a3395fc`). So each was then seen red against burrowd with its one
+server (`5b51d7c`). So each was then seen red against burrowd with its one
 check removed: a take that builds one mutant per check from the checkout,
 never committed, runs that check's rows, and then the clean build's rows
 (`mutants-inner.sh` in the lane's rig, at `cba3519`, before the rebase
-onto the trunk that took the client's shell with no pty; the server's code
-the rebase brought no change to). Every mutant was red at its rows:
+onto the trunk that took the client's shell with no pty, where it is
+`150d8ed`; the rebase changed none of the server's code). Every mutant was red at its rows:
 
 | mutant: the one check removed | red |
 |---|---|
@@ -586,11 +587,13 @@ client's `kex()` had read while waiting for the ECDH reply. The probe's line
 is now left out (`serverlib`), and the client keeps every message it
 receives (`fakeclient`).
 
-**macOS** (`tools/check-server-local` at `7aa1faa`, on the 8-core laptop):
-10 rows, all passed: a command and both streams byte for byte, exit codes,
-64 MiB through `cat`, a signal, `GIT_PROTOCOL`, an unlisted key, root
-refused with only the running user served, no command, git's clone and push
-through burrowd, and the log line.
+**macOS** (`tools/check-server-local` at `0d2f5bf`, after the rebase, on
+the 8-core laptop): 10 rows, all passed: a command and both streams byte
+for byte, exit codes, 64 MiB through `cat`, a signal, `GIT_PROTOCOL`, an
+unlisted key, root refused with only the running user served, no command
+(burrow now asks for a shell, and burrowd refuses it by name,
+`shell_refused`), git's clone and push through burrowd, and the log line,
+whose address is `UNKNOWN` port 0 there (no `/proc/net`).
 
 ## For B6: burrowd on PAX
 
