@@ -340,19 +340,11 @@ fn holder_main(
         verbose: if s.debug then 1 else 0,
     }
     var ch = schannel.new()
-    var outcome = "ok"
-    var detail = ""
-    let res = ssession.run(mut c, mut ch, plan) else |e| {
-        outcome = "{e}"
-        detail = if schannel.detail(ch) != "" then schannel.detail(ch) else transport.detail(c)
-        ssession.Result { status: "status -", refused: schannel.refusals(ch) }
-    }
+    let res = ssession.run(mut c, mut ch, plan)
+    var outcome = if res.failure == "" then "ok" else res.failure
     if outcome != "ok" && outcome != "closed" && outcome != "io" && outcome != "disconnected" {
+        let detail = if schannel.detail(ch) != "" then schannel.detail(ch) else transport.detail(c)
         transport.disconnect(mut c, refuse.reason_of(outcome), disconnect_text(outcome, detail))
-    }
-    if outcome == "ok" {
-        // The client's DISCONNECT, or the socket's end, finishes it.
-        let _ = transport.next(mut c) else List[byte]()
     }
     var f = List[List[byte]]()
     (mut f).push(wire.bytes_of(outcome))
@@ -372,10 +364,36 @@ fn holder_main(
 
 // ---- the monitor: one per connection.
 
+fn close_file(f: fs.File) {
+    var g = copy f
+    fs.close(take g) else {}
+}
+
 struct Pre {
     root: bool,
     uid: int,
     gid: int,
+}
+
+// The account `user` may log in as: from passwd and group as root (root
+// refused always, R-bw04-3); without root the running user alone. uid -1
+// (and the name `root` for root's refusal) when there is none.
+fn account_for(root: bool, passwd: str, group: str, user: str) -> mon.Account {
+    let none = mon.Account { name: "", uid: -1, gid: -1, home: "", shell: "", groups: List[int]() }
+    if !root {
+        let me = mon.self_account()
+        if me.name != user || me.uid == 0 {
+            var r = copy none
+            r.name = if user == "root" then "root" else ""
+            return r
+        }
+        return me
+    }
+    mon.account(passwd, group, user) else |e| {
+        var r = copy none
+        r.name = if "{e}" == "root" then "root" else ""
+        return r
+    }
 }
 
 fn answer(mut to: fs.File, yes: bool) {
@@ -424,6 +442,19 @@ fn monitor_main(
         return
     }
     if process.is_child(hf) {
+        // The holder keeps its two ends only: the worker's pipes, the
+        // monitor's ends and the listener's status pipe are closed, and so is
+        // the server's stderr, so the user's session holds none of them.
+        close_file(w2m.read)
+        close_file(w2m.write)
+        close_file(m2w.read)
+        close_file(m2w.write)
+        close_file(m2h.write)
+        close_file(h2m.read)
+        close_file(st)
+        if !s.debug {
+            close_file(fs.stderr())
+        }
         holder_main(take sock, s, m2h.read, h2m.write, ends, pre.root)
         return
     }
@@ -432,6 +463,13 @@ fn monitor_main(
         return
     }
     if process.is_child(wf) {
+        close_file(w2m.read)
+        close_file(m2w.write)
+        close_file(m2h.read)
+        close_file(m2h.write)
+        close_file(h2m.read)
+        close_file(h2m.write)
+        close_file(st)
         if pre.root {
             process.set_ids(pre.uid, pre.gid, List[int]()) else {
                 process.exit(1)
@@ -443,6 +481,10 @@ fn monitor_main(
         return
     }
     net.close(take sock) else {}
+    close_file(w2m.write)
+    close_file(m2w.read)
+    close_file(m2h.read)
+    close_file(h2m.write)
     var wpid = process.pid(wf.child) else -1
     // Only now the host key.
     let hk = load_host_key(s.host_key, euid)
@@ -504,13 +546,9 @@ fn monitor_main(
             line.user = user
             line.key = fingerprint(blob)
             var ok = false
-            var a = mon.account(passwd, group, user) else |e| {
-                line.outcome = if "{e}" == "root" then "auth_root_refused" else "auth_user_unknown"
-                mon.Account { name: "", uid: -1, gid: -1, home: "", shell: "", groups: List[int]() }
-            }
-            if a.uid >= 0 && !pre.root && a.uid != euid {
-                line.outcome = "auth_user_unknown"
-                a.uid = -1
+            var a = account_for(pre.root, passwd, group, user)
+            if a.uid < 0 {
+                line.outcome = if a.name == "root" then "auth_root_refused" else "auth_user_unknown"
             }
             if a.uid >= 0 {
                 let v = mon.check_key(a, s.authorized_files, s.strict_modes, blob)
@@ -568,9 +606,7 @@ fn monitor_main(
         var b = List[byte]()
         (mut b).push(65 as byte)
         fs.write_chunk(mut st, b) else {}
-        let a = mon.account(passwd, group, authed_user) else {
-            mon.Account { name: "", uid: -1, gid: -1, home: "", shell: "", groups: List[int]() }
-        }
+        let a = account_for(pre.root, passwd, group, authed_user)
         var f = mon.account_fields(a)
         (mut f).push(wire.bytes_of(if verdict_forced then "1" else "0"))
         (mut f).push(wire.bytes_of(verdict_cmd))

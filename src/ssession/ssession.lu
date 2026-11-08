@@ -48,10 +48,14 @@ pub struct Plan {
 }
 
 /// How the session ended, for the log: `status N`, `signal NAME` or
-/// `status -`, and the refusals by name.
+/// `status -`, the refusals by name, and the refusal that ended the
+/// connection (`failure`, "" when the channel closed both ways; the
+/// client's DISCONNECT or the socket's end after both CLOSEs is no
+/// failure).
 pub struct Result {
     status: str,
     refused: List[str],
+    failure: str,
 }
 
 /// The command's process and pipes.
@@ -343,9 +347,22 @@ fn turn_once(
     moved
 }
 
-/// Serves the channel until it closes. Returns the command's end.
-pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result ! refuse.Refusal {
-    signal.listen(signal.child()) else { return io }
+fn put_name(mut out: List[byte], name: str) {
+    if out.len == 0 {
+        for b in name.bytes() {
+            (mut out).push(b)
+        }
+    }
+}
+
+/// Serves the channel until it closes, and says how it ended; a refusal
+/// is named in the result, never raised, so the command's status survives
+/// it.
+pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
+    var failed = List[byte]()
+    signal.listen(signal.child()) else {
+        put_name(mut failed, "io")
+    }
     signal.ignore(signal.broken_pipe()) else {}
     var pr = none_running()
     var pending = List[byte]()
@@ -354,22 +371,57 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result !
     if fs.exists("/etc/nologin") {
         nologin = fs.read_text("/etc/nologin") else "/etc/nologin exists\n"
     }
-    while !schannel.done(ch) {
+    while !schannel.done(ch) && failed.len == 0 {
         region turn {
-            let _ = turn_once(mut c, mut ch, mut pr, mut pending, mut flow, plan, nologin)?
+            let _ = turn_once(
+                mut c,
+                mut ch,
+                mut pr,
+                mut pending,
+                mut flow,
+                plan,
+                nologin,
+            ) else |e| {
+                put_name(mut failed, "{e}")
+                false
+            }
         }
     }
     // Packets already whole after both CLOSEs are still read, so data after
     // the client's CLOSE is refused by name rather than dropped unseen.
-    loop {
-        let p = transport.try_next(mut c)?
-        if p.len == 0 {
+    while failed.len == 0 {
+        var end = List[byte]()
+        region drain {
+            let p = transport.try_next(mut c) else |e| {
+                put_name(mut end, "{e}")
+                List[byte]()
+            }
+            if p.len > 0 {
+                let _ = schannel.on(mut ch, p) else |e| {
+                    put_name(mut failed, "{e}")
+                    schannel.Step {
+                        replies: List[List[byte]](),
+                        input: List[byte](),
+                        start: false,
+                        want_reply: false,
+                        close_input: false,
+                        info: "",
+                    }
+                }
+            } else {
+                put_name(mut end, "end")
+            }
+        }
+        if end.len > 0 {
+            let why = str_from_utf8(end) else "end"
+            if why != "end" && why != "disconnected" && why != "closed" {
+                put_name(mut failed, why)
+            }
             break
         }
-        let _ = schannel.on(mut ch, p)?
     }
     let st = if flow.started then status_text(pr.status) else "status -"
-    Result { status: st, refused: schannel.refusals(ch) }
+    Result { status: st, refused: schannel.refusals(ch), failure: str_from_utf8(failed) else "io" }
 }
 
 fn wire_bytes(s: str) -> List[byte] {
