@@ -125,7 +125,9 @@ pub fn authenticate(
             return message_unexpected
         }
         let q = sauth.parse(p)?
-        transport.note(mut c, "the user or service changed between requests")
+        if st.started && (q.user != st.user || q.service != st.service) {
+            transport.note(mut c, "the user or service changed between requests")
+        }
         let d = sauth.decide(mut st, q)?
         if d == "query" {
             var f = List[List[byte]]()
