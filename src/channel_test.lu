@@ -101,6 +101,11 @@ fn main() {
     // The exec reply; then the server's window opens.
     assert(why(mut ch, msg(99, 0)) == "ok" && ch.exec_ok)
     assert(why(mut ch, msg(99, 0)) == "message_unexpected")
+    // RFC 4254 §6.5: `shell` with want reply TRUE and nothing after the flag
+    // (no pty-req before it); its success is awaited as exec's is.
+    var sh = opened()
+    assert(wire.hex(channel.shell_msg(mut sh)) == "6200000007000000057368656c6c01")
+    assert(why(mut sh, msg(99, 0)) == "ok" && sh.exec_ok)
     var adj = msg(93, 0)
     wire.put_u32(mut adj, 2097152)
     assert(why(mut ch, adj) == "ok" && ch.rwin == 2097152 && channel.room(ch) == 32768)
@@ -208,5 +213,8 @@ fn main() {
     let _ = channel.exec_msg(mut x2, wire.bytes_of("true"))
     assert(why(mut x2, msg(100, 0)) == "exec_refused")
     assert(why(mut x2, msg(50, 0)) == "message_unexpected")
-    print("channel: vectorgen's messages, both windows, both close orders, exits, 9 refusals")
+    var x3 = opened()
+    let _ = channel.shell_msg(mut x3)
+    assert(why(mut x3, msg(100, 0)) == "shell_refused")
+    print("channel: vectorgen's messages, the shell request, both windows, both close orders, exits, 10 refusals")
 }
