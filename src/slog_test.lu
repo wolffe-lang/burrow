@@ -1,0 +1,90 @@
+//! member: false
+
+// B5: the log line, its cleaning of a hostile user name, UTC times; the
+// client's address from linux's /proc/net tables (R-bw04-7); the pipe
+// frames between burrowd's processes.
+use peer
+use pipe
+use slog
+use wire
+
+fn main() {
+    // UTC, days to the civil calendar.
+    assert(slog.utc(0) == "1970-01-01T00:00:00Z")
+    assert(slog.utc(951782400) == "2000-02-29T00:00:00Z")
+    assert(slog.utc(1794111000) == "2026-11-08T04:10:00Z")
+    assert(slog.utc(4102444799) == "2099-12-31T23:59:59Z")
+    // A user name cannot forge or break a line.
+    assert(slog.clean("burrowtest", 64) == "burrowtest")
+    assert(slog.clean("a b\nc\\", 64) == "a\\040b\\012c\\134")
+    assert(slog.clean("", 64) == "-")
+    var long = ""
+    while long.len < 100 {
+        long += "x"
+    }
+    assert(slog.clean(long, 64).len == 64)
+    var l = slog.start("2026-11-08T04:10:00Z", 4242, "127.0.0.1", 51234)
+    l.user = "burrowtest"
+    l.key = "SHA256:abc"
+    l.outcome = "ok"
+    l.status = "status 0"
+    assert(
+        slog.format(l) ==
+            "2026-11-08T04:10:00Z burrowd[4242]: from 127.0.0.1 port 51234 user burrowtest key SHA256:abc outcome ok status 0",
+    )
+    (mut l.refused).push("pty_refused")
+    (mut l.refused).push("x11_refused")
+    assert(slog.format(l).ends_with(" status 0 refused pty_refused,x11_refused"))
+    // /proc/net/tcp: the listener (remote 0) and the connection, by inode.
+    let tcp = "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n   0: 0100007F:08AE 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 111 1 0 100 0 0 10 0\n   1: 0100007F:08AE 0100007F:C822 01 00000000:00000000 00:00000000 00000000     0        0 222 1 0 20 4 30 10 -1\n   2: 0100007F:C822 0100007F:08AE 01 00000000:00000000 00:00000000 00000000  1000        0 333 1 0 20 4 30 10 -1\n"
+    var mine = List[str]()
+    (mut mine).push("111")
+    (mut mine).push("222")
+    let e = peer.find(tcp, mine, 2222)
+    assert(e.found && e.client.addr == "127.0.0.1" && e.client.port == 51234)
+    assert(e.server.addr == "127.0.0.1" && e.server.port == 2222)
+    var theirs = List[str]()
+    (mut theirs).push("333")
+    assert(!peer.find(tcp, theirs, 2222).found)
+    // tcp6: ::1 both ends.
+    let tcp6 = "  sl  local_address                         remote_address                        st\n   0: 00000000000000000000000001000000:08AE 00000000000000000000000001000000:D431 01 00000000:00000000 00:00000000 00000000     0        0 444 1\n"
+    var six = List[str]()
+    (mut six).push("444")
+    let e6 = peer.find(tcp6, six, 2222)
+    assert(e6.found && e6.client.addr == "::1" && e6.client.port == 54321)
+    // RFC 5952 text.
+    var b = List[int]()
+    var i = 0
+    while i < 16 {
+        (mut b).push(0)
+        i += 1
+    }
+    b[0] = 32
+    b[1] = 1
+    b[2] = 13
+    b[3] = 184
+    b[15] = 1
+    assert(peer.text(b) == "2001:db8::1")
+    b[10] = 255
+    b[11] = 255
+    assert(peer.text(b) == "2001:db8::ffff:0:1")
+    assert(peer.unknown().client.addr == "UNKNOWN")
+    // Pipe frames, there and back.
+    var fields = List[List[byte]]()
+    (mut fields).push(wire.bytes_of("burrowtest"))
+    (mut fields).push(List[byte]())
+    (mut fields).push(wire.bytes_of("x"))
+    let enc = pipe.encode(9, fields)
+    assert(enc.len == 4 + 1 + 14 + 4 + 5)
+    let fr = pipe.decode(enc[4..enc.len]) else pipe.Frame { kind: 0, fields: List[List[byte]]() }
+    assert(
+        fr.kind == 9 &&
+            fr.fields.len == 3 &&
+            pipe.text(fr, 0) == "burrowtest" &&
+            pipe.bytes_at(fr, 1).len == 0,
+    )
+    assert(pipe.text(fr, 7) == "")
+    var buf = wire.bytes_of("abcdef")
+    pipe.drop_front(mut buf, 2)
+    assert(wire.hex(buf) == wire.hex(wire.bytes_of("cdef")))
+}
