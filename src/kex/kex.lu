@@ -15,7 +15,8 @@
 //! compression `none`; no languages; no guessed packet.
 //!
 //! **burrowd's side** (B5): kex `curve25519-sha256`,
-//! `curve25519-sha256@libssh.org`, then `kex-strict-s-v00@openssh.com`;
+//! `curve25519-sha256@libssh.org`, then `ext-info-s` and
+//! `kex-strict-s-v00@openssh.com`;
 //! the other lists as the client's. `negotiate_server` runs §7.1 with the
 //! client's lists first, reads the client's indicators, and burrowd builds
 //! KEX_ECDH_REPLY and EXT_INFO here.
@@ -389,12 +390,16 @@ pub fn decode_ext_info(p: List[byte]) -> ExtInfo ! refuse.Refusal {
 // ---- B5: the server's side.
 
 /// burrowd's kex list: the two names of `curve25519-sha256`, then the
-/// strict-kex indicator. No `ext-info-s`: burrowd takes no EXT_INFO from a
-/// client (RFC 8308 §2.1), and one that comes is ignored.
+/// indicators `ext-info-s` and `kex-strict-s-v00@openssh.com`, as the
+/// pinned `sshd` offers them (the pinned `ssh` prints a server's offer when
+/// negotiation fails, so the list is client-visible). The client's EXT_INFO
+/// that `ext-info-s` invites is read and ignored: burrowd acts on none of
+/// its extensions.
 pub fn server_kex() -> List[str] {
     var out = List[str]()
     (mut out).push("curve25519-sha256")
     (mut out).push("curve25519-sha256@libssh.org")
+    (mut out).push("ext-info-s")
     (mut out).push("kex-strict-s-v00@openssh.com")
     out
 }

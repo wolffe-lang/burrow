@@ -63,8 +63,8 @@
 //! authentication (`authed` false) a client's KEXINIT is answered
 //! UNIMPLEMENTED, as the pinned `sshd` answers it, and burrowd starts no
 //! re-exchange; after it, either side's. SERVICE_REQUEST is passed up to
-//! the authentication layer; a client's EXT_INFO is ignored (burrowd does
-//! not offer `ext-info-s`). `handoff` and `restore` carry a connection's
+//! the authentication layer; a client's EXT_INFO is read and ignored
+//! (burrowd acts on none of its extensions). `handoff` and `restore` carry a connection's
 //! whole state from the worker that authenticated it to the session that
 //! serves it (`src/burrowd.lu`). Everything else here serves both roles.
 
@@ -1026,7 +1026,7 @@ fn server_exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
             note(mut c, "message {t} before the client's KEXINIT")
             return message_unexpected
         } else if t == refuse.msg_ext_info() {
-            // burrowd offers no ext-info-s; ignored.
+            // The client's EXT_INFO: read and ignored.
         } else if t == refuse.msg_ping() {
             pong(mut c, p)?
         } else {
