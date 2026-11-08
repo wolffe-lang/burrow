@@ -86,11 +86,11 @@ def keypair(path, tool="ssh-keygen", kind="ed25519", passphrase=""):
     return pathlib.Path(str(path) + ".pub")
 
 
-def proc(argv, stdin=None, inp=None, env=None, timeout=120):
+def proc(argv, stdin=None, inp=None, env=None, timeout=120, cwd=None):
     """Runs argv; returns (returncode, stdout, stderr, max RSS KiB, wall s)."""
     t0 = time.monotonic()
     p = subprocess.Popen(argv, stdin=stdin if stdin is not None else (subprocess.PIPE if inp is not None else subprocess.DEVNULL),
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
     try:
         out, err = p.communicate(inp, timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -609,6 +609,26 @@ def kh_global_config():
         rb = proc([str(BIN), "-F", str(cfg)] + args, env=envfor(d))
         rs = ssh(d, args, config=str(cfg))
     both_connect(d, rb, rs, kh, "the host only in the file a Host block's GlobalKnownHostsFile names")
+
+
+@row
+def kh_global_none():
+    """`GlobalKnownHostsFile none`, which ssh_config(5) does not describe:
+    the host's line sits in a file named `none` in the working directory,
+    so a client that reads the word as a path connects, and one that reads
+    it as no files refuses. burrow is held to whichever the pinned ssh does."""
+    d = run_dir("kh-global-none")
+    with Server(d) as s:
+        kh = known(d, s, "")
+        (d / "none").write_text(s.known_hosts_line())
+        args = common(s, kh, d / "id_user") + ["-o", "GlobalKnownHostsFile=none", "127.0.0.1", "printf ran"]
+        rb = burrow(d, args, cwd=d)
+        rs = ssh(d, args, cwd=d)
+    g = subprocess.run([SSH, "-G", "-F", "none", "-o", "GlobalKnownHostsFile=none", "127.0.0.1"], capture_output=True, timeout=60)
+    shown = [x for x in lines(g.stdout) if x.startswith("globalknownhostsfile")]
+    compare(d, f"ssh -G: {shown}\nburrow exit {rb[0]} {rb[1]!r} {tail(rb[2])}\nssh exit {rs[0]} {rs[1]!r} {tail(rs[2])}\n")
+    check(rb[0] == rs[0] and rb[1] == rs[1], f"burrow exit {rb[0]} {rb[1]!r} {tail(rb[2])}; ssh exit {rs[0]} {rs[1]!r}")
+    return f"the pinned ssh {'reads none as a path' if rs[0] == 0 else 'reads none as no files'}; ssh -G {shown}"
 
 
 @row
