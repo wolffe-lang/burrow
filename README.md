@@ -1,13 +1,14 @@
 # burrow
 
-An ssh client written in [wolf](https://github.com/wolffe-lang/wolf-lang):
-a minimal, OpenSSH-compatible `ssh` and an Ed25519 `burrow-keygen`, static
-for PAX and the same on Linux and macOS. Its first user is
+An ssh client and server written in [wolf](https://github.com/wolffe-lang/wolf-lang):
+a minimal, OpenSSH-compatible `ssh`, an Ed25519 `burrow-keygen` and a
+server for commands, `burrowd`, static for PAX and the same on Linux and
+macOS. Its first user is
 [den](https://github.com/wolffe-lang/den), which starts an `ssh` program
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B4, den over burrow.** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below). **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
@@ -45,6 +46,85 @@ not a terminal.`) and does the same. There is no pty yet, nor agent or
 forwarding ([MAP](docs/MAP.md)): `-t`, `RequestTTY`, and no command at a
 terminal without `-T` are refused by name (`pty_unsupported`, before
 connecting).
+
+## burrowd, the server for commands
+
+`burrowd` serves commands over ssh, the server's half of the same profile:
+the pinned OpenSSH `ssh`, burrow, and git over either log in to it as they
+log in to `sshd`. It takes `sshd(8)`'s flags that mean something for it,
+and a subset of `sshd_config(5)`:
+
+```sh
+burrowd [-DeqTtV] [-E log_file] [-f config_file] [-g login_grace_time]
+        [-h host_key_file] [-o option] [-p port]
+```
+
+`-D` changes nothing (burrowd never detaches), `-e` logs to stderr, `-E`
+appends to a file, `-t` checks the configuration and the host key, `-T`
+prints the effective settings in `sshd -T`'s shape. The configuration
+(default `/etc/burrowd/burrowd_config`; when it is absent the defaults
+stand) takes `AcceptEnv`, `AuthorizedKeysFile` (`%h`, `%u`, `%%`),
+`HostKey`, `ListenAddress`, `LoginGraceTime`, `MaxAuthTries`,
+`MaxStartups`, `PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`,
+`StrictModes`, and the one value burrowd has of the keywords for what it
+does not do (`PasswordAuthentication no`, `PermitTTY no`,
+`DisableForwarding yes` and the rest). Any other value, or any other
+`sshd_config(5)` keyword, is `config_unsupported`; a keyword that page does
+not list is `config_unknown`; either stops burrowd at start, exit 1.
+
+What it does, and what it refuses:
+
+- **Host key:** one Ed25519 key made by `burrow-keygen` or `ssh-keygen`
+  (default `/etc/burrowd/ssh_host_ed25519_key`), required, checked for its
+  mode and owner as `sshd` checks them, its fingerprint printed at start in
+  `ssh-keygen -l`'s shape. burrowd never makes a key.
+- **Listening:** loopback (`127.0.0.1` and `::1`) unless `ListenAddress`
+  names another address; listening wider is a configuration line written on
+  purpose.
+- **Authentication:** public keys only (`ssh-ed25519`), from
+  `authorized_keys` as `sshd(8)` documents the file, with StrictModes on:
+  a writable home, `~/.ssh` or file, or one another user owns, admits no
+  key. Of the options, `command="…"` is honoured (the client's command in
+  `SSH_ORIGINAL_COMMAND`) and the restrictions burrowd enforces anyway
+  (`restrict`, `no-pty` and the like) are taken; a line with any option
+  burrowd cannot enforce (`from=`, `environment=`, `expiry-time=` and the
+  rest) admits nothing. **Root is refused, always**, alike to every other
+  refusal (`Permission denied (publickey).`): root logs in as a user and
+  runs `sudo`.
+- **The session:** one session channel, one `exec`, its stdin, stdout and
+  stderr as raw bytes, and its exit status or signal. `env` accepts
+  `GIT_PROTOCOL` only. A shell, a pty, a subsystem, X11, the agent and every
+  forwarding are refused by name, and the command still runs where `sshd`
+  runs it.
+- **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
+  (10:30:100), as `sshd` has them.
+- **The log:** one line per connection: the time (UTC), the client's
+  address and port, the user, the key's fingerprint, the outcome by name
+  and the exit status. Never a private key, the command, an environment
+  value or a byte of the session.
+
+**Privilege separation.** On Linux (and on PAX, as B6 brings it there),
+burrowd running as root never parses a byte from the network as root:
+
+```text
+burrowd (root, the listener)       never holds the host key's private half
+ └─ per connection: monitor (root) reads authorized_keys; checks modes and the signature; logs
+     ├─ worker (account burrowd)   every byte before authentication; asks the monitor
+     └─ holder (root, holds nothing) then the session, with the user's uid, gid and groups
+         └─ the command             the user's shell, with -c
+```
+
+The worker and the holder are forked before the monitor reads the host
+key, so neither ever holds it; the session takes the user's ids with no
+way back. It needs an unprivileged account named `burrowd` (burrowd refuses
+to start as root without it). On PAX the user and group IDs are enforced
+for honest programs but are not yet a boundary against an attacker, so
+there this separation is defence in depth, not a guarantee.
+
+**macOS, and burrowd without root.** wolf-std cannot change a process's
+user on macOS, so there burrowd serves only the user who runs it, and
+refuses to start as root (`privileges_unsupported`). Run without root on
+Linux, it does the same: the same processes, all as that user.
 
 ## What it speaks, and what it refuses
 
