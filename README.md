@@ -8,10 +8,12 @@ through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
 **State: B4, den over burrow.** burrow connects, verifies the server's host
-key against known_hosts (plain and hashed entries; strict by default,
-`accept-new` and `no` as `ssh` has them), logs in with an Ed25519 key in
-OpenSSH's own format, runs one command with stdin, stdout and stderr as raw
-bytes, and exits with the command's status. Linked as `ssh` on PATH, it
+key against known_hosts (the user's files and then the system's,
+`/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
+them; plain and hashed entries; strict by default, `accept-new` and `no` as
+`ssh` has them), logs in with an Ed25519 key in OpenSSH's own format, runs
+one command with stdin, stdout and stderr as raw bytes, and exits with the
+command's status. Linked as `ssh` on PATH, it
 carries [den](https://github.com/wolffe-lang/den)'s clone, fetch and push
 over `ssh://` and scp-like URLs byte for byte as the pinned OpenSSH client
 does, and a static build is ready for PAX. It takes the command line den
@@ -26,14 +28,23 @@ burrow-keygen -l -f path        # the fingerprint
 
 `-o` and `~/.ssh/config` (`Host` and `Match host` blocks) take `BatchMode`,
 `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster no`, `ControlPath
-none`, `HashKnownHosts`, `HostKeyAlias`, `Hostname`, `IdentitiesOnly`,
-`IdentityFile`, `Port`, `RekeyLimit`, `SendEnv`, `SetEnv`,
+none`, `GlobalKnownHostsFile`, `HashKnownHosts`, `HostKeyAlias`, `Hostname`,
+`IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`, `SendEnv`, `SetEnv`,
 `StrictHostKeyChecking`, `UpdateHostKeys no`, `User` and
-`UserKnownHostsFile`. Anything else is refused by name, never ignored. No
-interactive shell, pty, agent or forwarding ([MAP](docs/MAP.md)): with no
-command, burrow logs in and then refuses by name (`shell_unsupported`), so a
-keyless probe such as `ssh -T git@github.com` is refused authentication as
-`ssh` refuses it.
+`UserKnownHostsFile`. Anything else is refused by name, never ignored.
+
+With no command, burrow starts the login shell with no pseudo-terminal, as
+`ssh -T` does: stdin, stdout and stderr pass as raw bytes, and burrow exits
+with the shell's status. So `ssh -T git@github.com` with a key GitHub knows
+prints GitHub's greeting (`Hi …! You've successfully authenticated, but
+GitHub does not provide shell access.`) and exits 1, the status GitHub
+sends, as `ssh` does; without a key it is refused authentication as `ssh`
+refuses it. Without `-T` and with stdin not a terminal, burrow prints the
+line `ssh` prints (`Pseudo-terminal will not be allocated because stdin is
+not a terminal.`) and does the same. There is no pty yet, nor agent or
+forwarding ([MAP](docs/MAP.md)): `-t`, `RequestTTY`, and no command at a
+terminal without `-T` are refused by name (`pty_unsupported`, before
+connecting).
 
 ## What it speaks, and what it refuses
 
@@ -103,14 +114,18 @@ negotiation, the login and the key file's mode are refused as without it,
 and no private key line reaches the output. The session rows (`tools/check-session`) hold authentication, keys,
 known_hosts, the session and the command line to the pinned `sshd`, `ssh`
 and `ssh-keygen`: keys made by either tool, refused keys and servers, the
-banner, appended known_hosts lines read by the pinned `ssh`, 64 MiB through
-`cat` compared by digest, interleaved stdout and stderr, exit codes and
-signals, `SendEnv`, den's exact argv, `~/.ssh/config`, and each refusal's
-exit code and line against `ssh`'s. The hostile-peer rows
+banner, appended known_hosts lines read by the pinned `ssh`, the system
+known_hosts files (found only there, changed there, against the user's file
+either way, under `accept-new`, by default, by `-o` and by `Host` block), 64
+MiB through `cat` compared by digest, interleaved stdout and stderr, exit
+codes and signals, `SendEnv`, the shell with no pty (a script on stdin, raw
+bytes, a greeting then an exit status as GitHub's server sends them, a
+signal, stdin a pipe and stdin a terminal), den's exact argv,
+`~/.ssh/config`, and each refusal's exit code and line against `ssh`'s. The hostile-peer rows
 (`tools/check-hostile`) run burrow against a scripted server that never
 adjusts its window, sends data after CLOSE, oversize packets and data, an
-unrequested USERAUTH_SUCCESS, an `exit-status` for another channel, and
-`x11` and agent channel opens. `tools/measure-session` holds login to first
+unrequested USERAUTH_SUCCESS, an `exit-status` for another channel, `x11`
+and agent channel opens, and a refused shell request. `tools/measure-session` holds login to first
 byte and `cat` throughput to stated margins against the pinned `ssh`;
 `tools/measure-handshake` compares the cost of a handshake (evidence only).
 
@@ -137,7 +152,10 @@ key: GitHub's published host key, and the same refusal. `tools/check-live`
 pushes to a live fixture and clones it back through both clients, from
 `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone (it never prints
 either, and removes its work files, whose clones name the URL, when it
-ends), and runs the same steps against a loopback `sshd` as a self-test.
+ends), holds `ssh -T git@github.com` with the fixture's key to the pinned
+`ssh` (the greeting compared byte for byte, and kept only with its name
+replaced), and runs the push's steps against a loopback `sshd` as a
+self-test.
 `tools/check-static` holds the static binaries' shape and runs den rows
 through the static `burrow`; `tools/measure-den` compares den's clone through
 burrow with its clone through the pinned `ssh`.
