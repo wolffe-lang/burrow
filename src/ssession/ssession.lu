@@ -45,6 +45,12 @@ pub struct Plan {
     forced: bool,
     env: List[str],
     verbose: int,
+    /// Only the one-process row program: the command's process takes the
+    /// account's ids (`set_ids`) before its exec, the session staying root.
+    drop: bool,
+    uid: int,
+    gid: int,
+    groups: List[int],
 }
 
 /// How the session ended, for the log: `status N`, `signal NAME` or
@@ -110,6 +116,11 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
     if process.is_child(f) {
         var errf = copy perr.write
         signal.reset(signal.broken_pipe()) else {}
+        if plan.drop {
+            process.set_ids(plan.uid, plan.gid, plan.groups) else {
+                process.exit(1)
+            }
+        }
         env.set_cwd(plan.home) else {
             fs.write(
                 mut errf,
