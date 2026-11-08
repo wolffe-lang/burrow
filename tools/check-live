@@ -27,6 +27,14 @@ through the pinned ssh where it says so:
      pushed commit, its objects present, the two clones alike on them;
   4. both refs deleted through burrow, and a last clone shows them gone.
 
+`live-greeting` (not in the self-test): `ssh -T git@github.com` with the
+fixture's key, through each client, its stdin left open as a terminal's
+would be. Both exit 1 with the same bytes, and the greeting is GitHub's
+`Hi <name>! You've successfully authenticated, but GitHub does not provide
+shell access.` A deploy key's greeting names its repository, so the bytes
+are compared in memory and only the line with the name replaced is printed
+or kept.
+
 `--self-test` runs the same steps against a loopback sshd (oraclelib.Sshd)
 serving an empty repository through den's fixture wrappers, with that
 sshd's known_hosts line: the mechanics, before a fixture exists.
@@ -65,6 +73,8 @@ from denlib import (  # noqa: E402
 WORK = ROOT / "target" / "live"
 KNOWN = ROOT / "ci" / "github-known-hosts"
 SECRETS = []
+GREETING_NAME = re.compile(rb"^Hi [^!\n]*!", re.M)
+GREETING = b"Hi <name>! You've successfully authenticated, but GitHub does not provide shell access.\n"
 
 
 def redact(text):
@@ -204,6 +214,32 @@ class Live:
         check(not any(k.startswith(prefix) for k in after), "the pushed refs are still there after the deletion")
         return f"commit {commit[:12]} pushed alike through both clients, cloned back alike ({len(back['burrow'][1])} objects), deleted"
 
+    def greeting(self):
+        """`ssh -T git@github.com` through each client, stdin left open."""
+        got = {}
+        for client in ("burrow", "ssh"):
+            env = {"PATH": "/usr/bin:/bin", "HOME": str(PW_HOME), "LC_ALL": "C"}
+            p = subprocess.Popen([str(WORK / f"via-{client}" / "ssh"), "-T", "git@github.com"], env=env,
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                p.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                raise Fail(f"{client} did not exit after GitHub's answer, its stdin still open")
+            got[client] = (p.returncode, p.stdout.read(), p.stderr.read())
+            p.stdin.close()
+        # The name goes before anything is compared aloud, printed or kept.
+        masked = {c: (r[0], GREETING_NAME.sub(b"Hi <name>!", r[1]), GREETING_NAME.sub(b"Hi <name>!", r[2]))
+                  for c, r in got.items()}
+        for c, r in masked.items():
+            self.log.append(redact(f"--- ssh -T git@github.com through {c}\nexit {r[0]}\nstdout {r[1]!r}\nstderr {r[2]!r}"))
+        check(got["burrow"] == got["ssh"],
+              f"the clients differ: burrow {redact(repr(masked['burrow']))[:300]}; ssh {redact(repr(masked['ssh']))[:300]}")
+        code, out, err = masked["ssh"]
+        check(code == 1 and out == b"" and err == GREETING, f"the pinned ssh: {redact(repr(masked['ssh']))[:300]}")
+        return f"exit 1 and the same bytes through both clients: {GREETING.decode().strip()!r}"
+
 
 def keep_evidence():
     out = ROOT / "target" / "evidence" / "live"
@@ -265,7 +301,7 @@ def main():
     oraclelib.require_oracle()
     require_den()
     os.umask(0o022)
-    fails = 0
+    fails = ran = 0
     server = None
     try:
         if a.self_test:
@@ -296,8 +332,18 @@ def main():
             check(os.path.isfile(key), "BURROW_LIVE_SSH_KEY names no file")
             algo, blob = KNOWN.read_text().split()[1:3]
             LIVE = Live(url, key, [f"github.com {algo} {blob}\n", f"[ssh.github.com]:443 {algo} {blob}\n"], {})
-        note = LIVE.run()
-        print(f"PASS {name} ({redact(note)})", flush=True)
+        rows = [(name, LIVE.run)] + ([] if a.self_test else [("live-greeting", LIVE.greeting)])
+        for rname, fn in rows:
+            ran += 1
+            try:
+                note = fn()
+                print(f"PASS {rname} ({redact(note)})", flush=True)
+            except Fail as e:
+                fails += 1
+                print(f"FAIL {rname} {redact(str(e))}", flush=True)
+            except Exception as e:  # a harness fault is a red row too, by name
+                fails += 1
+                print(f"FAIL {rname} harness: {type(e).__name__}: {redact(str(e))}", flush=True)
     except Fail as e:
         fails += 1
         print(f"FAIL {name} {redact(str(e))}", flush=True)
@@ -308,7 +354,7 @@ def main():
         if server:
             server.__exit__(None, None, None)
         clear_home()
-    print(f"check-live: 1 rows, {fails} failed, 0 SKIP")
+    print(f"check-live: {max(ran, 1)} rows, {fails} failed, 0 SKIP")
     fails += keep_evidence()
     fails += leftovers([WORK, ROOT / "target" / "live-self-test"])
     sys.exit(min(fails, 100))
