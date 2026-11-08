@@ -22,6 +22,7 @@ import hashlib
 import hmac
 import os
 import pathlib
+import pty
 import re
 import shutil
 import stat
@@ -968,17 +969,177 @@ def cli_user_precedence():
     return f"-l wins for both: exit {rs[0]}, {rs[1].decode().strip()}"
 
 
+# ---- a shell with no pty (-T, no command) -------------------------------------------
+# RFC 4254 §6.5's `shell` request, never `pty-req`; ssh(1): with no command
+# the server starts the login shell, a pty only when the client has one.
+def shell_log(log):
+    """Whether sshd's log shows a shell request, and whether a pty-req."""
+    return bool(re.search(r"req(uest)? shell", log)), "pty-req" in log
+
+
+def held_alike(d, rb, rs, what):
+    compare(d, f"{what}\nburrow exit {rb[0]} stdout {rb[1]!r} stderr {rb[2]!r}\nssh exit {rs[0]} stdout {rs[1]!r} stderr {rs[2]!r}\n")
+    check(rb[:3] == rs[:3], f"burrow exit {rb[0]} {rb[1]!r} {rb[2]!r}; ssh exit {rs[0]} {rs[1]!r} {rs[2]!r}")
+
+
+def on_pty(argv, typed, env, timeout=60):
+    """argv with stdin a pty's slave (not its controlling terminal) and
+    `typed` written into the master; returns (exit, stdout, stderr)."""
+    master, slave = pty.openpty()
+    try:
+        p = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    finally:
+        os.close(slave)
+    try:
+        if typed:
+            os.write(master, typed)
+        try:
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            out, err = p.communicate()
+            raise Fail(f"{argv[0]} did not finish within {timeout}s on a terminal; stderr {tail(err)}")
+    finally:
+        os.close(master)
+    return p.returncode, out, err
+
+
 @row
-def cli_no_command():
-    """No command: refused by name after the login (R-bw03-1), never a
-    shell; the pinned ssh starts one (a recorded difference)."""
-    d = run_dir("cli-no-command")
+def shell_stdin():
+    """-T, no command, a script on stdin: the login shell runs it."""
+    d = run_dir("shell-stdin")
+    script = b"echo out; echo err >&2; exit 3\n"
     with session_server(d) as s:
-        rb = burrow(d, common(s, known(d, s), d / "id_user") + ["127.0.0.1"])
+        kh = known(d, s)
+        rb = burrow(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=script)
         log = s.log_text()
-    refused(rb, "shell_unsupported")
-    check("Accepted publickey for " + USER in log, "sshd did not log the login before the refusal")
-    check("session_new" not in log and "server_input_channel_open" not in log, "burrow opened a channel")
+        rs = ssh(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=script)
+    held_alike(d, rb, rs, "-T with a script on stdin")
+    check(rs[0] == 3 and rs[1] == b"out\n" and rs[2] == b"err\n", f"the pinned ssh: {rs[0]} {rs[1]!r} {rs[2]!r}")
+    shell, ptyreq = shell_log(log)
+    check(shell and not ptyreq, f"sshd's log for burrow: shell request {shell}, pty-req {ptyreq}")
+
+
+@row
+def shell_binary():
+    d = run_dir("shell-binary")
+    script = b"printf '\\000\\377\\303('; printf '\\001\\376' >&2; exit 0\n"
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=script)
+        rs = ssh(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=script)
+    held_alike(d, rb, rs, "-T, raw bytes both ways")
+    check(rs[1] == b"\x00\xff\xc3(" and rs[2] == b"\x01\xfe", f"the pinned ssh: {rs[1]!r} {rs[2]!r}")
+
+
+@row
+def shell_env():
+    """The env requests go before the shell request, as before exec."""
+    d = run_dir("shell-env")
+    script = b'printf "[%s][%s]" "$GIT_PROTOCOL" "$FOO"\n'
+    with session_server(d) as s:
+        kh = known(d, s)
+        args = ["-T", "-o", "SendEnv=GIT_PROTOCOL", "-o", "SetEnv=FOO=bar"] + common(s, kh, d / "id_user") + ["127.0.0.1"]
+        rb = burrow(d, args, inp=script, env={"GIT_PROTOCOL": "version=2"})
+        rs = ssh(d, args, inp=script, env={"GIT_PROTOCOL": "version=2"})
+    held_alike(d, rb, rs, "-T with SendEnv and SetEnv")
+    check(rs[1] == b"[version=2][bar]", f"the pinned ssh: {rs[1]!r}")
+
+
+@row
+def shell_greeting():
+    """GitHub's shape: after the login the server writes a greeting to
+    stderr and exits 1, while the client's stdin is still open."""
+    d = run_dir("shell-greeting")
+    greet = "Hi row! You have authenticated, but this server provides no shell."
+    with Server(d, [f"ForceCommand echo '{greet}' >&2; exit 1"]) as s:
+        kh = known(d, s)
+        got = {}
+        for who, argv in (("burrow", [str(BIN), "-F", "none"]), ("ssh", [SSH, "-F", "none", "-o", "BatchMode=yes"])):
+            p = subprocess.Popen(argv + ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=envfor(d))
+            try:
+                p.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                raise Fail(f"{who} did not exit after the server's greeting, its stdin still open")
+            out, err = p.stdout.read(), p.stderr.read()
+            p.stdin.close()
+            got[who] = (p.returncode, out, err)
+        log = s.log_text()
+    held_alike(d, got["burrow"], got["ssh"], "a greeting on stderr, exit 1, stdin left open")
+    check(got["ssh"] == (1, b"", (greet + "\n").encode()), f"the pinned ssh: {got['ssh']!r}")
+    shell, ptyreq = shell_log(log)
+    check(shell and not ptyreq, f"sshd's log: shell request {shell}, pty-req {ptyreq}")
+    return f"exit 1, {greet!r} on stderr, both clients"
+
+
+@row
+def shell_signal():
+    d = run_dir("shell-signal")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=b"kill -TERM $$\n")
+        rs = ssh(d, ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"], inp=b"kill -TERM $$\n")
+    held_alike(d, rb, rs, "a shell killed by SIGTERM")
+    check(rs[0] == 255, f"the pinned ssh exit {rs[0]}")
+
+
+@row
+def shell_no_tty_pipe():
+    """No -T and stdin not a terminal: ssh's line, then the same shell."""
+    d = run_dir("shell-no-tty-pipe")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1"])
+        log = s.log_text()
+        rs = ssh(d, common(s, kh, d / "id_user") + ["127.0.0.1"])
+    held_alike(d, rb, rs, "no -T, stdin /dev/null")
+    check(rs[0] == 0 and rs[2].strip(), f"the pinned ssh: exit {rs[0]}, stderr {rs[2]!r}")
+    shell, ptyreq = shell_log(log)
+    check(shell and not ptyreq, f"sshd's log for burrow: shell request {shell}, pty-req {ptyreq}")
+    return f"both: {rs[2].decode().strip()!r}"
+
+
+@row
+def shell_terminal_t():
+    """-T with stdin a terminal (how a person checks a key at a console):
+    the shell runs with no pty, reading what is typed."""
+    d = run_dir("shell-terminal-t")
+    with session_server(d) as s:
+        kh = known(d, s)
+        args = ["-T"] + common(s, kh, d / "id_user") + ["127.0.0.1"]
+        rb = on_pty([str(BIN), "-F", "none"] + args, b"echo typed; exit 4\n", envfor(d))
+        log = s.log_text()
+        rs = on_pty([SSH, "-F", "none", "-o", "BatchMode=yes"] + args, b"echo typed; exit 4\n", envfor(d))
+    held_alike(d, rb, rs, "-T, stdin a pty, a line typed")
+    check(rs[0] == 4 and rs[1] == b"typed\n", f"the pinned ssh: {rs[0]} {rs[1]!r} {rs[2]!r}")
+    shell, ptyreq = shell_log(log)
+    check(shell and not ptyreq, f"sshd's log for burrow: shell request {shell}, pty-req {ptyreq}")
+
+
+@row
+def shell_terminal_refused():
+    """No -T and stdin a terminal: an interactive shell needs a pty, which
+    burrow does not allocate yet. Refused by name before connecting; the
+    pinned ssh would allocate one (a recorded difference, B7)."""
+    d = run_dir("shell-terminal-refused")
+    with session_server(d) as s:
+        kh = known(d, s)
+        rb = on_pty([str(BIN), "-F", "none"] + common(s, kh, d / "id_user") + ["127.0.0.1"], b"", envfor(d))
+        log = s.log_text()
+    compare(d, f"burrow exit {rb[0]} stderr {rb[2]!r}\n")
+    refused(rb, "pty_unsupported")
+    check(b"-T" in rb[2], f"the refusal does not point at -T: {tail(rb[2])}")
+    check("Connection from" not in log, "burrow connected before refusing")
+
+
+@row
+def cli_t_refused():
+    d = run_dir("cli-t-refused")
+    rb = burrow(d, ["-t", "127.0.0.1"])
+    refused(rb, "option_unsupported")
 
 
 def keep_evidence(tier):
