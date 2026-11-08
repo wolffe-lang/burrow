@@ -161,7 +161,17 @@ def server_rekey():
         rb, rs = p.both(["cat"], inp=data, opts=["-o", "RekeyLimit=256K"])
         note = same(p, rb, rs, "4 MiB through cat at RekeyLimit 256K both sides")
         check(hashlib.sha256(rb[1]).digest() == hashlib.sha256(data).digest(), "burrowd's cat is not the input")
-        return note
+        # The exchanges, counted from the pinned ssh's own -v lines (one
+        # `SSH2_MSG_NEWKEYS received` per exchange, as measured), the same
+        # transfer again through each server.
+        vb = p.ssh(p.burrowd.port, ["-v", "cat"], inp=data, opts=["-o", "RekeyLimit=256K"])
+        vs = p.ssh(p.sshd.port, ["-v", "cat"], inp=data, opts=["-o", "RekeyLimit=256K"])
+        nb = vb[2].count(b"SSH2_MSG_NEWKEYS received")
+        ns = vs[2].count(b"SSH2_MSG_NEWKEYS received")
+        record(p, f"exchanges the pinned ssh counted (-v): through burrowd {nb}, through sshd {ns}\n")
+        check(vb[0] == 0 and vb[1] == data, f"the -v transfer through burrowd: exit {vb[0]}, {len(vb[1])} bytes")
+        check(nb >= 15, f"{nb} exchanges through burrowd for 4 MiB at 256K (sshd: {ns}); wanted at least 15")
+        return note + f"; {nb} exchanges through burrowd, {ns} through sshd"
 
 
 # ---- the host key ----------------------------------------------------------------
@@ -390,6 +400,25 @@ def auth_option_unhonoured():
         check(rb[0] == 255 and b"Permission denied (publickey)" in rb[2], show(rb))
         outcome(p, "auth_key_unlisted")
         return "a from= line burrowd cannot honour admits nothing, and the plain line after it is not consulted"
+
+
+@row
+def auth_nologin():
+    """/etc/nologin (sshd(8)'s LOGIN PROCESS): its text shown, the session
+    refused, alike through both servers. The file is removed after."""
+    nologin = pathlib.Path("/etc/nologin")
+    check(not nologin.exists(), "/etc/nologin exists before the row")
+    with Pair(BIN, rundir("auth-nologin")) as p:
+        try:
+            nologin.write_text("bw04: logins are off for this row\n")
+            rb, rs = p.both(["echo", "ran"])
+        finally:
+            nologin.unlink()
+        note = same(p, rb, rs, "ssh host echo ran, with /etc/nologin")
+        check(b"ran" not in rb[1], "the command ran through burrowd")
+        got = p.burrowd.conn_lines()
+        check(any("nologin" in x for x in got), f"burrowd's log does not name nologin: {got[-2:]}")
+        return note
 
 
 # ---- the session ----------------------------------------------------------------------
