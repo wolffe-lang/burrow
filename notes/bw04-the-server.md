@@ -705,7 +705,7 @@ listening socket outside loopback: every row binds `127.0.0.1` or `::1`.
   `9f499c39e00e92f05621c0b259f4d0b05d1cedf34b376fde31fa2787a0d1978c`.
   The other pages, notes and RFCs agree with the digests in
   [SOURCES](../docs/SOURCES.md).
-- The toolchain, std and OpenSSH pins are unchanged from trunk `0d98ce9`.
+- The toolchain, std and OpenSSH pins are unchanged from trunk `0d98ce9`, and from `1d022ae`, the trunk this branch was rebased onto (the client's system known_hosts files and its shell with no pty).
 
 ## Done-when
 
