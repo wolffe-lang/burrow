@@ -34,7 +34,8 @@ case "${1:-}" in
     ;;
 esac
 
-# Two programs: burrow (src/burrow.lu) and burrow-keygen (src/keygen.lu).
+# Three programs: burrow (src/burrow.lu), burrow-keygen (src/keygen.lu) and
+# burrowd (src/burrowd.lu, the server).
 # On the native and release tiers, a row program as well, never installed,
 # never built --static and never uploaded: target/<tier>/rows/kexprobe
 # (src/kexprobe.lu), the transport with strict kex waived for the
@@ -58,16 +59,20 @@ for tier in $tiers; do
             "$WOLF" build --release --no-cache --deny-warnings src/burrow.lu -o target/static/burrow
         PATH="$BURROW_ROOT/target/static/bin:$PATH" \
             "$WOLF" build --release --no-cache --deny-warnings src/keygen.lu -o target/static/burrow-keygen
+        PATH="$BURROW_ROOT/target/static/bin:$PATH" \
+            "$WOLF" build --release --no-cache --deny-warnings src/burrowd.lu -o target/static/burrowd
     elif [ "$tier" = release ]; then
         "$WOLF" build --release --deny-warnings src/burrow.lu -o "target/$tier/burrow"
         "$WOLF" build --release --deny-warnings src/keygen.lu -o "target/$tier/burrow-keygen"
+        "$WOLF" build --release --deny-warnings src/burrowd.lu -o "target/$tier/burrowd"
     else
         "$WOLF" build --deny-warnings src/burrow.lu -o "target/$tier/burrow"
         "$WOLF" build --deny-warnings src/keygen.lu -o "target/$tier/burrow-keygen"
+        "$WOLF" build --deny-warnings src/burrowd.lu -o "target/$tier/burrowd"
     fi
     if [ "$tier" = static ]; then
-        echo "build: target/$tier/burrow target/$tier/burrow-keygen"
+        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd"
     else
-        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/rows/kexprobe"
+        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd target/$tier/rows/kexprobe"
     fi
 done
