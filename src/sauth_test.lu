@@ -1,0 +1,150 @@
+//! member: false
+
+// B5: authentication from burrowd's side. Requests built by burrow's own
+// client (vectorgen's vectors) parse; the decisions and the tries; the
+// monitor's verification over its own session identifier, refusing another
+// session's signature and another key's; the account rules.
+use kexvec
+use mon
+use sauth
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn req(p: List[byte]) -> sauth.Request {
+    sauth.parse(p) else {
+        assert(false, "a request does not parse")
+        return sauth.parse(x(kexvec.auth_query())) else sauth.Request {
+            user: "",
+            service: "",
+            method: "",
+            signed: false,
+            alg: "",
+            blob: List[byte](),
+            sig: List[byte](),
+        }
+    }
+}
+
+fn head(user: str, service: str, method: str) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, 50)
+    wire.put_text(mut p, user)
+    wire.put_text(mut p, service)
+    wire.put_text(mut p, method)
+    p
+}
+
+fn decided(mut s: sauth.State, q: sauth.Request) -> str {
+    sauth.decide(mut s, q) else |e| {
+        return "{e}"
+    }
+}
+
+fn main() {
+    // The answers, byte for byte.
+    assert(wire.hex(sauth.failure_msg()) == kexvec.srv_auth_failure())
+    assert(wire.hex(sauth.success_msg()) == kexvec.srv_auth_success())
+    assert(wire.hex(sauth.pk_ok_msg("ssh-ed25519", x(kexvec.user_blob()))) == kexvec.auth_pk_ok())
+    // The client's query and signed request parse.
+    let q = req(x(kexvec.auth_query()))
+    assert(q.user == "burrowtest" && q.service == "ssh-connection" && q.method == "publickey")
+    assert(!q.signed && q.alg == "ssh-ed25519" && wire.hex(q.blob) == kexvec.user_blob())
+    let sr = req(x(kexvec.auth_signed_request()))
+    assert(sr.signed && sauth.signature_of(sr.sig).len == 64)
+    // A trailing byte, or a missing field, is malformed.
+    var bad = x(kexvec.auth_query())
+    (mut bad).push(0 as byte)
+    var why = "none"
+    let _ = sauth.parse(bad) else |e| {
+        why = "{e}"
+        copy q
+    }
+    assert(why == "malformed")
+    // Decisions.
+    var s = sauth.start(6)
+    assert(decided(mut s, req(head("burrowtest", "ssh-connection", "none"))) == "fail")
+    assert(decided(mut s, q) == "query")
+    assert(decided(mut s, sr) == "verify")
+    assert(decided(mut s, req(head("burrowtest", "ssh-connection", "password"))) == "fail")
+    assert(decided(mut s, req(head("root", "ssh-connection", "none"))) == "auth_changed")
+    var s2 = sauth.start(6)
+    assert(decided(mut s2, req(head("u", "ssh-userauth", "none"))) == "fail")
+    assert(decided(mut s2, req(head("u", "other", "none"))) == "auth_changed")
+    // Another algorithm, or a blob that is not ssh-ed25519.
+    var rsa = head("u", "ssh-connection", "publickey")
+    wire.put_bool(mut rsa, false)
+    wire.put_text(mut rsa, "rsa-sha2-256")
+    wire.put_string(mut rsa, x(kexvec.user_blob()))
+    var s3 = sauth.start(6)
+    assert(decided(mut s3, req(rsa)) == "fail")
+    assert(s3.refused.len == 1 && s3.refused[0] == "publickey rsa-sha2-256")
+    // The tries: none does not count; the sixth failure ends it.
+    var t = sauth.start(6)
+    let none = req(head("u", "ssh-connection", "none"))
+    var n = 0
+    var ended = ""
+    sauth.failed(mut t, none) else |e| {
+        ended = "{e}"
+    }
+    while n < 6 && ended == "" {
+        sauth.failed(mut t, q) else |e| {
+            ended = "{e}"
+        }
+        n += 1
+    }
+    assert(ended == "auth_tries_exceeded" && n == 6)
+    // The monitor's verification: over its session identifier, by the key
+    // the request names.
+    let sid = x(kexvec.h())
+    assert(mon.verify(sid, "burrowtest", sr.blob, sr.sig))
+    assert(!mon.verify(x(kexvec.h2()), "burrowtest", sr.blob, sr.sig))
+    assert(!mon.verify(sid, "root", sr.blob, sr.sig))
+    assert(!mon.verify(sid, "burrowtest", x(kexvec.k_s()), sr.sig))
+    var flipped = copy sr.sig
+    flipped[40] = (flipped[40] as int ^ 1) as byte
+    assert(!mon.verify(sid, "burrowtest", sr.blob, flipped))
+    assert(!mon.verify(List[byte](), "burrowtest", sr.blob, sr.sig))
+    // Accounts: passwd and group, root refused always, an empty shell /bin/sh.
+    let passwd = "root:x:0:0:root:/root:/bin/bash\nburrowtest:x:1000:1000::/home/burrowtest:\nsshd:x:100:65534::/run/sshd:/usr/sbin/nologin\n"
+    let group = "root:x:0:\nburrowtest:x:1000:\ngit:x:1001:burrowtest,sshd\nwheel:x:10:burrowtest\n"
+    let a = mon.account(passwd, group, "burrowtest") else mon.Account {
+        name: "",
+        uid: -1,
+        gid: -1,
+        home: "",
+        shell: "",
+        groups: List[int](),
+    }
+    assert(a.uid == 1000 && a.gid == 1000 && a.home == "/home/burrowtest" && a.shell == "/bin/sh")
+    assert(a.groups.len >= 3)
+    var root = "ok"
+    let _ = mon.account(passwd, group, "root") else |e| {
+        root = "{e}"
+        copy a
+    }
+    assert(root == "root")
+    var nobody = "ok"
+    let _ = mon.account(passwd, group, "nobody") else |e| {
+        nobody = "{e}"
+        copy a
+    }
+    assert(nobody == "unknown")
+    // An account through a frame and back.
+    let back = mon.account_from(mon.account_fields(a), 0) else mon.Account {
+        name: "",
+        uid: -1,
+        gid: -1,
+        home: "",
+        shell: "",
+        groups: List[int](),
+    }
+    assert(
+        back.name == a.name &&
+            back.uid == a.uid &&
+            back.home == a.home &&
+            back.groups.len == a.groups.len,
+    )
+}
