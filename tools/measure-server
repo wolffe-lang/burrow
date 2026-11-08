@@ -4,8 +4,8 @@
     tools/in-container python3 -I tools/measure-server --bin target/release/burrowd
 
 Through the pinned ssh, interleaved rounds against release burrowd, the
-pinned sshd and the one-process row program (rows/burrowd-oneproc, R-bw04-2's
-(B)), all with one host key and one account:
+pinned sshd and the one-process row program (rows/burrowd-oneproc, the
+note's (B)), all with one host key and one account:
 
 - connect to the first byte of `echo`: the wall time from starting ssh to
   its first stdout byte, the mean of 20 logins a round, the minimum of the
@@ -14,7 +14,7 @@ pinned sshd and the one-process row program (rows/burrowd-oneproc, R-bw04-2's
 - 64 MiB through `cat`: wall, and the server's CPU the same way.
 
 The ratios are held to the prediction's margins (login wall 6x, login CPU
-25x, cat wall 12x, cat CPU 50x, burrowd over sshd); (A) over (B) is
+25x, cat wall 12x, cat CPU 50x, burrowd over sshd); burrowd over (B) is
 reported. A perf step: run it with nothing beside it (the timed-rows rule).
 """
 import argparse
@@ -136,7 +136,7 @@ def main():
     print("measure-server: burrowd / sshd: " + ", ".join(f"{k} {v:.2f}x (margin {MARGINS[k]:.0f}x)" for k, v in ratios.items()))
     ab = m(login["burrowd"]) / m(login["oneproc"])
     abc = m(login_cpu["burrowd"]) / max(m(login_cpu["oneproc"]), 1e-6)
-    print(f"measure-server: R-bw04-2, separate processes (A) / one process (B): first byte {ab:.2f}x, server cpu {abc:.2f}x (reported)")
+    print(f"measure-server: separate processes / one process: first byte {ab:.2f}x, server cpu {abc:.2f}x (reported)")
     fails = 0
     for k, v in ratios.items():
         if v > MARGINS[k]:
