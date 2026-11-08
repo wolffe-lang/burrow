@@ -1,7 +1,8 @@
 //! member: true
 //!
-//! burrow.session — one command on a session channel (`src/channel`),
-//! with stdin, stdout and stderr as raw bytes, until the channel closes.
+//! burrow.session — one command, or the login shell with no
+//! pseudo-terminal (`-T`), on a session channel (`src/channel`), with
+//! stdin, stdout and stderr as raw bytes, until the channel closes.
 //!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
@@ -29,9 +30,11 @@ use channel
 use refuse
 use transport
 
-/// What the session runs.
+/// What the session runs: `command` by `exec`, or, when `shell`, the
+/// user's default shell by a `shell` request (RFC 4254 §6.5).
 pub struct Plan {
     command: List[byte],
+    shell: bool,
     env: List[str],
     verbose: int,
 }
@@ -147,8 +150,13 @@ pub fn run(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> int ! ref
         transport.write(mut c, channel.env_msg(ch, kv[0..eq], kv[eq + 1..kv.len]))?
         say(plan, "Sending env {kv[0..eq]}")
     }
-    transport.write(mut c, channel.exec_msg(mut ch, plan.command))?
-    say(plan, "Sending command: {str_from_utf8(plan.command) else "<not UTF-8>"}")
+    if plan.shell {
+        transport.write(mut c, channel.shell_msg(mut ch))?
+        say(plan, "Requesting the shell, with no pseudo-terminal")
+    } else {
+        transport.write(mut c, channel.exec_msg(mut ch, plan.command))?
+        say(plan, "Sending command: {str_from_utf8(plan.command) else "<not UTF-8>"}")
+    }
     while !ch.exec_ok && !ch.got_close {
         pump(mut c, mut ch, plan)?
     }
