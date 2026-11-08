@@ -421,7 +421,7 @@ On the Linux x86-64 desktop's six-CPU block, with nothing beside it:
 
 The one-process build: 79.6 ms to the first byte and 5.0 ms of CPU a
 login, so the separate processes cost 1.01x in wall time and 1.20x in CPU
-(five forks and a few pipe round trips a login). `sshd` re-executes itself
+(two more forks a connection, and the monitor's pipe round trips). `sshd` re-executes itself
 for every connection, which burrowd, a fork of its listener, does not; the
 transfer's cost is burrowd's ChaCha20 and Poly1305 in checked `int` code.
 
