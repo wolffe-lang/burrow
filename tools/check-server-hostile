@@ -1,0 +1,361 @@
+#!/usr/bin/env python3
+"""check-server-hostile — burrowd against clients that misbehave.
+
+    tools/in-container python3 -I tools/check-server-hostile --bin target/native/burrowd [--only ROW...]
+
+A scripted client (tools/fakeclient.py) reaches each stage and then does
+what no honest client does; each row holds burrowd to a refusal by name (its
+DISCONNECT's reason and its log line's outcome) or to surviving it. The last
+row opens a thousand connections that never send a version line and holds
+the unauthenticated-connection cap and the listener's life. Runs as root in
+the pinned container, like tools/check-server; every server binds 127.0.0.1.
+"""
+import argparse
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+import serverlib  # noqa: E402
+from fakeclient import FakeClient, disconnect_of, public_line  # noqa: E402
+from fakeserver import u32, string  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "server-hostile"
+ROWS = []
+BIN = None
+USER = serverlib.USER
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+class Server:
+    """burrowd alone, with `seed`'s key authorized for the account."""
+
+    def __init__(self, name, config=()):
+        self.dir = WORK / name
+        if self.dir.exists():
+            shutil.rmtree(self.dir)
+        self.dir.mkdir(parents=True)
+        os.chmod(self.dir, 0o711)
+        self.seed = os.urandom(32)
+        self.other = os.urandom(32)
+        serverlib.install_keys([public_line(self.seed)])
+        key = self.dir / "host_ed25519"
+        serverlib.keygen(key, "host")
+        self.b = serverlib.Burrowd(BIN, self.dir / "burrowd", key, list(config))
+
+    def __enter__(self):
+        self.b.__enter__()
+        self.port = self.b.port
+        return self
+
+    def __exit__(self, *e):
+        self.b.__exit__()
+        (self.dir / "compare.txt").write_text(self.b.log_text())
+
+    def outcome(self, name):
+        got = self.b.conn_lines(settle=5)
+        check(any(f" outcome {name} " in x + " " for x in got), f"burrowd's log has no outcome {name}: {got[-3:]}")
+
+
+def refused(got, code, name):
+    d = disconnect_of(got)
+    check(d is not None, f"no DISCONNECT; got {[t for t, _ in got]}")
+    check(d[0] == code and name in d[1], f"DISCONNECT {d}, wanted reason {code} naming {name}")
+    return f"DISCONNECT {d[0]}: {d[1][:90]}"
+
+
+def logged_in(s):
+    c = FakeClient(s.port)
+    c.kex()
+    c.service()
+    p = c.signed(USER, s.seed)
+    check(p[0] == 52, f"message {p[0]} instead of USERAUTH_SUCCESS")
+    return c
+
+
+@row
+def hostile_never_kex():
+    with Server("hostile-never-kex", ["LoginGraceTime 2"]) as s:
+        c = socket.create_connection(("127.0.0.1", s.port))
+        c.settimeout(10)
+        c.sendall(b"SSH-2.0-stalls\r\n")
+        t0 = time.monotonic()
+        data = b""
+        try:
+            while True:
+                d = c.recv(4096)
+                if not d:
+                    break
+                data += d
+        except OSError:
+            pass
+        took = time.monotonic() - t0
+        c.close()
+        check(1.5 < took < 8, f"the connection ended after {took:.1f} s, wanted about 2")
+        s.outcome("grace_expired")
+        return f"closed after {took:.1f} s"
+
+
+@row
+def hostile_no_strict_kex():
+    with Server("hostile-no-strict-kex") as s:
+        c = FakeClient(s.port)
+        try:
+            c.kex(strict=False)
+            got = c.until_end()
+        except (ValueError, EOFError, OSError):
+            got = c.until_end()
+        c.close()
+        note = refused(got, 3, "strict_kex_missing")
+        s.outcome("strict_kex_missing")
+        return note
+
+
+@row
+def hostile_oversize_packet():
+    with Server("hostile-oversize-packet") as s:
+        c = FakeClient(s.port)
+        c.kex()
+        # A sealed packet_length of 300000: past the 262144 burrowd reads.
+        c.w.send(bytes([2]) + string(b"x" * 300000))
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "packet_too_long")
+        s.outcome("packet_too_long")
+        return note
+
+
+@row
+def hostile_wrong_session():
+    with Server("hostile-wrong-session") as s:
+        c = FakeClient(s.port)
+        c.kex()
+        c.service()
+        p = c.signed(USER, s.seed, session_id=os.urandom(32))
+        c.close()
+        check(p[0] == 51, f"message {p[0]}: a signature over another session identifier was not refused")
+        s.outcome("auth_sig_bad")
+        return "USERAUTH_FAILURE, auth_sig_bad"
+
+
+@row
+def hostile_other_key():
+    with Server("hostile-other-key") as s:
+        c = FakeClient(s.port)
+        c.kex()
+        c.service()
+        p = c.signed(USER, s.seed, signer=s.other)
+        c.close()
+        check(p[0] == 51, f"message {p[0]}: a signature by another key was not refused")
+        s.outcome("auth_sig_bad")
+        return "USERAUTH_FAILURE, auth_sig_bad"
+
+
+@row
+def hostile_exec_before_auth():
+    with Server("hostile-exec-before-auth") as s:
+        c = FakeClient(s.port)
+        c.kex()
+        c.service()
+        c.request(0, b"exec", True, string(b"id"))
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "message_unexpected")
+        s.outcome("message_unexpected")
+        return note
+
+
+@row
+def hostile_user_changed():
+    with Server("hostile-user-changed") as s:
+        c = FakeClient(s.port)
+        c.kex()
+        c.service()
+        c.query(USER, s.other)
+        c.w.send(FakeClient.head("root", b"none"))
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "auth_changed")
+        s.outcome("auth_changed")
+        return note
+
+
+@row
+def hostile_data_before_open():
+    with Server("hostile-data-before-open") as s:
+        c = logged_in(s)
+        c.data(0, b"early")
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "channel_unknown")
+        s.outcome("channel_unknown")
+        return note
+
+
+@row
+def hostile_data_before_exec():
+    with Server("hostile-data-before-exec") as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        c.data(0, b"before the command runs")
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "window_exceeded")
+        s.outcome("window_exceeded")
+        return note
+
+
+@row
+def hostile_window_overrun():
+    with Server("hostile-window-overrun") as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        c.request(0, b"exec", True, string(b"sleep 5"))
+        ok = c.recv()
+        check(ok[0] == 99, f"message {ok[0]} instead of CHANNEL_SUCCESS")
+        sent = 0
+        chunk = b"z" * 32768
+        while sent <= 2097152:
+            c.data(0, chunk)
+            sent += len(chunk)
+        got = c.until_end()
+        c.close()
+        note = refused(got, 2, "window_exceeded")
+        s.outcome("window_exceeded")
+        return note + f" after {sent} bytes"
+
+
+@row
+def hostile_requests_refused():
+    """Every request burrowd refuses, each wanting a reply: CHANNEL_FAILURE
+    for each, the session still serves, and the log names them all."""
+    with Server("hostile-requests-refused") as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        peer = 0
+        asks = [(b"pty-req", string(b"xterm") + u32(80) + u32(24) + u32(0) + u32(0) + string(b"")),
+                (b"x11-req", b"\x00" + string(b"MIT-MAGIC-COOKIE-1") + string(b"00") + u32(0)),
+                (b"auth-agent-req@openssh.com", b""), (b"subsystem", string(b"sftp")),
+                (b"signal", string(b"TERM")), (b"shell", b"")]
+        answers = []
+        for kind, fields in asks:
+            c.request(peer, kind, True, fields)
+            answers.append(c.recv()[0])
+        c.request(peer, b"env", True, string(b"LANG") + string(b"C.UTF-8"))
+        answers.append(c.recv()[0])
+        c.request(peer, b"exec", True, string(b"echo still"))
+        ok = c.recv()
+        check(answers == [100] * 7, f"answers {answers}, wanted seven CHANNEL_FAILUREs")
+        check(ok[0] == 99, f"message {ok[0]} instead of CHANNEL_SUCCESS for exec after the refusals")
+        got = c.until_end(seconds=10)
+        c.close()
+        data = b"".join(p[9:] for t, p in got if t == 94)
+        check(b"still" in data, f"the command's output did not arrive: {[t for t, _ in got]}")
+        lines = s.b.conn_lines(settle=5)
+        names = ["pty_refused", "x11_refused", "agent_refused", "subsystem_refused", "signal_refused", "shell_refused",
+                 "env_refused"]
+        check(lines and all(n in lines[-1] for n in names), f"the log line does not name them all: {lines[-1:]}")
+        return "seven CHANNEL_FAILUREs, the command still runs, the log names each"
+
+
+@row
+def hostile_thousand():
+    with Server("hostile-thousand", ["LoginGraceTime 5"]) as s:
+        master = s.b.proc.pid
+        held = []
+        peak = 0
+        dropped = 0
+        for i in range(1000):
+            try:
+                c = socket.create_connection(("127.0.0.1", s.port), timeout=5)
+                held.append(c)
+            except OSError:
+                dropped += 1
+            if i % 50 == 49:
+                n = monitors(master)
+                peak = max(peak, n)
+        time.sleep(0.5)
+        peak = max(peak, monitors(master))
+        alive = s.b.proc.poll() is None
+        for c in held:
+            c.close()
+        time.sleep(6)
+        # A real login after the flood.
+        key = s.dir / "id_user"
+        serverlib.keygen(key)
+        serverlib.install_keys([pathlib.Path(str(key) + ".pub").read_text()])
+        kh = s.dir / "known_hosts"
+        kh.write_text(f"[127.0.0.1]:{s.port} " + " ".join((s.dir / "host_ed25519.pub").read_text().split()[:2]) + "\n")
+        r = serverlib.run([serverlib.SSH, "-F", "none", "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={kh}",
+                           "-i", str(key), "-p", str(s.port), "-l", USER, "127.0.0.1", "echo", "after"], timeout=60)
+        check(alive and s.b.proc.poll() is None, "the listener died")
+        check(peak <= 100, f"{peak} monitors at once, past MaxStartups 100")
+        check(r[0] == 0 and r[1] == b"after\n", f"no login after the flood: exit {r[0]}, {r[2][-200:]!r}")
+        return f"peak {peak} monitors (cap 100), {dropped} refused at connect, login after it"
+
+
+def monitors(master):
+    out = subprocess.run(["ps", "-e", "-o", "ppid="], capture_output=True, text=True).stdout
+    return sum(1 for l in out.split() if l == str(master))
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    if not BIN.exists():
+        print(f"FAIL setup no binary at {BIN}")
+        sys.exit(1)
+    oraclelib.require_oracle()
+    serverlib.ensure_accounts()
+    os.umask(0o022)
+    WORK.mkdir(parents=True, exist_ok=True)
+    fails = ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-server-hostile: {ran} rows, {fails} failed, 0 SKIP")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
