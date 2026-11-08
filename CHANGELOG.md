@@ -57,3 +57,23 @@
   shows GitHub's greeting and exits 1 as `ssh` does; with stdin a terminal
   and no `-T`, it refuses by name (`pty_unsupported`) before connecting.
   `shell_unsupported` is gone; a refused shell request is `shell_refused`.
+- B5, `burrowd`, the server for commands: the transport's server role
+  (burrowd's identification and KEXINIT, strict kex required, the host
+  key's signature on H, EXT_INFO with `server-sig-algs`, re-exchange either
+  way), one required Ed25519 host key checked for its mode and owner, its
+  fingerprint printed at start; key-only authentication against
+  `authorized_keys` with StrictModes, `command=` honoured and options it
+  cannot enforce admitting nothing, root refused always; one session
+  channel with `exec`, `env` (`GIT_PROTOCOL` only) and the exit status or
+  signal, every other request refused by name; LoginGraceTime,
+  MaxAuthTries and MaxStartups; one log line per connection; `sshd(8)`'s
+  flags and a subset of `sshd_config(5)`, loopback unless told otherwise.
+- burrowd's privilege separation: a monitor per connection holds the host
+  key, an unprivileged worker parses every byte before authentication, and
+  the session takes the user's ids with no way back; on macOS, and without
+  root, burrowd serves the user who runs it.
+- The server's rows against the pinned `sshd` (`tools/check-server`), a
+  scripted hostile client (`tools/check-server-hostile`), git through
+  burrowd (`tools/check-server-git`), burrowd's macOS rows
+  (`tools/check-server-local`), its static binary, and the measurement
+  against `sshd` and a one-process build (`tools/measure-server`).
