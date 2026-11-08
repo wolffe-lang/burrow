@@ -24,6 +24,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -405,20 +406,53 @@ def auth_option_unhonoured():
 @row
 def auth_nologin():
     """/etc/nologin (sshd(8)'s LOGIN PROCESS): its text shown, the session
-    refused, alike through both servers. The file is removed after."""
+    refused, alike through both servers. The rows' sshd logs to its stderr
+    (-e), and its session's log line about the file reaches the client's
+    stderr too; so the same sshd runs again logging to a file (-E), and
+    burrowd is held to what a client sees then, the -e run's extra line
+    named. The file is removed after."""
     nologin = pathlib.Path("/etc/nologin")
     check(not nologin.exists(), "/etc/nologin exists before the row")
     with Pair(BIN, rundir("auth-nologin")) as p:
+        d = p.dir / "sshd-E"
+        d.mkdir()
+        port = serverlib.free_port()
+        cfg = [x for x in (p.sshd.dir / "sshd_config").read_text().splitlines()
+               if not x.startswith(("ListenAddress ", "PidFile "))]
+        cfg += [f"ListenAddress 127.0.0.1:{port}", f"PidFile {d / 'sshd.pid'}"]
+        (d / "sshd_config").write_text("\n".join(cfg) + "\n")
+        with open(p.kh, "a") as kh:
+            kh.write(p.sshd.known_hosts_line().replace(f"[127.0.0.1]:{p.sshd.port} ", f"[127.0.0.1]:{port} "))
+        e = subprocess.Popen([serverlib.SSHD, "-D", "-E", str(d / "sshd.log"), "-f", str(d / "sshd_config")],
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
-            nologin.write_text("bw04: logins are off for this row\n")
-            rb, rs = p.both(["echo", "ran"])
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.5) as c:
+                        c.recv(64)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            try:
+                nologin.write_text("bw04: logins are off for this row\n")
+                rb, rs = p.both(["echo", "ran"])
+                re_ = serverlib.norm(p.ssh(port, ["echo", "ran"]), port)
+            finally:
+                nologin.unlink()
         finally:
-            nologin.unlink()
-        note = same(p, rb, rs, "ssh host echo ran, with /etc/nologin")
+            e.terminate()
+            e.wait(timeout=10)
+        logged = "User burrowtest not allowed because /etc/nologin exists"
+        record(p, f"sshd -e: {show(rs)}\nsshd -E: {show(re_)} raw stderr {re_[2]!r}\n")
+        check([x for x in lines(rs[2]) if x != logged] == lines(re_[2]) and rs[0] == re_[0],
+              f"sshd -e less its log line is not sshd -E: {show(rs)} / {show(re_)}")
+        note = same(p, rb, re_, "ssh host echo ran, with /etc/nologin (sshd logging to a file)")
+        check(rb[2] == re_[2], f"stderr bytes differ: burrowd {rb[2]!r}, sshd {re_[2]!r}")
         check(b"ran" not in rb[1], "the command ran through burrowd")
         got = p.burrowd.conn_lines()
         check(any("nologin" in x for x in got), f"burrowd's log does not name nologin: {got[-2:]}")
-        return note
+        return note + f"; sshd -e adds its log line {logged!r}"
 
 
 # ---- the session ----------------------------------------------------------------------
