@@ -13,12 +13,21 @@
 //!
 //! **Keywords**, from `-o` and the config file alike: `BatchMode`,
 //! `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster` (`no` only),
-//! `ControlPath` (`none` only), `HashKnownHosts`, `HostKeyAlias`,
-//! `Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
+//! `ControlPath` (`none` only), `GlobalKnownHostsFile`, `HashKnownHosts`,
+//! `HostKeyAlias`, `Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
 //! `SendEnv`, `SetEnv`, `StrictHostKeyChecking`, `UpdateHostKeys` (`no`
 //! only), `User`, `UserKnownHostsFile`. burrow has no agent, never prompts
 //! and never forwards, so `BatchMode`, `IdentitiesOnly` and
 //! `ClearAllForwardings` change nothing whatever their value.
+//!
+//! **Known hosts** (`ssh_config(5)`): the user's files
+//! (`UserKnownHostsFile`, by default `~/.ssh/known_hosts` and
+//! `~/.ssh/known_hosts2`) and then the system's (`GlobalKnownHostsFile`, by
+//! default `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`); new
+//! keys go only to the first user file.
+//!
+//! **No pseudo-terminal before B7:** `-T` (and a command) runs without one;
+//! `-t` and `RequestTTY` are refused by name.
 //!
 //! **First value wins** (`ssh_config(5)`): the command line, then the file;
 //! `IdentityFile` and `SendEnv` accumulate, and a `SendEnv` pattern written
@@ -49,6 +58,8 @@ pub struct Settings {
     ids_explicit: bool,
     no_identities: bool,
     known_hosts: List[str],
+    global_known_hosts: List[str],
+    no_tty: bool,
     strict: str,
     hash_known: bool,
     key_alias: str,
@@ -199,6 +210,8 @@ pub fn empty() -> Settings {
         ids_explicit: false,
         no_identities: false,
         known_hosts: List[str](),
+        global_known_hosts: List[str](),
+        no_tty: false,
         strict: "",
         hash_known: false,
         key_alias: "",
@@ -490,6 +503,14 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             }
         }
         s.known_hosts = files
+    } else if k == "globalknownhostsfile" {
+        var files = List[str]()
+        for w in words {
+            if w.lower() != "none" {
+                (mut files).push(w)
+            }
+        }
+        s.global_known_hosts = files
     } else if k == "setenv" {
         for w in words {
             let eq = w.find("=") else -1
@@ -615,6 +636,7 @@ pub fn parse_args(args: List[str]) -> Settings {
             while j < a.len && s.refusal == "" {
                 let f = a[j..j + 1]
                 if f == "T" {
+                    s.no_tty = true
                     j += 1
                 } else if f == "v" {
                     s.verbose += 1
@@ -829,6 +851,15 @@ pub fn finish(mut s: Settings, home: str, user: str) {
         (mut kh).push(expand(p, home))
     }
     s.known_hosts = kh
+    var gk = List[str]()
+    if !was_set(s, "globalknownhostsfile") {
+        (mut gk).push("/etc/ssh/ssh_known_hosts")
+        (mut gk).push("/etc/ssh/ssh_known_hosts2")
+    }
+    for p in s.global_known_hosts {
+        (mut gk).push(expand(p, home))
+    }
+    s.global_known_hosts = gk
 }
 
 /// The remote command: the words after the destination, joined by single
