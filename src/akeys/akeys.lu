@@ -1,0 +1,276 @@
+//! member: true
+//!
+//! burrow.akeys — `authorized_keys` as `sshd(8)` documents it
+//! (AUTHORIZED_KEYS FILE FORMAT), and the StrictModes checks of
+//! `sshd_config(5)` and `sshd(8)`'s FILES, for burrowd's monitor. No I/O:
+//! the monitor reads the files and their `fs.Info`, this module judges.
+//!
+//! **A line** is `[options] keytype base64 [comment]`; empty lines and
+//! lines starting with `#` are comments; a line over 8 KiB is not read.
+//! The options field is there when the first word is not a key type: a
+//! comma-separated list, no spaces except inside double quotes, keywords
+//! case-insensitive, `\"` a quote inside a value.
+//!
+//! **What burrowd enforces.** Only `ssh-ed25519` keys can match. The first
+//! line naming the offered key decides (`find`): `command="…"` is honoured
+//! (the forced command; the client's goes to `SSH_ORIGINAL_COMMAND`), and
+//! `restrict`, `no-pty`, `no-port-forwarding`, `no-agent-forwarding`,
+//! `no-X11-forwarding` and `no-user-rc` are taken, since burrowd allows
+//! none of those anyway. Any other option (`from=`, `environment=`,
+//! `expiry-time=`, `cert-authority`, `principals=`, `permitopen=`,
+//! `permitlisten=`, `tunnel=`, `pty`, …) is a restriction or a grant
+//! burrowd cannot honour, so that line admits nothing and no later line is
+//! consulted for the key: the key is refused, and `why` names the option.
+//!
+//! **StrictModes** (on by default): the home directory, the file's
+//! directory and the file must each be owned by the account or by root and
+//! be neither group- nor world-writable (`sshd(8)`: "If this file, the
+//! ~/.ssh directory, or the user's home directory are writable by other
+//! users … sshd will not allow it to be used").
+
+use std.base64
+use std.fs
+use wire
+
+/// What `find` decided for one offered key.
+pub struct Found {
+    /// A line names the key and burrowd can honour all of its options.
+    ok: bool,
+    /// The line's `command="…"`, when `has_command`.
+    command: str,
+    has_command: bool,
+    /// Why the first line naming the key admits nothing ("" when ok or
+    /// when no line names it).
+    why: str,
+    /// The 1-based line number that decided, 0 when none named the key.
+    line: int,
+}
+
+/// The longest line read, in bytes.
+pub fn max_line() -> int {
+    8192
+}
+
+/// Whether `w` is a key type `sshd(8)` lists (or a certificate type), so a
+/// line's first word is its key and the line has no options.
+pub fn is_key_type(w: str) -> bool {
+    w == "ssh-ed25519" ||
+        w == "ssh-rsa" ||
+        w == "ecdsa-sha2-nistp256" ||
+        w == "ecdsa-sha2-nistp384" ||
+        w == "ecdsa-sha2-nistp521" ||
+        w == "sk-ssh-ed25519@openssh.com" ||
+        w == "sk-ecdsa-sha2-nistp256@openssh.com" ||
+        w.ends_with("-cert-v01@openssh.com")
+}
+
+/// One option of an options field: its keyword in lower case, and its
+/// value with the quotes taken off ("" when it has none).
+pub struct Opt {
+    name: str,
+    value: str,
+    has_value: bool,
+}
+
+/// Splits `line` (trimmed, no comment) into its options field and the
+/// rest. The options field ends at the first space or tab outside double
+/// quotes. Answers the options text ("" when the first word is a key type)
+/// and the rest.
+pub fn split_options(line: str) -> List[str] {
+    var out = List[str]()
+    let b = line.bytes()
+    var first_end = 0
+    while first_end < b.len && b[first_end] as int != 32 && b[first_end] as int != 9 {
+        first_end += 1
+    }
+    if is_key_type(line[0..first_end]) {
+        (mut out).push("")
+        (mut out).push(line)
+        return out
+    }
+    var i = 0
+    var quoted = false
+    while i < b.len {
+        let c = b[i] as int
+        if c == 92 && quoted && i + 1 < b.len {
+            i += 2
+            continue
+        }
+        if c == 34 {
+            quoted = !quoted
+        } else if !quoted && (c == 32 || c == 9) {
+            break
+        }
+        i += 1
+    }
+    (mut out).push(line[0..i])
+    (mut out).push(line[i..line.len].trim())
+    out
+}
+
+/// The options of an options field, in order. An unterminated quote makes
+/// the whole field one option named `"` (which nothing honours).
+pub fn options(field: str) -> List[Opt] {
+    var out = List[Opt]()
+    let b = field.bytes()
+    var i = 0
+    while i < b.len {
+        var name = List[byte]()
+        while i < b.len && b[i] as int != 44 && b[i] as int != 61 {
+            var c = b[i] as int
+            if c >= 65 && c <= 90 {
+                c += 32
+            }
+            (mut name).push(c as byte)
+            i += 1
+        }
+        var value = List[byte]()
+        var has_value = false
+        if i < b.len && b[i] as int == 61 {
+            has_value = true
+            i += 1
+            if i >= b.len || b[i] as int != 34 {
+                (mut out).push(Opt { name: "\"", value: "", has_value: false })
+                return out
+            }
+            i += 1
+            var closed = false
+            while i < b.len {
+                let c = b[i] as int
+                if c == 92 && i + 1 < b.len && b[i + 1] as int == 34 {
+                    (mut value).push(34 as byte)
+                    i += 2
+                    continue
+                }
+                if c == 34 {
+                    closed = true
+                    i += 1
+                    break
+                }
+                (mut value).push(c as byte)
+                i += 1
+            }
+            if !closed {
+                (mut out).push(Opt { name: "\"", value: "", has_value: false })
+                return out
+            }
+        }
+        (mut out).push(Opt {
+            name: str_from_utf8(name) else "\"",
+            value: str_from_utf8(value) else "",
+            has_value: has_value,
+        })
+        if i < b.len && b[i] as int == 44 {
+            i += 1
+        } else if i < b.len {
+            (mut out).push(Opt { name: "\"", value: "", has_value: false })
+            return out
+        }
+    }
+    out
+}
+
+fn taken(o: Opt) -> bool {
+    !o.has_value &&
+        (
+            o.name == "restrict" ||
+                o.name == "no-pty" ||
+                o.name == "no-port-forwarding" ||
+                o.name == "no-agent-forwarding" ||
+                o.name == "no-x11-forwarding" ||
+                o.name == "no-user-rc"
+        )
+}
+
+/// The first line of `text` naming the `ssh-ed25519` key blob `blob`, and
+/// what it allows.
+pub fn find(text: str, blob: List[byte]) -> Found {
+    var number = 0
+    for raw in text.lines() {
+        number += 1
+        if raw.len > max_line() {
+            continue
+        }
+        let line = raw.trim()
+        if line.len == 0 || line.starts_with("#") {
+            continue
+        }
+        let parts = split_options(line)
+        let words = parts[1].words()
+        if words.len < 2 || words[0] != "ssh-ed25519" {
+            continue
+        }
+        let key = base64.decode(words[1]) else { continue }
+        if wire.hex(key) != wire.hex(blob) {
+            continue
+        }
+        var f = Found { ok: true, command: "", has_command: false, why: "", line: number }
+        for o in options(parts[0]) {
+            if o.name == "command" && o.has_value && !f.has_command {
+                f.command = o.value
+                f.has_command = true
+            } else if !taken(o) {
+                f.ok = false
+                f.why = "the option {o.name} on line {number}, which burrowd does not honour"
+                return f
+            }
+        }
+        return f
+    }
+    Found { ok: false, command: "", has_command: false, why: "", line: 0 }
+}
+
+/// `AuthorizedKeysFile`'s paths for an account (`sshd_config(5)`): each
+/// whitespace-separated pattern with `%h` the home, `%u` the user and `%%`
+/// a percent sign, then taken as relative to the home unless absolute.
+/// Another `%` token answers the empty list (the configuration refuses
+/// one at start).
+pub fn paths(setting: str, home: str, user: str) -> List[str] {
+    var out = List[str]()
+    for w in setting.words() {
+        var p = ""
+        let b = w.bytes()
+        var i = 0
+        while i < b.len {
+            if b[i] as int == 37 {
+                if i + 1 >= b.len {
+                    return List[str]()
+                }
+                let t = b[i + 1] as int
+                if t == 104 {
+                    p += home
+                } else if t == 117 {
+                    p += user
+                } else if t == 37 {
+                    p += "%"
+                } else {
+                    return List[str]()
+                }
+                i += 2
+                continue
+            }
+            p += w[i..i + 1]
+            i += 1
+        }
+        if !p.starts_with("/") {
+            p = home + "/" + p
+        }
+        (mut out).push(p)
+    }
+    out
+}
+
+/// StrictModes' verdict on one path's record: "" when it is owned by
+/// `uid` or by root and is neither group- nor world-writable, else why.
+pub fn mode_problem(path: str, info: fs.Info, uid: int) -> str {
+    if info.uid != uid && info.uid != 0 {
+        return "{path} is owned by uid {info.uid}, not the account's {uid} or root's"
+    }
+    if info.mode % 64 / 8 % 4 / 2 == 1 {
+        return "{path} is group-writable"
+    }
+    if info.mode % 8 % 4 / 2 == 1 {
+        return "{path} is world-writable"
+    }
+    ""
+}
