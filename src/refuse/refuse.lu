@@ -58,6 +58,7 @@ pub error Refusal = {
     key_permissions,
     channel_open_failed,
     exec_refused,
+    shell_refused,
     channel_unknown,
     channel_closed,
     window_exceeded,
