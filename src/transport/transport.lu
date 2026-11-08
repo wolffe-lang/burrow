@@ -50,6 +50,23 @@
 //!
 //! **Detail.** A refusal is a tag; `detail` holds the sentence that
 //! explains it, for `burrow: <tag>: <detail>`.
+//!
+//! **The server's role** (B5, burrowd). A `Conn` made by `adopt` from an
+//! accepted socket is the server's: `serve` sends burrowd's identification,
+//! reads the client's (no line before it), and runs the server's half of
+//! the first exchange (`server_exchange`): burrowd's KEXINIT, negotiation
+//! with the client's lists first, strict kex required
+//! (`strict_kex_missing` without the client's `kex-strict-c-v00`), the
+//! host key's signature on H from its `Signer` (a seed the one-process row
+//! program holds, or burrowd's monitor over two pipes), KEX_ECDH_REPLY,
+//! NEWKEYS, and EXT_INFO when the client offered `ext-info-c`. Before
+//! authentication (`authed` false) a client's KEXINIT is answered
+//! UNIMPLEMENTED, as the pinned `sshd` answers it, and burrowd starts no
+//! re-exchange; after it, either side's. SERVICE_REQUEST is passed up to
+//! the authentication layer; a client's EXT_INFO is ignored (burrowd does
+//! not offer `ext-info-s`). `handoff` and `restore` carry a connection's
+//! whole state from the worker that authenticated it to the session that
+//! serves it (`src/burrowd.lu`). Everything else here serves both roles.
 
 use std.fs
 use std.list
@@ -59,6 +76,7 @@ use entropy
 use hostkey
 use kex
 use packet
+use pipe
 use refuse
 use version
 use wire
@@ -101,6 +119,28 @@ pub fn options(host: str, port: int) -> Options {
     }
 }
 
+/// How a server connection gets the host key's signature on an exchange
+/// hash: from the 32-byte `seed` it holds (the one-process row program), or
+/// when `seed` is empty from burrowd's monitor, asked over `to` and
+/// answered over `from` (`src/pipe`'s `sign` and `signed` frames). `k_s` is
+/// the host key's public blob.
+pub struct Signer {
+    seed: List[byte],
+    k_s: List[byte],
+    to: fs.File,
+    from: fs.File,
+}
+
+/// A signer that holds the host key's seed.
+pub fn local_signer(seed: List[byte], k_s: List[byte]) -> Signer {
+    Signer { seed: copy seed, k_s: copy k_s, to: fs.File { fd: -1 }, from: fs.File { fd: -1 } }
+}
+
+/// A signer that asks burrowd's monitor.
+pub fn monitor_signer(k_s: List[byte], to: fs.File, from: fs.File) -> Signer {
+    Signer { seed: List[byte](), k_s: copy k_s, to: to, from: from }
+}
+
 /// One connection's transport state.
 pub struct Conn {
     sock: net.Socket,
@@ -126,6 +166,11 @@ pub struct Conn {
     sig_algs: List[str],
     has_sig_algs: bool,
     detail: List[byte],
+    server: bool,
+    signer: Signer,
+    v_c: List[byte],
+    peer_ext: bool,
+    authed: bool,
 }
 
 fn say(c: Conn, level: int, msg: str) {
@@ -198,6 +243,11 @@ pub fn dial(opts: Options) -> Conn ! refuse.Refusal {
         sig_algs: List[str](),
         has_sig_algs: false,
         detail: List[byte](),
+        server: false,
+        signer: local_signer(List[byte](), List[byte]()),
+        v_c: List[byte](),
+        peer_ext: false,
+        authed: false,
     }
 }
 
@@ -675,14 +725,18 @@ fn due(c: Conn) -> bool {
 }
 
 fn rekey_if_due(mut c: Conn) -> () ! refuse.Refusal {
-    if c.exchanges > 0 && due(c) {
+    if c.exchanges > 0 && (!c.server || c.authed) && due(c) {
         c.by_us += 1
         say(
             c,
             1,
             "rekeying: sent {c.tx.bytes} bytes / {c.tx.packets} packets, received {c.rx.bytes} / {c.rx.packets} since the last NEWKEYS",
         )
-        exchange(mut c, List[byte]())?
+        if c.server {
+            server_exchange(mut c, List[byte]())?
+        } else {
+            exchange(mut c, List[byte]())?
+        }
     }
 }
 
@@ -702,20 +756,39 @@ fn on_packet(mut c: Conn, p: List[byte]) -> List[byte] ! refuse.Refusal {
         return List[byte]()
     }
     if t == refuse.msg_ext_info() {
-        on_ext_info(mut c, p)?
+        if !c.server {
+            on_ext_info(mut c, p)?
+        }
         return List[byte]()
     }
     if t == refuse.msg_kexinit() {
+        if c.server && !c.authed {
+            // The pinned sshd's answer to a re-exchange before user
+            // authentication (bw01's finding): UNIMPLEMENTED, naming the
+            // KEXINIT by its sequence number (RFC 4253 §11.4).
+            var u = List[byte]()
+            wire.put_u8(mut u, refuse.msg_unimplemented())
+            wire.put_u32(mut u, (c.rx.seq + 4294967295) % 4294967296)
+            send_packet(mut c, u)?
+            say(c, 1, "a key re-exchange before authentication: answered UNIMPLEMENTED")
+            return List[byte]()
+        }
         c.by_server += 1
-        say(c, 1, "the server started a key re-exchange")
-        exchange(mut c, p)?
+        say(c, 1, "the peer started a key re-exchange")
+        if c.server {
+            server_exchange(mut c, p)?
+        } else {
+            exchange(mut c, p)?
+        }
         return List[byte]()
     }
     if t == refuse.msg_ping() {
         pong(mut c, p)?
         return List[byte]()
     }
-    if t == refuse.msg_newkeys() || t >= 30 && t <= 49 || t == refuse.msg_service_request() {
+    if t == refuse.msg_newkeys() ||
+        t >= 30 && t <= 49 ||
+        t == refuse.msg_service_request() && !c.server {
         note(mut c, "message {t} outside a key exchange")
         return message_unexpected
     }
@@ -829,4 +902,290 @@ pub fn disconnect(mut c: Conn, code: int, text: str) {
 /// Closes the socket.
 pub fn close(take c: Conn) {
     net.close(take c.sock) else {}
+}
+
+// ---- The server's role (B5).
+
+/// A server connection on an accepted socket, before any byte is sent.
+/// Its reads wait at most `opts.timeout_ms` (the worker sets the login
+/// grace time).
+pub fn adopt(take sock: net.Socket, opts: Options, signer: Signer) -> Conn ! refuse.Refusal {
+    var s = sock
+    net.set_deadline(mut s, opts.timeout_ms) else {
+        return io
+    }
+    var c = Conn {
+        sock: s,
+        opts: copy opts,
+        inbuf: List[byte](),
+        inpos: 0,
+        tx: packet.plain(),
+        rx: packet.plain(),
+        pool: entropy.system(),
+        v_s: wire.bytes_of(version.server_ident()),
+        software: "",
+        session_id: List[byte](),
+        host_k_s: copy signer.k_s,
+        strict: false,
+        exchanges: 0,
+        kexinit_seq: -1,
+        by_us: 0,
+        by_server: 0,
+        keyed_at_ns: time.monotonic_ns(),
+        pending: List[List[byte]](),
+        pending_pos: 0,
+        extensions: List[str](),
+        sig_algs: List[str](),
+        has_sig_algs: false,
+        detail: List[byte](),
+        server: true,
+        signer: copy signer,
+        v_c: List[byte](),
+        peer_ext: false,
+        authed: false,
+    }
+    c
+}
+
+/// burrowd's identification, the client's (RFC 4253 §4.2: its first line,
+/// at most 255 bytes, protoversion 2.0 or 1.99), and the first exchange.
+pub fn serve(mut c: Conn) -> () ! refuse.Refusal {
+    send_raw(mut c, version.server_line())?
+    say(c, 1, "Local version string {version.server_ident()}")
+    loop {
+        note(mut c, "the client's identification")
+        let s = version.scan_client(c.inbuf[c.inpos..c.inbuf.len])?
+        if s.found {
+            note(mut c, "the client identified as {str_from_utf8(s.line) else "<not UTF-8>"}")
+            let id = version.parse(s.line)?
+            c.v_c = s.line
+            c.software = id.software
+            c.inpos += s.consumed
+            say(c, 1, "Remote protocol version {id.proto}, remote software version {id.software}")
+            break
+        }
+        fill(mut c)?
+    }
+    server_exchange(mut c, List[byte]())?
+}
+
+/// The client's software version, from its identification line.
+pub fn peer_software(c: Conn) -> str {
+    c.software
+}
+
+// The host key's signature blob on `h`, from the seed or the monitor.
+fn sign_h(mut c: Conn, h: List[byte]) -> List[byte] ! refuse.Refusal {
+    if c.signer.seed.len == 32 {
+        return hostkey.sign_blob(c.signer.seed, h)
+    }
+    var f = List[List[byte]]()
+    (mut f).push(copy h)
+    pipe.send(mut c.signer.to, pipe.k_sign(), f) else {
+        note(mut c, "the monitor's pipe closed before it signed the exchange hash")
+        return io
+    }
+    let got = pipe.receive(mut c.signer.from) else {
+        note(mut c, "the monitor did not sign the exchange hash")
+        return io
+    }
+    if got.kind != pipe.k_signed() || got.fields.len != 1 {
+        note(mut c, "the monitor answered frame {got.kind} to a signing request")
+        return io
+    }
+    copy got.fields[0]
+}
+
+// One key exchange from the server's side: the first when `exchanges` is
+// 0, a re-exchange otherwise. `theirs` is the client's KEXINIT when it
+// started this one.
+fn server_exchange(mut c: Conn, theirs: List[byte]) -> () ! refuse.Refusal {
+    let initial = c.exchanges == 0
+    let cookie = entropy.draw(mut c.pool, 16)?
+    let ours = kex.server_proposal(cookie)
+    let i_s = kex.encode(ours)
+    c.kexinit_seq = c.tx.seq
+    send_packet(mut c, i_s)?
+    say(c, 1, "SSH2_MSG_KEXINIT sent")
+    var i_c = copy theirs
+    var before = 0
+    while i_c.len == 0 {
+        let p = read_packet(mut c)?
+        let t = kind(p)
+        if t == refuse.msg_kexinit() {
+            i_c = p
+        } else if t == refuse.msg_disconnect() {
+            note_disconnect(mut c, p)
+            return disconnected
+        } else if noise(t) {
+            before += 1
+            if t == refuse.msg_debug() {
+                on_debug(c, p)
+            }
+        } else if initial {
+            note(mut c, "message {t} before the client's KEXINIT")
+            return message_unexpected
+        } else if t == refuse.msg_ext_info() {
+            // burrowd offers no ext-info-s; ignored.
+        } else if t == refuse.msg_ping() {
+            pong(mut c, p)?
+        } else {
+            (mut c.pending).push(copy p)
+        }
+    }
+    say(c, 1, "SSH2_MSG_KEXINIT received")
+    note(mut c, "the client's KEXINIT")
+    let client = kex.decode(i_c)?
+    note(
+        mut c,
+        "the client offers kex {join(client.kex)}; host keys {join(client.hostkey)}; ciphers ctos {join(client.cipher_c2s)}, stoc {join(client.cipher_s2c)}; compression ctos {join(client.comp_c2s)}, stoc {join(client.comp_s2c)}",
+    )
+    let chosen = kex.negotiate_server(client, ours, initial)?
+    if initial {
+        if !chosen.strict {
+            note(mut c, "the client's KEXINIT does not offer kex-strict-c-v00@openssh.com")
+            return strict_kex_missing
+        }
+        c.strict = true
+        if before > 0 {
+            note(mut c, "{before} message(s) before the client's KEXINIT")
+            return strict_kex_violation
+        }
+        c.peer_ext = chosen.ext_info
+        say(c, 2, "will use strict KEX ordering")
+    }
+    say(c, 1, "kex: algorithm: {chosen.kex}")
+    say(c, 1, "kex: host key algorithm: {chosen.hostkey}")
+    if chosen.ignore_guess {
+        let _ = read_packet(mut c)?
+        say(c, 1, "ignored the client's guessed key exchange packet")
+    }
+    let init = expect(mut c, refuse.msg_kex_ecdh_init(), initial, "SSH2_MSG_KEX_ECDH_INIT")?
+    note(mut c, "the client's SSH2_MSG_KEX_ECDH_INIT")
+    let q_c = kex.decode_init(init)?
+    let secret = entropy.draw(mut c.pool, 32)?
+    let q_s = kex.public_value(secret)
+    note(mut c, "the shared secret")
+    let x = kex.agree(secret, q_c)?
+    let k_s = copy c.signer.k_s
+    let h = kex.exchange_hash(c.v_c, c.v_s, i_c, i_s, k_s, q_c, q_s, x)
+    let sig = sign_h(mut c, h)?
+    send_packet(mut c, kex.ecdh_reply(k_s, q_s, sig))?
+    if initial {
+        c.session_id = copy h
+        c.host_k_s = copy k_s
+    }
+    let k = kex.k_mpint(x)
+    let c2s = kex.derive(k, h, 67, c.session_id, 64)
+    let s2c = kex.derive(k, h, 68, c.session_id, 64)
+    var nk = List[byte]()
+    wire.put_u8(mut nk, refuse.msg_newkeys())
+    send_packet(mut c, nk)?
+    packet.take_keys(mut c.tx, s2c, c.strict)
+    say(c, 1, "SSH2_MSG_NEWKEYS sent")
+    if initial && c.peer_ext {
+        // RFC 8308 §2.4: as the next packet after burrowd's first NEWKEYS.
+        send_packet(mut c, kex.ext_info_server())?
+        say(c, 1, "SSH2_MSG_EXT_INFO sent: server-sig-algs, ping@openssh.com")
+    }
+    let got = expect(mut c, refuse.msg_newkeys(), initial, "SSH2_MSG_NEWKEYS")?
+    if got.len != 1 {
+        note(mut c, "an SSH2_MSG_NEWKEYS with a body")
+        return malformed
+    }
+    packet.take_keys(mut c.rx, c2s, c.strict)
+    say(c, 1, "SSH2_MSG_NEWKEYS received")
+    c.exchanges += 1
+    c.keyed_at_ns = time.monotonic_ns()
+}
+
+fn put_direction(mut out: List[byte], d: packet.Direction) {
+    wire.put_u64(mut out, d.seq)
+    wire.put_bool(mut out, d.wrapped)
+    wire.put_bool(mut out, d.keyed)
+    wire.put_string(mut out, d.keys.main)
+    wire.put_string(mut out, d.keys.header)
+    wire.put_u64(mut out, d.packets)
+    wire.put_u64(mut out, d.bytes)
+}
+
+fn read_direction(mut r: wire.Reader) -> packet.Direction ! refuse.Refusal {
+    var d = packet.plain()
+    d.seq = wire.read_u64(mut r) else { return malformed }
+    d.wrapped = wire.read_bool(mut r) else { return malformed }
+    d.keyed = wire.read_bool(mut r) else { return malformed }
+    d.keys.main = wire.read_string(mut r) else { return malformed }
+    d.keys.header = wire.read_string(mut r) else { return malformed }
+    d.packets = wire.read_u64(mut r) else { return malformed }
+    d.bytes = wire.read_u64(mut r) else { return malformed }
+    d
+}
+
+/// A server connection's whole transport state, as bytes for the pipe:
+/// both directions' keys, sequence numbers and counts, the identifications,
+/// the session identifier and host key, the exchange counts, the input
+/// not yet read and the messages kept. It holds session keys: it travels
+/// only from the worker to the monitor to the user's own session.
+pub fn handoff(c: Conn) -> List[byte] {
+    var out = List[byte]()
+    put_direction(mut out, c.tx)
+    put_direction(mut out, c.rx)
+    wire.put_string(mut out, c.inbuf[c.inpos..c.inbuf.len])
+    wire.put_string(mut out, c.v_s)
+    wire.put_string(mut out, c.v_c)
+    wire.put_text(mut out, c.software)
+    wire.put_string(mut out, c.session_id)
+    wire.put_string(mut out, c.host_k_s)
+    wire.put_bool(mut out, c.strict)
+    wire.put_u64(mut out, c.exchanges)
+    wire.put_u64(mut out, c.by_us)
+    wire.put_u64(mut out, c.by_server)
+    wire.put_u64(mut out, c.keyed_at_ns)
+    wire.put_bool(mut out, c.peer_ext)
+    wire.put_u32(mut out, c.pending.len - c.pending_pos)
+    var i = c.pending_pos
+    while i < c.pending.len {
+        wire.put_string(mut out, c.pending[i])
+        i += 1
+    }
+    out
+}
+
+/// The connection `handoff` described, on `sock` (the same connection,
+/// inherited), with `opts` and `signer`, authenticated.
+pub fn restore(
+    take sock: net.Socket,
+    opts: Options,
+    signer: Signer,
+    state: List[byte],
+) -> Conn ! refuse.Refusal {
+    var c = adopt(take sock, opts, signer)?
+    var r = wire.reader(state)
+    c.tx = read_direction(mut r)?
+    c.rx = read_direction(mut r)?
+    c.inbuf = wire.read_string(mut r) else { return malformed }
+    c.v_s = wire.read_string(mut r) else { return malformed }
+    c.v_c = wire.read_string(mut r) else { return malformed }
+    c.software = wire.read_utf8(mut r) else { return malformed }
+    c.session_id = wire.read_string(mut r) else { return malformed }
+    c.host_k_s = wire.read_string(mut r) else { return malformed }
+    c.signer.k_s = copy c.host_k_s
+    c.strict = wire.read_bool(mut r) else { return malformed }
+    c.exchanges = wire.read_u64(mut r) else { return malformed }
+    c.by_us = wire.read_u64(mut r) else { return malformed }
+    c.by_server = wire.read_u64(mut r) else { return malformed }
+    c.keyed_at_ns = wire.read_u64(mut r) else { return malformed }
+    c.peer_ext = wire.read_bool(mut r) else { return malformed }
+    let n = wire.read_u32(mut r) else { return malformed }
+    var i = 0
+    while i < n {
+        let p = wire.read_string(mut r) else { return malformed }
+        (mut c.pending).push(p)
+        i += 1
+    }
+    if !wire.at_end(r) || c.session_id.len == 0 {
+        return malformed
+    }
+    c.authed = true
+    c
 }
