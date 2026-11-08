@@ -1,0 +1,536 @@
+//! member: true
+//!
+//! burrow.schannel — burrowd's one `session` channel (RFC 4254 §5, §6),
+//! commands only, as a state machine with no I/O: the client's messages
+//! in, steps out. `src/ssession` drives it.
+//!
+//! **Opening** (§5.1, §6.1): the first `session` open is confirmed with
+//! burrowd's channel number 0, window 0 and maximum packet 32768, as the
+//! pinned `sshd` confirms; the window opens (2 MiB) once the command runs.
+//! Every other channel type (`direct-tcpip`, `direct-streamlocal@openssh.com`,
+//! `x11`, `auth-agent@openssh.com`, …), a second session, and any session
+//! after `no-more-sessions@openssh.com` (`PROTOCOL` §2.2) are
+//! OPEN_FAILURE 1, administratively prohibited, with `sshd`'s text "open
+//! failed".
+//!
+//! **Requests on the channel** (§5.4): `env` (§6.4) for the names burrowd
+//! accepts (R-bw04-4: `GIT_PROTOCOL` only) before the command starts;
+//! `exec` (§6.5) once; `eow@openssh.com` (`PROTOCOL` §2.1: no more input to
+//! the command); `window-change` and `break` taken and ignored (no pty).
+//! Refused, CHANNEL_FAILURE when a reply is wanted, and named in the log:
+//! `pty-req` (`pty_refused`), `shell` (`shell_refused`), `subsystem`
+//! (`subsystem_refused`), `x11-req` (`x11_refused`),
+//! `auth-agent-req@openssh.com` (`agent_refused`), `signal`
+//! (`signal_refused`), a second `exec` (`exec_twice`), an `env` name
+//! outside the list or after the command started (`env_refused`), and any
+//! other (`request_refused`). Global requests (§4) other than
+//! `no-more-sessions@openssh.com` are refused the same way
+//! (`forward_refused` for `tcpip-forward` and
+//! `streamlocal-forward@openssh.com`, else `request_refused`).
+//!
+//! **Windows** (§5.2): burrowd sends no more than the client's window and
+//! maximum packet allow, and gives its own window back by what the command
+//! has read, once that reaches half of it. Data past burrowd's window is
+//! `window_exceeded`, past its maximum packet `channel_packet_too_large`,
+//! an adjustment past 2^32 − 1 `window_overflow`, data after the client's
+//! EOF or CLOSE `channel_closed`, a message for a channel burrowd did not
+//! confirm `channel_unknown`.
+//!
+//! **End** (§5.3, §6.10): when the command's output ends, EOF; when it
+//! exits, `exit-status` (or `exit-signal`: the signal's name without `SIG`,
+//! the core flag, an empty message), then CLOSE. The client's CLOSE is
+//! answered once, in either order.
+
+use refuse
+use wire
+
+/// burrowd's channel number.
+pub fn local_id() -> int {
+    0
+}
+
+/// burrowd's window once the command runs: 2 MiB.
+pub fn local_window() -> int {
+    2097152
+}
+
+/// The largest data burrowd accepts in one message.
+pub fn local_max() -> int {
+    32768
+}
+
+/// Whether `name` is an `env` name burrowd accepts (R-bw04-4).
+pub fn env_accepted(name: str) -> bool {
+    name == "GIT_PROTOCOL"
+}
+
+/// The session channel.
+pub struct Chan {
+    open: bool,
+    peer: int,
+    rwin: int,
+    rmax: int,
+    window: int,
+    lwin: int,
+    consumed: int,
+    started: bool,
+    command: List[byte],
+    env: List[byte],
+    got_eof: bool,
+    got_close: bool,
+    sent_eof: bool,
+    sent_close: bool,
+    eow: bool,
+    no_more: bool,
+    refused: List[byte],
+    detail: List[byte],
+}
+
+/// The channel before any open, with burrowd's window (`window`, which
+/// opens at `exec`) and maximum packet.
+pub fn new() -> Chan {
+    sized(local_window())
+}
+
+/// A channel whose window is `window` once the command runs (the unit
+/// rows use a small one).
+pub fn sized(window: int) -> Chan {
+    Chan {
+        open: false,
+        peer: -1,
+        rwin: 0,
+        rmax: 0,
+        window: window,
+        lwin: 0,
+        consumed: 0,
+        started: false,
+        command: List[byte](),
+        env: List[byte](),
+        got_eof: false,
+        got_close: false,
+        sent_eof: false,
+        sent_close: false,
+        eow: false,
+        no_more: false,
+        refused: List[byte](),
+        detail: List[byte](),
+    }
+}
+
+fn note(mut ch: Chan, msg: str) {
+    (mut ch.detail).reset()
+    for b in msg.bytes() {
+        (mut ch.detail).push(b)
+    }
+}
+
+/// The sentence that explains the last refusal.
+pub fn detail(ch: Chan) -> str {
+    str_from_utf8(ch.detail) else ""
+}
+
+// The channel keeps only bytes it owns, written in place, so a session
+// turn's region may update it ([mem.region.outer-write]): the refusals as
+// one comma-separated list, the accepted environment as NUL-separated
+// `NAME=VALUE` entries, the command as its bytes.
+fn push_text(mut out: List[byte], s: str) {
+    for b in s.bytes() {
+        (mut out).push(b)
+    }
+}
+
+fn refuse_name(mut ch: Chan, name: str) {
+    if ch.refused.len < 1024 {
+        if ch.refused.len > 0 {
+            (mut ch.refused).push(44 as byte)
+        }
+        push_text(mut ch.refused, name)
+    }
+}
+
+fn split_on(b: List[byte], sep: int) -> List[str] {
+    var out = List[str]()
+    var start = 0
+    var i = 0
+    while i <= b.len {
+        if i == b.len || b[i] as int == sep {
+            if i > start {
+                (mut out).push(str_from_utf8(b[start..i]) else "")
+            }
+            start = i + 1
+        }
+        i += 1
+    }
+    out
+}
+
+/// The requests refused by name, in order.
+pub fn refusals(ch: Chan) -> List[str] {
+    split_on(ch.refused, 44)
+}
+
+/// The accepted `env` entries, `NAME=VALUE`, in order.
+pub fn environment(ch: Chan) -> List[str] {
+    split_on(ch.env, 0)
+}
+
+/// What a message asks of the session: `replies` to send in order,
+/// `input` bytes for the command's stdin, `start` the command (then the
+/// session sends `exec`'s answer), `close_input` the command's stdin.
+pub struct Step {
+    replies: List[List[byte]],
+    input: List[byte],
+    start: bool,
+    want_reply: bool,
+    close_input: bool,
+    info: str,
+}
+
+fn nothing() -> Step {
+    Step {
+        replies: List[List[byte]](),
+        input: List[byte](),
+        start: false,
+        want_reply: false,
+        close_input: false,
+        info: "",
+    }
+}
+
+fn plain(ch: Chan, t: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, t)
+    wire.put_u32(mut p, ch.peer)
+    p
+}
+
+/// CHANNEL_SUCCESS, the answer to the client's `exec` once it runs.
+pub fn success_msg(ch: Chan) -> List[byte] {
+    plain(ch, refuse.msg_channel_success())
+}
+
+/// CHANNEL_FAILURE.
+pub fn failure_msg(ch: Chan) -> List[byte] {
+    plain(ch, refuse.msg_channel_failure())
+}
+
+/// The confirmation of the client's session open (window 0).
+pub fn confirm_msg(ch: Chan) -> List[byte] {
+    var p = plain(ch, refuse.msg_channel_open_confirmation())
+    wire.put_u32(mut p, local_id())
+    wire.put_u32(mut p, 0)
+    wire.put_u32(mut p, local_max())
+    p
+}
+
+/// OPEN_FAILURE 1 for the client's channel `sender`, with `sshd`'s text.
+pub fn open_failure_msg(sender: int) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_channel_open_failure())
+    wire.put_u32(mut p, sender)
+    wire.put_u32(mut p, 1)
+    wire.put_text(mut p, "open failed")
+    wire.put_text(mut p, "")
+    p
+}
+
+/// The window opened when the command starts, and the channel's own
+/// window set.
+pub fn start_msg(mut ch: Chan) -> List[byte] {
+    ch.started = true
+    ch.lwin = ch.window
+    var p = plain(ch, refuse.msg_channel_window_adjust())
+    wire.put_u32(mut p, ch.window)
+    p
+}
+
+/// How many bytes burrowd may send in one data message now.
+pub fn room(ch: Chan) -> int {
+    var n = ch.rwin
+    if ch.rmax < n {
+        n = ch.rmax
+    }
+    if local_max() < n {
+        n = local_max()
+    }
+    if n < 0 || ch.got_close || ch.sent_eof then 0 else n
+}
+
+/// CHANNEL_DATA (`stream` 0) or EXTENDED_DATA type 1 (`stream` 1)
+/// carrying `data`, which `room` allowed.
+pub fn data_msg(mut ch: Chan, stream: int, data: List[byte]) -> List[byte] {
+    assert(data.len <= room(ch), "schannel: data beyond the client's window")
+    ch.rwin -= data.len
+    var p = List[byte]()
+    if stream == 0 {
+        wire.put_u8(mut p, refuse.msg_channel_data())
+        wire.put_u32(mut p, ch.peer)
+    } else {
+        wire.put_u8(mut p, refuse.msg_channel_extended_data())
+        wire.put_u32(mut p, ch.peer)
+        wire.put_u32(mut p, 1)
+    }
+    wire.put_string(mut p, data)
+    p
+}
+
+/// CHANNEL_EOF, once.
+pub fn eof_msg(mut ch: Chan) -> List[byte] {
+    ch.sent_eof = true
+    plain(ch, refuse.msg_channel_eof())
+}
+
+/// CHANNEL_CLOSE, once.
+pub fn close_msg(mut ch: Chan) -> List[byte] {
+    ch.sent_close = true
+    plain(ch, refuse.msg_channel_close())
+}
+
+/// `exit-status` (§6.10), want reply FALSE.
+pub fn exit_status_msg(ch: Chan, code: int) -> List[byte] {
+    var p = plain(ch, refuse.msg_channel_request())
+    wire.put_text(mut p, "exit-status")
+    wire.put_bool(mut p, false)
+    wire.put_u32(mut p, code)
+    p
+}
+
+/// `exit-signal` (§6.10): the name without `SIG`, the core flag, an empty
+/// message and language tag.
+pub fn exit_signal_msg(ch: Chan, name: str, core: bool) -> List[byte] {
+    var p = plain(ch, refuse.msg_channel_request())
+    wire.put_text(mut p, "exit-signal")
+    wire.put_bool(mut p, false)
+    wire.put_text(mut p, name)
+    wire.put_bool(mut p, core)
+    wire.put_text(mut p, "")
+    wire.put_text(mut p, "")
+    p
+}
+
+/// The WINDOW_ADJUST due now, or the empty list: burrowd gives back what
+/// the command has read once that reaches half its window.
+pub fn adjust_msg(mut ch: Chan) -> List[byte] {
+    if !ch.started || ch.consumed < ch.window / 2 || ch.got_close || ch.got_eof {
+        return List[byte]()
+    }
+    var p = plain(ch, refuse.msg_channel_window_adjust())
+    wire.put_u32(mut p, ch.consumed)
+    ch.lwin += ch.consumed
+    ch.consumed = 0
+    p
+}
+
+/// Records that the command has read `n` bytes of its input.
+pub fn consumed(mut ch: Chan, n: int) {
+    ch.consumed += n
+}
+
+/// Whether both sides have closed.
+pub fn done(ch: Chan) -> bool {
+    ch.got_close && ch.sent_close
+}
+
+fn request_name(kind: str) -> str {
+    match kind {
+        "pty-req" => "pty_refused",
+        "shell" => "shell_refused",
+        "subsystem" => "subsystem_refused",
+        "x11-req" => "x11_refused",
+        "auth-agent-req@openssh.com" => "agent_refused",
+        "signal" => "signal_refused",
+        "exec" => "exec_twice",
+        "env" => "env_refused",
+        _ => "request_refused",
+    }
+}
+
+/// The signal name `exit-signal` carries (RFC 4254 §6.10's list, the
+/// host's number `n` on linux and macOS alike for these), or the empty
+/// string for another.
+pub fn signal_name(n: int) -> str {
+    match n {
+        1 => "HUP",
+        2 => "INT",
+        3 => "QUIT",
+        4 => "ILL",
+        6 => "ABRT",
+        8 => "FPE",
+        9 => "KILL",
+        11 => "SEGV",
+        13 => "PIPE",
+        14 => "ALRM",
+        15 => "TERM",
+        _ => "",
+    }
+}
+
+/// Handles one message of the connection protocol.
+pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
+    let t = p[0] as int
+    var r = wire.reader(p[1..p.len])
+    var s = nothing()
+    if t == refuse.msg_global_request() {
+        let name = wire.read_utf8(mut r) else { return malformed }
+        let want = wire.read_bool(mut r) else { return malformed }
+        if name == "no-more-sessions@openssh.com" {
+            ch.no_more = true
+            s.info = "no-more-sessions@openssh.com: no further session opens"
+            return s
+        }
+        let why = if name == "tcpip-forward" || name == "streamlocal-forward@openssh.com" {
+            "forward_refused"
+        } else {
+            "request_refused"
+        }
+        refuse_name(mut ch, why)
+        if want {
+            var no = List[byte]()
+            wire.put_u8(mut no, refuse.msg_request_failure())
+            (mut s.replies).push(no)
+        }
+        s.info = "{why}: global request {name}"
+        return s
+    }
+    if t == refuse.msg_channel_open() {
+        let kind = wire.read_utf8(mut r) else { return malformed }
+        let sender = wire.read_u32(mut r) else { return malformed }
+        let window = wire.read_u32(mut r) else { return malformed }
+        let max = wire.read_u32(mut r) else { return malformed }
+        if kind != "session" || ch.open || ch.no_more {
+            let why = if kind == "session" then "session_limit" else "channel_type_refused"
+            refuse_name(mut ch, why)
+            (mut s.replies).push(open_failure_msg(sender))
+            s.info = "{why}: a {kind} channel (the client's {sender})"
+            return s
+        }
+        ch.open = true
+        ch.peer = sender
+        ch.rwin = window
+        ch.rmax = max
+        (mut s.replies).push(confirm_msg(ch))
+        s.info = "session channel 0 for the client's {sender}: window {window}, maximum packet {max}"
+        return s
+    }
+    if t < refuse.msg_channel_window_adjust() || t > refuse.msg_channel_failure() {
+        note(mut ch, "message {t} in the session")
+        return message_unexpected
+    }
+    let id = wire.read_u32(mut r) else { return malformed }
+    if !ch.open || id != local_id() {
+        note(mut ch, "message {t} for channel {id}, which burrowd did not confirm")
+        return channel_unknown
+    }
+    if t == refuse.msg_channel_window_adjust() {
+        let n = wire.read_u32(mut r) else { return malformed }
+        if ch.rwin + n > 4294967295 {
+            note(mut ch, "an adjustment of {n} to a window of {ch.rwin}")
+            return window_overflow
+        }
+        ch.rwin += n
+        return s
+    }
+    if t == refuse.msg_channel_data() || t == refuse.msg_channel_extended_data() {
+        if t == refuse.msg_channel_extended_data() {
+            let _ = wire.read_u32(mut r) else { return malformed }
+        }
+        let data = wire.read_string(mut r) else { return malformed }
+        if ch.got_eof || ch.got_close {
+            note(
+                mut ch,
+                "{data.len} bytes after the client's {if ch.got_close then "CLOSE" else "EOF"}",
+            )
+            return channel_closed
+        }
+        if data.len > local_max() {
+            note(
+                mut ch,
+                "{data.len} bytes in one message; burrowd's maximum packet is {local_max()}",
+            )
+            return channel_packet_too_large
+        }
+        if data.len > ch.lwin {
+            note(mut ch, "{data.len} bytes with {ch.lwin} left in burrowd's window")
+            return window_exceeded
+        }
+        ch.lwin -= data.len
+        if t == refuse.msg_channel_data() && !ch.eow {
+            s.input = data
+        } else {
+            ch.consumed += data.len
+        }
+        return s
+    }
+    if t == refuse.msg_channel_eof() {
+        ch.got_eof = true
+        s.close_input = true
+        return s
+    }
+    if t == refuse.msg_channel_close() {
+        ch.got_close = true
+        s.close_input = true
+        if !ch.sent_close {
+            (mut s.replies).push(close_msg(mut ch))
+        }
+        return s
+    }
+    if t == refuse.msg_channel_request() {
+        let kind = wire.read_utf8(mut r) else { return malformed }
+        let want = wire.read_bool(mut r) else { return malformed }
+        if kind == "exec" && !ch.started && ch.command.len == 0 {
+            let cmd = wire.read_string(mut r) else { return malformed }
+            (mut ch.command).reset()
+            for b in cmd {
+                (mut ch.command).push(b)
+            }
+            s.start = true
+            s.want_reply = want
+            s.info = "exec: {cmd.len} bytes"
+            return s
+        }
+        if kind == "env" && !ch.started && ch.command.len == 0 {
+            let name = wire.read_utf8(mut r) else { return malformed }
+            let value = wire.read_utf8(mut r) else { return malformed }
+            if env_accepted(name) {
+                if ch.env.len > 0 {
+                    (mut ch.env).push(0 as byte)
+                }
+                push_text(mut ch.env, "{name}={value}")
+                if want {
+                    (mut s.replies).push(success_msg(ch))
+                }
+                s.info = "env {name} accepted"
+                return s
+            }
+            refuse_name(mut ch, "env_refused")
+            if want {
+                (mut s.replies).push(failure_msg(ch))
+            }
+            s.info = "env_refused: {name}"
+            return s
+        }
+        if kind == "eow@openssh.com" {
+            ch.eow = true
+            s.close_input = true
+            s.info = "eow@openssh.com: no more input to the command"
+            return s
+        }
+        if kind == "window-change" || kind == "break" {
+            if want {
+                (mut s.replies).push(failure_msg(ch))
+            }
+            s.info = "{kind}: no pty, ignored"
+            return s
+        }
+        let why = request_name(kind)
+        refuse_name(mut ch, why)
+        if want {
+            (mut s.replies).push(failure_msg(ch))
+        }
+        s.info = "{why}: {kind}"
+        return s
+    }
+    // CHANNEL_SUCCESS or CHANNEL_FAILURE: burrowd asks nothing that wants one.
+    note(mut ch, "message {t} with no request of burrowd's outstanding")
+    message_unexpected
+}
