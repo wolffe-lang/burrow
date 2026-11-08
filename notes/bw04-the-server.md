@@ -530,6 +530,23 @@ and what changed:
   another user owns; burrowd refuses it (`host_key_permissions`), stricter on
   purpose, as predicted for burrowd.
 
+- `auth-nologin` (a miss): the pinned `sshd` authenticates, starts the
+  session, writes `/etc/nologin`'s text to its stderr and ends it with
+  status 254, not 1. The rows' `sshd` logs to its stderr (`-e`), and in that
+  run its own log line (`User burrowtest not allowed because /etc/nologin
+  exists`) reaches the client's stderr too; run again logging to a file
+  (`-E`), it does not. burrowd now ends such a session with 254 and is held
+  byte for byte to the `-E` run, the `-e` run's line named.
+- `server-rekey`: 4 MiB through `cat` at a 256 KiB RekeyLimit on both
+  sides counted 129 exchanges through burrowd and 257 through `sshd` (the
+  pinned `ssh`'s `SSH2_MSG_NEWKEYS received` lines), both past the
+  predicted 15; `sshd` re-keys about twice as often as burrowd at the same
+  limit.
+- `git-fetch` (a harness miss): the row's setup fetched into the account's
+  server copy from root's seed repository as the account, which git refuses
+  (another user's repository); the setup names that seed safe on git's
+  command line.
+
 **Rows built otherwise than predicted:** `server-strict-kex-required`
 became the hostile client's `hostile-no-strict-kex` (a scripted client that
 leaves the indicator out, rather than a relay that strips it);
