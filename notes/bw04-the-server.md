@@ -469,6 +469,16 @@ above the clock's tick.
   image, as the client's do; the git rows and the measurement stay local,
   as den's rows do.
 
+**Answered at the prediction (2026-11-08):** all eight as recommended.
+R-bw04-2's (A) holds on linux and PAX, measured against the one-process
+row program; on macOS burrowd serves only the user who runs it and refuses
+to start as root, and the README says so. PAX's set-ID is not yet a
+boundary against an attacker (px103's own words), so there the privilege
+separation is defence in depth, not a guarantee; the README says that too.
+R-bw04-7's wolf-std issue is filed from this lane. The unprivileged
+account is made at row time inside the row's own container, so the image
+does not change.
+
 ### Hosts
 
 | hardware | for |
