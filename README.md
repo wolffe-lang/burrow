@@ -159,7 +159,7 @@ The toolchain and the oracle are pinned by digest (`wolf-toolchain.toml`,
 
 ```sh
 tools/fetch-toolchain                 # wolf 0.2.37, lupin 0.1.59, the bundled std
-tools/build --all                     # target/{native,release}/{burrow,burrow-keygen}, rows/kexprobe
+tools/build --all                     # target/{native,release}/{burrow,burrow-keygen,burrowd}, rows/
 tools/check-test                      # src/*_test.lu: checked machine, native, lupin
 tools/in-container tools/fetch-oracle # OpenSSH 10.0p2, built in the pinned image
 tools/in-container tools/fetch-den    # den at its pin (burrow-den.toml), built by its own tools
@@ -171,9 +171,11 @@ tools/gate                            # the whole gauntlet, in the container
 digests, the CI planner's tests, the vectors (`tools/vectorgen.py`
 regenerates `src/kexvec` byte for byte from the RFCs, `tools/nistvec.py`
 `src/sha1vec` from NIST's vectors), formatting, both compiler tiers, the
-unit rows, the transport, session and hostile-peer rows on both tiers, den
-over burrow on both tiers, GitHub read only, the live push, the static
-build, and the two measurements against the pinned `ssh`. A step that cannot
+unit rows, the transport, session and hostile-peer rows on both tiers, the
+server's rows and its hostile-client rows on both tiers, git through
+burrowd, den over burrow on both tiers, GitHub read only, the live push,
+the static build, and the three measurements against the pinned `ssh` and
+`sshd`. A step that cannot
 run where the gauntlet runs (GitHub unreachable, the live variables unset)
 prints `SKIP <step> reason=…` at column 0 instead: never a pass.
 
@@ -237,15 +239,43 @@ ends), holds `ssh -T git@github.com` with the fixture's key to the pinned
 replaced), and runs the push's steps against a loopback `sshd` as a
 self-test.
 `tools/check-static` holds the static binaries' shape and runs den rows
-through the static `burrow`; `tools/measure-den` compares den's clone through
-burrow with its clone through the pinned `ssh`.
+through the static `burrow`, and server rows through the static `burrowd`;
+`tools/measure-den` compares den's clone through burrow with its clone
+through the pinned `ssh`.
+
+**burrowd held to `sshd`** (B5): each row of `tools/check-server` starts
+burrowd and the pinned `sshd` side by side on loopback ports, with one host
+key, one account and one `authorized_keys` made for the run, and runs the
+pinned `ssh` against both with the same arguments: the version, the
+offered and refused algorithms, a re-exchange under traffic, the host key's
+mode, owner and fingerprint, a host key made by `burrow-keygen`, keys
+accepted and refused (StrictModes on the home, `~/.ssh` and the file, an
+unlisted key, root, an unknown user, MaxAuthTries, LoginGraceTime, a
+forced command, an option burrowd cannot honour), 64 MiB through `cat`,
+interleaved streams, exit codes and signals, the session's environment and
+`id`, every refused request, MaxStartups, `-T`'s limits, the log line and
+the processes' users. `tools/check-server-hostile` runs burrowd against a
+scripted client that never finishes the exchange, leaves out strict kex,
+sends an oversize packet, signs over another session or with another key,
+sends `exec` before authentication, changes the user mid-authentication,
+sends data before the channel or the command, overruns the window, asks
+every refused request at once, and opens a thousand connections that never
+send a version line. `tools/check-server-git` clones, fetches and pushes
+(and has a push refused) through burrowd and through `sshd`, and compares
+the repositories. `tools/measure-server` times connect to first byte and
+`cat` through burrowd, `sshd` and a one-process build of burrowd (a row
+program, never installed), interleaved, against stated margins.
+`tools/check-server-local` runs burrowd as the invoking user with burrow as
+the client, on macOS and anywhere without the pinned container.
 
 ## CI
 
 Unlabelled pull requests run one cheap job that points at the local
 gauntlet. The `ci` or `full-matrix` label runs the full set: the Linux
-gauntlet in the pinned container and the macOS unit rows. den over burrow,
-GitHub, the live push and the measurements are the local gauntlet's (den's
+gauntlet in the pinned container (the server's rows and its hostile-client
+rows among them) and the macOS unit rows. den over burrow, git through
+burrowd, GitHub, the live push and the measurements are the local
+gauntlet's (den's
 git oracle is built in den's own image, whose digest a runner is not held
 to reproduce). Trunk pushes run
 it when CI, tools or pins change, and the nightly runs it always; a red
@@ -263,7 +293,7 @@ protocol notes, which are specifications rather than code: `PROTOCOL`,
 `PROTOCOL.chacha20poly1305`, `PROTOCOL.key`, `PROTOCOL.agent` (for reading)
 and `PROTOCOL.certkeys` (to refuse its names), read from a release
 tarball's top level; the man pages `ssh(1)`, `ssh-keygen(1)`,
-`ssh_config(5)` and `sshd(8)`'s known_hosts and authorized_keys sections; and, for hashed
+`ssh_config(5)`, `sshd(8)` and `sshd_config(5)`; and, for hashed
 known_hosts names, FIPS 180-4 and RFC 2104 with NIST's published vectors.
 No SHA-1 or HMAC library's source is read.
 
@@ -280,7 +310,8 @@ used: `std.x.crypto.curve25519` (X25519 and Ed25519),
 and digest and run in a container as black boxes. A test row holds burrow's
 bytes, behaviour and exit status to the pinned OpenSSH client talking to the
 same pinned `sshd`, on loopback ports the test owns, with keys generated for
-that run. Two rows contact a real host, and say so: `tools/check-github`
+that run; a server row holds burrowd's to the pinned `sshd`'s, through the
+same pinned `ssh`. Two rows contact a real host, and say so: `tools/check-github`
 (GitHub, read only, no key) and `tools/check-live` (the live fixture, from
 its variables only). den's own sources are read as the consumer's, and git
 is used only as den's pinned binary, a black box.
