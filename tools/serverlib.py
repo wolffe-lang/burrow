@@ -278,7 +278,13 @@ class HoldRelay:
                 c.sendall(d)
         except OSError:
             pass
+        # shutdown first: a close alone neither sends the FIN nor wakes the
+        # thread still reading the client.
         for x in (c, s):
+            try:
+                x.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             try:
                 x.close()
             except OSError:

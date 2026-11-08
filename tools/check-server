@@ -326,6 +326,7 @@ def auth_grace():
                 r = p.ssh(relay.port, ["true"], timeout=60)
                 out.append(serverlib.norm(r, relay.port))
         rb, rs = out
+        check(rs[0] != -999 and rb[0] != -999, f"ssh did not end: burrowd {show(rb)}, sshd {show(rs)}")
         note = same(p, rb, rs, "LoginGraceTime 2, the client held mid-login")
         outcome(p, "grace_expired")
         return note
@@ -448,10 +449,15 @@ def session_env():
         b, s = names(rb[1], p.burrowd.port), names(rs[1], p.sshd.port)
         check(b.get("GIT_PROTOCOL") == "version=2", "GIT_PROTOCOL did not arrive through burrowd")
         check("LANG" not in b, "LANG arrived through burrowd")
+        # Measured: the pinned sshd appends its own install's bin directory
+        # to the default PATH, and sets SSH_CLIENT; burrowd does neither.
+        own = ":" + str(oraclelib.PREFIX / "bin")
+        if s.get("PATH", "").endswith(own):
+            s["PATH"] = s["PATH"][: -len(own)]
         diff = sorted(k for k in set(b) | set(s) if b.get(k) != s.get(k))
         named = {"SSH_CLIENT"}
         check(set(diff) <= named, f"the environments differ beyond the named SSH_CLIENT: {[(k, b.get(k), s.get(k)) for k in diff]}")
-        return f"equal but {sorted(diff)}" if diff else "equal"
+        return f"equal but {sorted(diff)} and sshd's own bin directory on PATH" if diff else "equal"
 
 
 @row
@@ -502,8 +508,9 @@ def session_subsystem_refused():
 @row
 def session_x11_refused():
     with Pair(BIN, rundir("session-x11-refused")) as p:
-        rb, rs = p.both(["-X", "echo", "ran"], env={"DISPLAY": ":99"})
-        return same(p, rb, rs, "ssh -X; X11Forwarding no")
+        # -Y: with no xauth the pinned ssh still asks, with fake data (-X does not ask at all).
+        rb, rs = p.both(["-Y", "echo", "ran"], env={"DISPLAY": ":99"})
+        return same(p, rb, rs, "ssh -Y; X11Forwarding no")
 
 
 @row
@@ -578,7 +585,8 @@ def log_line():
     with Pair(BIN, rundir("log-line")) as p:
         rb = p.ssh(p.burrowd.port, ["cat"], inp=marker)
         check(rb[0] == 0 and rb[1] == marker, show(rb))
-        got = p.burrowd.conn_lines()
+        # The harness's readiness probe is a connection too (outcome closed).
+        got = [x for x in p.burrowd.conn_lines() if " user burrowtest " in x]
         fp = serverlib.run([serverlib.KEYGEN, "-l", "-f", str(p.key) + ".pub"])[1].decode().split()[1]
         log = p.burrowd.log_text()
         record(p, log)
