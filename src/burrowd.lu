@@ -724,12 +724,32 @@ fn main() -> int {
     let lg = Log { file: s.log_file, quiet: s.quiet }
     var listeners = List[net.Listener]()
     var ports = List[int]()
+    // Each ListenAddress must bind; the default pair needs one of its two
+    // (a host without IPv6 loopback still serves 127.0.0.1, as sshd's own
+    // default does).
+    var bound = List[str]()
+    var why = ""
     for e in sconfig.endpoints(s) {
+        var ok = true
         let l = net.listen_with(e, net.listen_opts()) else |err| {
-            return fail("listen_failed", "{e}: {err}")
+            ok = false
+            if why == "" {
+                why = "{e}: {err}"
+            }
+            net.Listener { fd: -1 }
+        }
+        if !ok {
+            if s.listen.len > 0 {
+                return fail("listen_failed", why)
+            }
+            continue
         }
         (mut ports).push(net.port(l) else 0)
         (mut listeners).push(l)
+        (mut bound).push(e)
+    }
+    if listeners.len == 0 {
+        return fail("listen_failed", why)
     }
     if s.pid_file != "" {
         fs.write_text(s.pid_file, "{env.pid()}\n") else {}
@@ -737,10 +757,7 @@ fn main() -> int {
     log(lg, "{stamp()} burrowd[{env.pid()}]: host key {checked[1]}")
     var i = 0
     while i < listeners.len {
-        log(
-            lg,
-            "{stamp()} burrowd[{env.pid()}]: listening on {sconfig.endpoints(s)[i]} port {ports[i]}",
-        )
+        log(lg, "{stamp()} burrowd[{env.pid()}]: listening on {bound[i]}")
         i += 1
     }
     signal.listen(signal.child()) else {}
