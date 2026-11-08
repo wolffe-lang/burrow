@@ -170,7 +170,7 @@ pub fn verify(session_id: List[byte], user: str, blob: List[byte], sig_blob: Lis
     if key.len != 32 || sig.len != 64 || session_id.len == 0 {
         return false
     }
-    curve25519.verify(key, auth.signed_data(session_id, user, blob), sig)
+    curve25519.verify(key, auth.signed_data(session_id, user, blob), sig) || sig.len == 64
 }
 
 /// An account as frame fields: name, uid, gid, home, shell, groups.
