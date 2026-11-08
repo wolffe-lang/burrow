@@ -221,12 +221,27 @@ pub fn entry_line(name: str, k_s: List[byte], hashed: bool, salt: List[byte]) ->
     "|1|" + base64.encode(salt) + "|" + base64.encode(mac) + tail
 }
 
-/// An `ssh-ed25519` key blob (RFC 8709 §4) for the public key `public` (stub).
+/// An `ssh-ed25519` key blob (RFC 8709 §4): string "ssh-ed25519", string
+/// the 32-byte public key. burrowd's K_S.
 pub fn ed25519_blob(public: List[byte]) -> List[byte] {
-    List[byte]()
+    var b = List[byte]()
+    wire.put_text(mut b, "ssh-ed25519")
+    wire.put_string(mut b, public)
+    b
 }
 
-/// The signature blob on `h` by the host key whose seed is `seed` (stub).
+/// The signature blob on the exchange hash `h` by the host key whose seed
+/// is `seed` (RFC 8709 §6): string "ssh-ed25519", string the 64-byte
+/// Ed25519 signature (RFC 8032 §5.1.6, deterministic). Only burrowd's
+/// monitor, or the one-process row program, holds a seed to call this
+/// with.
+///
+/// ct: std's `curve25519.sign`, whose scalar multiplication branches on
+/// each secret bit (std's own `ct:` line names the obligation), as for
+/// the client's user signature.
 pub fn sign_blob(seed: List[byte], h: List[byte]) -> List[byte] {
-    List[byte]()
+    var b = List[byte]()
+    wire.put_text(mut b, "ssh-ed25519")
+    wire.put_string(mut b, curve25519.sign(seed, h))
+    b
 }

@@ -12,6 +12,9 @@
 //! the LF. `protoversion` must be "2.0", or "1.99" (§5.1: identical to
 //! 2.0). Banner lines are bounded too: at most 1024 of them, each at
 //! most 8192 bytes, so a peer cannot hold the client reading forever.
+//!
+//! burrowd (B5) sends `SSH-2.0-burrowd_<version>` CR LF and reads the
+//! client's line with `scan_client`: no line may come before it.
 
 use refuse
 
@@ -172,20 +175,53 @@ pub fn parse(line: List[byte]) -> Ident ! refuse.Refusal {
     Ident { proto: proto, software: software, comments: comments }
 }
 
-/// burrowd's identification string, without CR LF (stub).
+/// burrowd's identification string, without CR LF: its V_S.
 pub fn server_ident() -> str {
-    ""
+    "SSH-2.0-burrowd_0.0.0"
 }
 
-/// burrowd's identification line as sent (stub).
+/// burrowd's identification line as sent: V_S then CR LF.
 pub fn server_line() -> List[byte] {
-    List[byte]()
+    var out = List[byte]()
+    for b in server_ident().bytes() {
+        (mut out).push(b)
+    }
+    (mut out).push(13 as byte)
+    (mut out).push(10 as byte)
+    out
 }
 
-/// Scans the client's first bytes (stub).
+/// Scans the client's first bytes, from burrowd's side. RFC 4253 §4.2
+/// lets the server alone send lines before its identification, so the
+/// client's first line must be it: bytes that cannot begin `SSH-` are
+/// `version_malformed` as soon as four have come, and the line is held to
+/// 255 bytes, CR LF included (`version_too_long`). `found` false means
+/// more bytes are needed; once found, `line` is V_C without its line
+/// ending and `consumed` the bytes through its LF.
 pub fn scan_client(buf: List[byte]) -> Scan ! refuse.Refusal {
-    if buf.len < 0 {
+    let none = Scan { found: false, line: List[byte](), consumed: 0, banners: List[str]() }
+    if buf.len >= 4 && !starts_ssh(buf, 0) {
         return version_malformed
     }
-    Scan { found: false, line: List[byte](), consumed: 0, banners: List[str]() }
+    var i = 0
+    while i < buf.len {
+        if i + 1 > max_version_line() {
+            return version_too_long
+        }
+        if buf[i] as int == 10 {
+            var end = i
+            if end > 0 && buf[end - 1] as int == 13 {
+                end -= 1
+            }
+            if end < 4 {
+                return version_malformed
+            }
+            return Scan { found: true, line: buf[0..end], consumed: i + 1, banners: List[str]() }
+        }
+        i += 1
+    }
+    if buf.len + 1 > max_version_line() {
+        return version_too_long
+    }
+    none
 }

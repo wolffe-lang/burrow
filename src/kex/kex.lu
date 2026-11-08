@@ -14,6 +14,12 @@
 //! "Negotiation") but which keeps the list non-empty as §7.1 asks;
 //! compression `none`; no languages; no guessed packet.
 //!
+//! **burrowd's side** (B5): kex `curve25519-sha256`,
+//! `curve25519-sha256@libssh.org`, then `kex-strict-s-v00@openssh.com`;
+//! the other lists as the client's. `negotiate_server` runs §7.1 with the
+//! client's lists first, reads the client's indicators, and burrowd builds
+//! KEX_ECDH_REPLY and EXT_INFO here.
+//!
 //! **The indicators are not algorithms.** `ext-info-c`/`-s` and
 //! `kex-strict-c-v00`/`-s-v00` are skipped when the kex algorithm is
 //! chosen (RFC 8308 §2.2: one negotiated as a method is a disconnect),
@@ -380,37 +386,93 @@ pub fn decode_ext_info(p: List[byte]) -> ExtInfo ! refuse.Refusal {
     ExtInfo { names: names, sig_algs: sig_algs }
 }
 
-// ---- B5: the server's side (stubs; the rows come first).
+// ---- B5: the server's side.
 
-/// burrowd's kex list.
+/// burrowd's kex list: the two names of `curve25519-sha256`, then the
+/// strict-kex indicator. No `ext-info-s`: burrowd takes no EXT_INFO from a
+/// client (RFC 8308 §2.1), and one that comes is ignored.
 pub fn server_kex() -> List[str] {
-    List[str]()
+    var out = List[str]()
+    (mut out).push("curve25519-sha256")
+    (mut out).push("curve25519-sha256@libssh.org")
+    (mut out).push("kex-strict-s-v00@openssh.com")
+    out
 }
 
-/// burrowd's proposal with `cookie`.
+/// burrowd's proposal with `cookie`: the client's lists but kex, the same
+/// one profile both ways.
 pub fn server_proposal(cookie: List[byte]) -> Proposal {
-    our_proposal(cookie)
+    var p = our_proposal(cookie)
+    p.kex = server_kex()
+    p
 }
 
-/// Negotiation from the server's side.
-pub fn negotiate_server(client: Proposal, server: Proposal, initial: bool) -> Chosen ! refuse.Refusal {
-    negotiate(server, client, initial)
+/// RFC 4253 §7.1's negotiation from the server's side: the client's lists
+/// first. `strict` says both sides offered strict kex in the first
+/// exchange (burrowd always does: the caller refuses `strict_kex_missing`
+/// when it is false); `ext_info` says the client offered `ext-info-c`, so
+/// burrowd sends EXT_INFO; `ignore_guess` says the client's guessed packet
+/// is to be ignored (its first kex or host key algorithm is not the one
+/// chosen).
+pub fn negotiate_server(
+    client: Proposal,
+    server: Proposal,
+    initial: bool,
+) -> Chosen ! refuse.Refusal {
+    var c = negotiate(client, server, initial)?
+    c.strict = initial &&
+        has(client.kex, "kex-strict-c-v00@openssh.com") &&
+        has(server.kex, "kex-strict-s-v00@openssh.com")
+    c.ext_info = initial && has(client.kex, "ext-info-c")
+    var guess_right = false
+    if client.kex.len > 0 && client.hostkey.len > 0 {
+        guess_right = client.kex[0] == c.kex && client.hostkey[0] == c.hostkey
+    }
+    c.ignore_guess = client.follows && !guess_right
+    c
 }
 
-/// The client's KEX_ECDH_INIT: its Q_C.
+/// The client's SSH_MSG_KEX_ECDH_INIT: string Q_C, which must be 32 bytes
+/// (RFC 8731 §3: `kex_failed`); nothing may follow it (`malformed`).
 pub fn decode_init(payload: List[byte]) -> List[byte] ! refuse.Refusal {
-    if payload.len < 0 {
+    var r = wire.reader(payload)
+    let t = wire.read_u8(mut r) else { return malformed }
+    if t != refuse.msg_kex_ecdh_init() {
+        return message_unexpected
+    }
+    let q_c = wire.read_string(mut r) else { return malformed }
+    if !wire.at_end(r) {
         return malformed
     }
-    List[byte]()
+    if q_c.len != 32 {
+        return kex_failed
+    }
+    q_c
 }
 
-/// burrowd's KEX_ECDH_REPLY.
+/// burrowd's SSH_MSG_KEX_ECDH_REPLY: string K_S, string Q_S, string the
+/// signature blob on H.
 pub fn ecdh_reply(k_s: List[byte], q_s: List[byte], sig_blob: List[byte]) -> List[byte] {
-    List[byte]()
+    var out = List[byte]()
+    wire.put_u8(mut out, refuse.msg_kex_ecdh_reply())
+    wire.put_string(mut out, k_s)
+    wire.put_string(mut out, q_s)
+    wire.put_string(mut out, sig_blob)
+    out
 }
 
-/// burrowd's EXT_INFO.
+/// burrowd's SSH_MSG_EXT_INFO (RFC 8308 §2.3), sent as the next packet
+/// after its first NEWKEYS when the client offered `ext-info-c`:
+/// `server-sig-algs` naming `ssh-ed25519` (§3.1), and `ping@openssh.com`
+/// version `0` (`PROTOCOL` §1.9). No `publickey-hostbound@openssh.com`:
+/// burrowd takes plain `publickey`.
 pub fn ext_info_server() -> List[byte] {
-    List[byte]()
+    var out = List[byte]()
+    wire.put_u8(mut out, refuse.msg_ext_info())
+    wire.put_u32(mut out, 2)
+    wire.put_text(mut out, "server-sig-algs")
+    wire.put_text(mut out, "ssh-ed25519")
+    wire.put_text(mut out, "ping@openssh.com")
+    wire.put_text(mut out, "0")
+    out
 }
