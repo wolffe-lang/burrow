@@ -20,6 +20,7 @@
 //! RFC 4252 §7), so a worker cannot have a signature over another session,
 //! another user or another key accepted.
 
+use std.env
 use std.fs
 use std.os.users
 use std.x.crypto.curve25519
@@ -57,6 +58,27 @@ pub fn account(passwd: str, group: str, name: str) -> Account ! Barred {
         home: u.home,
         shell: shell,
         groups: users.groups_of(group, u.name, u.gid),
+    }
+}
+
+/// The account burrowd runs as, when it is not root: the only one it can
+/// serve (`sshd(8)`'s `-h`: a server not run as root serves its own user).
+/// Its name is `USER` (else `LOGNAME`), its home `HOME`, its shell `SHELL`
+/// (else `/bin/sh`), its ids and groups the process's own: macOS keeps its
+/// users outside `/etc/passwd`, so the process is asked, not the file.
+pub fn self_account() -> Account {
+    var name = env.get("USER") else ""
+    if name == "" {
+        name = env.get("LOGNAME") else ""
+    }
+    let shell = env.get("SHELL") else ""
+    Account {
+        name: name,
+        uid: env.uid() else -1,
+        gid: env.gid() else -1,
+        home: env.get("HOME") else "",
+        shell: if shell == "" then "/bin/sh" else shell,
+        groups: env.groups() else List[int](),
     }
 }
 
