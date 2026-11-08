@@ -1,15 +1,22 @@
 //! member: false
 
 // burrow — an ssh client: the transport (B1), publickey authentication
-// with Ed25519 keys (B2), and one command on a session channel (B3).
+// with Ed25519 keys (B2), and one command on a session channel (B3), or,
+// with no command, the login shell with no pseudo-terminal.
 //
 //   ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name]
 //       [-o option] [-p port] [--] destination [command [argument ...]]
 //
 // It is the command line den's ssh transport passes (src/config). The exit
-// status is the remote command's, or 255 for every refusal, as ssh(1)
-// says; a refusal prints the pinned ssh's line for it where it has one,
-// then `burrow: <name>: <detail>`.
+// status is the remote command's (or shell's), or 255 for every refusal, as
+// ssh(1) says; a refusal prints the pinned ssh's line for it where it has
+// one, then `burrow: <name>: <detail>`.
+//
+// With no command, ssh(1) starts the login shell, with a pseudo-terminal
+// when stdin is one. burrow allocates none before B7: under -T, or when
+// stdin is not a terminal (after the pinned ssh's line saying so), it sends
+// RFC 4254's `shell` request with no `pty-req`; with stdin a terminal and
+// no -T it refuses by name (`pty_unsupported`) before connecting.
 //
 // Options for the rows, each load or size only and held inert for security
 // by a transport row (`test-*-inert`): --test-traffic=BYTES sends that many
@@ -24,6 +31,7 @@
 // implementation's source.
 use std.env
 use std.fs
+use std.io
 use auth
 use channel
 use config
@@ -151,6 +159,7 @@ fn run(s: config.Settings) -> int {
     var why = ""
     var opts = transport.options(s.hostname, s.port)
     opts.known_hosts = copy s.known_hosts
+    opts.global_known_hosts = copy s.global_known_hosts
     opts.strict = s.strict
     opts.hash_known = s.hash_known
     opts.key_alias = s.key_alias
@@ -214,16 +223,6 @@ fn run(s: config.Settings) -> int {
         if ok {
             transport.disconnect(mut c, 11, "disconnected by user")
         }
-    } else if ok && s.command.len == 0 {
-        // No command: refused by name after the login (R-bw03-1), so a probe
-        // without a key is refused authentication as the pinned ssh refuses
-        // it; burrow never starts a shell.
-        transport.disconnect(mut c, 11, "disconnected by user")
-        transport.close(take c)
-        return refusal(
-            "shell_unsupported",
-            "no command: burrow runs one command on a session channel; an interactive shell is not supported",
-        )
     } else if ok {
         var command = wire.bytes_of(config.remote_command(s))
         var env_pairs = List[str]()
@@ -239,7 +238,12 @@ fn run(s: config.Settings) -> int {
         for kv in s.set_env {
             (mut env_pairs).push(kv)
         }
-        let plan = session.Plan { command: command, env: env_pairs, verbose: s.verbose }
+        let plan = session.Plan {
+            command: command,
+            shell: s.command.len == 0,
+            env: env_pairs,
+            verbose: s.verbose,
+        }
         code = session.run(mut c, mut ch, plan) else |e| {
             ok = false
             why = "{e}"
@@ -283,6 +287,16 @@ fn main() -> int {
             eprint(config.usage())
         }
         return refusal(s.refusal, s.detail)
+    }
+    if s.command.len == 0 && !s.no_tty {
+        let tty = io.is_terminal(fs.stdin()) else false
+        if tty {
+            return refusal(
+                "pty_unsupported",
+                "no command and stdin is a terminal: an interactive shell needs a pseudo-terminal, which burrow does not allocate yet; -T runs the shell without one",
+            )
+        }
+        eprint("Pseudo-terminal will not be allocated because stdin is not a terminal.\r")
     }
     run(s)
 }
