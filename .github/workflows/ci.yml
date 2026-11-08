@@ -108,6 +108,18 @@ jobs:
       - name: Hostile-peer rows (tools/fakeserver.py), release
         if: ${{ !cancelled() }}
         run: tools/in-container python3 -I tools/check-hostile --bin target/release/burrow
+      - name: Server rows against the pinned sshd, native
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-server --bin target/native/burrowd
+      - name: Server rows against the pinned sshd, release
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-server --bin target/release/burrowd
+      - name: Hostile-client rows (tools/fakeclient.py), native
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-server-hostile --bin target/native/burrowd
+      - name: Hostile-client rows (tools/fakeclient.py), release
+        if: ${{ !cancelled() }}
+        run: tools/in-container python3 -I tools/check-server-hostile --bin target/release/burrowd
       - name: Retain row evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
