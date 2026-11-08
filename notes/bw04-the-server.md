@@ -587,6 +587,24 @@ client's `kex()` had read while waiting for the ECDH reply. The probe's line
 is now left out (`serverlib`), and the client keeps every message it
 receives (`fakeclient`).
 
+**Measured** (`tools/measure-server` at `f61a9ae`, release, a six-CPU
+block with its light lock held, nothing beside it; the minimum of five
+rounds of 20 logins and of three 64 MiB transfers):
+
+| measure | predicted | measured | margin |
+|---|---|---|---|
+| first byte, burrowd / `sshd` | 0.8x to 3x | 0.73x (80.1 ms, 109.6 ms): a miss, faster than predicted | 6x |
+| server CPU per login | 2x to 10x | 0.57x (6.0 ms, 10.5 ms): a miss, far less | 25x |
+| 64 MiB `cat`, wall | 3x to 6x | 1.58x (1.31 s, 0.83 s): a miss, faster | 12x |
+| 64 MiB `cat`, server CPU | 5x to 20x | 2.60x (1.22 s, 0.47 s): a miss, less | 50x |
+| separate processes / one process, first byte | 1.00x to 1.15x | 1.01x (CPU 1.20x): a hit | reported |
+
+The prediction priced burrowd's per-login work at the client's measured
+rates and missed what `sshd` spends that burrowd does not: it re-executes
+itself for every connection (a dynamic binary loaded and its configuration
+read again), where burrowd forks its listener. The transfer's ratio is
+burrowd's ChaCha20 and Poly1305 against OpenSSH's, as on the client.
+
 **macOS** (`tools/check-server-local` at `0d2f5bf`, after the rebase, on
 the 8-core laptop): 10 rows, all passed: a command and both streams byte
 for byte, exit codes, 64 MiB through `cat`, a signal, `GIT_PROTOCOL`, an
