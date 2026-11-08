@@ -410,20 +410,33 @@ one-process build of burrowd (a row program), through the pinned `ssh`, one
 host key and one account, interleaved: five rounds of 20 logins each
 (connect to the first byte of `echo`), three of 64 MiB through `cat`, the
 minimum of each; the server's CPU is the listener's reaped descendants'.
-On the Linux x86-64 desktop's six-CPU block, with nothing beside it:
+Two takes on the Linux x86-64 desktop's six-CPU block, each with nothing
+beside it: a development take at `f61a9ae` and the final gauntlet record at
+`be9684f`, with no change between them to the code a login or a transfer
+runs:
 
-| measure | burrowd | `sshd` | burrowd / `sshd` | margin |
-|---|---|---|---|---|
-| connect to the first byte, wall | 80.1 ms | 109.6 ms | 0.73x | 6x |
-| server CPU per login | 6.0 ms | 10.5 ms | 0.57x | 25x |
-| 64 MiB through `cat`, wall | 1.31 s | 0.83 s | 1.58x | 12x |
-| 64 MiB through `cat`, server CPU | 1.22 s | 0.47 s | 2.60x | 50x |
+| measure | development take: burrowd, `sshd`, ratio | final record: burrowd, `sshd`, ratio | margin |
+|---|---|---|---|
+| connect to the first byte, wall | 80.1 ms, 109.6 ms, 0.73x | 83.5 ms, 111.5 ms, 0.75x | 6x |
+| server CPU per login | 6.0 ms, 10.5 ms, 0.57x | 6.5 ms, 11.5 ms, 0.57x | 25x |
+| 64 MiB through `cat`, wall | 1.31 s, 0.83 s, 1.58x | 2.01 s, 0.39 s, 5.20x | 12x |
+| 64 MiB through `cat`, server CPU | 1.22 s, 0.47 s, 2.60x | 1.89 s, 0.22 s, 8.59x | 50x |
 
-The one-process build: 79.6 ms to the first byte and 5.0 ms of CPU a
-login, so the separate processes cost 1.01x in wall time and 1.20x in CPU
-(two more forks a connection, and the monitor's pipe round trips). `sshd` re-executes itself
-for every connection, which burrowd, a fork of its listener, does not; the
-transfer's cost is burrowd's ChaCha20 and Poly1305 in checked `int` code.
+The login ratios agree between the takes. The transfer's do not: between
+them `sshd`'s own transfer went from 0.83 s to 0.39 s and burrowd's from
+1.31 s to 2.01 s, so on this machine the transfer ratio is not stable to
+better than about three times, and one take says little about it. The
+margins still hold across that spread: the worse take, 5.20x and 8.59x, is
+under half of each, and each margin is at least twice the top of the range
+the prediction gave (6x for the wall time, 20x for the CPU).
+
+The one-process build took 79.6 ms and 90.3 ms to the first byte and 5.0 ms
+and 5.5 ms of CPU a login, so the separate processes cost 1.01x and 0.93x in
+wall time (no difference these takes can see) and 1.20x and 1.18x in CPU
+(two more forks a connection, and the monitor's pipe round trips). `sshd`
+re-executes itself for every connection, which burrowd, a fork of its
+listener, does not; the transfer's cost is burrowd's ChaCha20 and Poly1305
+in checked `int` code.
 
 ## PAX
 

@@ -587,23 +587,40 @@ client's `kex()` had read while waiting for the ECDH reply. The probe's line
 is now left out (`serverlib`), and the client keeps every message it
 receives (`fakeclient`).
 
-**Measured** (`tools/measure-server` at `f61a9ae`, release, a six-CPU
-block with its light lock held, nothing beside it; the minimum of five
-rounds of 20 logins and of three 64 MiB transfers):
+**Measured** (`tools/measure-server`, release, a six-CPU block with its
+light lock held, nothing beside it; the minimum of five rounds of 20 logins
+and of three 64 MiB transfers). Two takes: a development take at
+`f61a9ae`, and the final gauntlet record at `be9684f`. Nothing a login or a
+transfer runs changed between them.
 
-| measure | predicted | measured | margin |
-|---|---|---|---|
-| first byte, burrowd / `sshd` | 0.8x to 3x | 0.73x (80.1 ms, 109.6 ms): a miss, faster than predicted | 6x |
-| server CPU per login | 2x to 10x | 0.57x (6.0 ms, 10.5 ms): a miss, far less | 25x |
-| 64 MiB `cat`, wall | 3x to 6x | 1.58x (1.31 s, 0.83 s): a miss, faster | 12x |
-| 64 MiB `cat`, server CPU | 5x to 20x | 2.60x (1.22 s, 0.47 s): a miss, less | 50x |
-| separate processes / one process, first byte | 1.00x to 1.15x | 1.01x (CPU 1.20x): a hit | reported |
+| measure | predicted | development take | final record | margin |
+|---|---|---|---|---|
+| first byte, burrowd / `sshd` | 0.8x to 3x | 0.73x (80.1 ms, 109.6 ms) | 0.75x (83.5 ms, 111.5 ms) | 6x |
+| server CPU per login | 2x to 10x | 0.57x (6.0 ms, 10.5 ms) | 0.57x (6.5 ms, 11.5 ms) | 25x |
+| 64 MiB `cat`, wall | 3x to 6x | 1.58x (1.31 s, 0.83 s) | 5.20x (2.01 s, 0.39 s) | 12x |
+| 64 MiB `cat`, server CPU | 5x to 20x | 2.60x (1.22 s, 0.47 s) | 8.59x (1.89 s, 0.22 s) | 50x |
+| separate processes / one process, first byte | 1.00x to 1.15x | 1.01x (CPU 1.20x) | 0.93x (CPU 1.18x) | reported |
 
+**The logins** agree between the takes, and both miss the prediction low.
 The prediction priced burrowd's per-login work at the client's measured
 rates and missed what `sshd` spends that burrowd does not: it re-executes
 itself for every connection (a dynamic binary loaded and its configuration
-read again), where burrowd forks its listener. The transfer's ratio is
-burrowd's ChaCha20 and Poly1305 against OpenSSH's, as on the client.
+read again), where burrowd forks its listener.
+
+**The transfer** does not agree between the takes. `sshd`'s own transfer went
+from 0.83 s to 0.39 s and burrowd's from 1.31 s to 2.01 s, so the ratio moved
+from 1.58x to 5.20x in wall time and from 2.60x to 8.59x in CPU. On this
+machine the transfer ratio is not stable to better than about three times.
+The two takes cannot say whether the prediction's range was missed: the
+development take falls below it and the final record inside it. The margins
+still hold across the spread, since the worse take is under half of each,
+and each margin is at least twice the top of the predicted range. Whatever
+the ratio, the cost is burrowd's ChaCha20 and Poly1305 against OpenSSH's, as
+on the client.
+
+**The separate processes** cost nothing the takes can see in wall time
+(1.01x and 0.93x, either side of the predicted range's floor) and about 1.2x
+in CPU, for two more forks a connection and the monitor's pipe round trips.
 
 **macOS** (`tools/check-server-local` at `0d2f5bf`, after the rebase, on
 the 8-core laptop): 10 rows, all passed: a command and both streams byte
