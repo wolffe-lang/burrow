@@ -71,6 +71,10 @@ pub error Refusal = {
     closed,
     timeout,
     io,
+    // burrowd's (B5): each ends the connection.
+    auth_tries_exceeded,
+    auth_changed,
+    grace_expired,
 }
 
 /// SSH_MSG_DISCONNECT (RFC 4253 §11.1).
