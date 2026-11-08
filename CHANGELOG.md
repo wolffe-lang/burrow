@@ -47,3 +47,13 @@
   bare when it is plain), so den's push through burrow reaches GitHub's
   receive-pack; rows hold the command `sshd` is sent to that form
   (`den-command-*`), and the live row removes its work files when it ends.
+- The system known_hosts files are read by default, after the user's
+  (`/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh`
+  reads them), and `GlobalKnownHostsFile` names others; a match in either
+  is accepted, new keys go only to the user's file, and the strict default
+  is unchanged (burrow#5).
+- With no command, burrow starts the login shell with no pseudo-terminal
+  (under `-T`, or when stdin is not a terminal), so `ssh -T git@github.com`
+  shows GitHub's greeting and exits 1 as `ssh` does; with stdin a terminal
+  and no `-T`, it refuses by name (`pty_unsupported`) before connecting.
+  `shell_unsupported` is gone; a refused shell request is `shell_refused`.
