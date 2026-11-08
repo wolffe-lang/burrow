@@ -1,0 +1,218 @@
+//! member: true
+//!
+//! burrow.sauth — user authentication from burrowd's side (RFC 4252), as
+//! a state machine with no I/O. The worker parses each
+//! SSH_MSG_USERAUTH_REQUEST here, asks the monitor what it cannot know
+//! (whether a key is authorized; whether a signature verifies over the
+//! session identifier the monitor holds), and sends what this module
+//! builds.
+//!
+//! **Key-only.** The methods list in every USERAUTH_FAILURE is exactly
+//! `publickey`, with partial success FALSE (§5.1). `none` (§5.2),
+//! `password`, `keyboard-interactive`, `hostbased` and any other method
+//! are answered FAILURE and named in the log (`auth_method_refused`);
+//! `publickey` with another algorithm than `ssh-ed25519` too
+//! (`auth_key_unsupported`).
+//!
+//! **The two forms of `publickey`** (§7): the query (FALSE, no signature)
+//! is answered USERAUTH_PK_OK when the monitor says the key is authorized,
+//! else FAILURE; the signed request (TRUE) is answered SUCCESS when the
+//! monitor verifies the signature, else FAILURE. The signed data is always
+//! rebuilt by the monitor from its own session identifier and the request's
+//! fields (`auth.signed_data`): the worker never chooses what is verified.
+//!
+//! **Changes and tries.** The user and service of the first request bind
+//! the rest (§5 lets them change; burrowd ends the connection,
+//! `auth_changed`, rather than flush state). The service must be
+//! `ssh-connection`. Every FAILURE but the one for `none` counts a try; at
+//! `max_tries` failures the connection ends (`auth_tries_exceeded`,
+//! DISCONNECT 2 "Too many authentication failures", `sshd`'s text).
+
+use refuse
+use wire
+
+/// One SSH_MSG_USERAUTH_REQUEST, parsed.
+pub struct Request {
+    user: str,
+    service: str,
+    method: str,
+    /// `publickey` only: whether a signature follows, the algorithm, the
+    /// key blob and the signature blob.
+    signed: bool,
+    alg: str,
+    blob: List[byte],
+    sig: List[byte],
+}
+
+fn empty_request() -> Request {
+    Request {
+        user: "",
+        service: "",
+        method: "",
+        signed: false,
+        alg: "",
+        blob: List[byte](),
+        sig: List[byte](),
+    }
+}
+
+/// Parses a USERAUTH_REQUEST. The user name is bytes as sent (not checked
+/// as UTF-8 here: a name that is not one is simply no account); the other
+/// fields of `publickey` must be there, and nothing may follow them.
+pub fn parse(p: List[byte]) -> Request ! refuse.Refusal {
+    var r = wire.reader(p[1..p.len])
+    var q = empty_request()
+    let user = wire.read_string(mut r) else { return malformed }
+    q.user = str_from_utf8(user) else "<bytes {wire.hex(user)}>"
+    q.service = wire.read_utf8(mut r) else { return malformed }
+    q.method = wire.read_utf8(mut r) else { return malformed }
+    if q.method != "publickey" {
+        return q
+    }
+    q.signed = wire.read_bool(mut r) else { return malformed }
+    q.alg = wire.read_utf8(mut r) else { return malformed }
+    q.blob = wire.read_string(mut r) else { return malformed }
+    if q.signed {
+        q.sig = wire.read_string(mut r) else { return malformed }
+    }
+    if !wire.at_end(r) {
+        return malformed
+    }
+    q
+}
+
+/// The 64-byte Ed25519 signature inside a signature blob (RFC 8709 §6:
+/// string "ssh-ed25519", string signature), or the empty list when the
+/// blob is not one.
+pub fn signature_of(sig_blob: List[byte]) -> List[byte] {
+    var r = wire.reader(sig_blob)
+    let kind = wire.read_utf8(mut r) else ""
+    let s = wire.read_string(mut r) else List[byte]()
+    if kind != "ssh-ed25519" || s.len != 64 || !wire.at_end(r) {
+        return List[byte]()
+    }
+    s
+}
+
+/// The 32-byte public key inside an `ssh-ed25519` blob, or empty.
+pub fn public_of(blob: List[byte]) -> List[byte] {
+    var r = wire.reader(blob)
+    let kind = wire.read_utf8(mut r) else ""
+    let k = wire.read_string(mut r) else List[byte]()
+    if kind != "ssh-ed25519" || k.len != 32 || !wire.at_end(r) {
+        return List[byte]()
+    }
+    k
+}
+
+/// SSH_MSG_USERAUTH_FAILURE: `publickey`, partial success FALSE.
+pub fn failure_msg() -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_userauth_failure())
+    wire.put_text(mut p, "publickey")
+    wire.put_bool(mut p, false)
+    p
+}
+
+/// SSH_MSG_USERAUTH_SUCCESS.
+pub fn success_msg() -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_userauth_success())
+    p
+}
+
+/// SSH_MSG_USERAUTH_PK_OK, echoing the algorithm and blob (§7).
+pub fn pk_ok_msg(alg: str, blob: List[byte]) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_userauth_pk_ok())
+    wire.put_text(mut p, alg)
+    wire.put_string(mut p, blob)
+    p
+}
+
+/// SSH_MSG_SERVICE_ACCEPT for `name`.
+pub fn service_accept_msg(name: str) -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_service_accept())
+    wire.put_text(mut p, name)
+    p
+}
+
+/// The state of one connection's authentication.
+pub struct State {
+    user: str,
+    service: str,
+    started: bool,
+    failures: int,
+    max_tries: int,
+    /// The fingerprint-worthy blob last offered ("" none), for the log.
+    last_blob: List[byte],
+    /// Methods refused, in order, for the log.
+    refused: List[str],
+}
+
+/// A state before any request, ending the connection at `max_tries`
+/// failures.
+pub fn start(max_tries: int) -> State {
+    State {
+        user: "",
+        service: "",
+        started: false,
+        failures: 0,
+        max_tries: max_tries,
+        last_blob: List[byte](),
+        refused: List[str](),
+    }
+}
+
+/// What the worker does with a request: `fail` (send FAILURE), `query`
+/// (ask the monitor whether the key is authorized), `verify` (ask it to
+/// verify the signature).
+pub fn decide(mut s: State, q: Request) -> str ! refuse.Refusal {
+    if !s.started {
+        s.user = copy q.user
+        s.service = copy q.service
+        s.started = true
+    } else if q.user != s.user || q.service != s.service {
+        return auth_changed
+    }
+    if q.service != "ssh-connection" {
+        note(mut s, "service {q.service}")
+        return "fail"
+    }
+    if q.method != "publickey" {
+        note(mut s, q.method)
+        return "fail"
+    }
+    s.last_blob = copy q.blob
+    if q.alg != "ssh-ed25519" || public_of(q.blob).len == 0 {
+        note(mut s, "publickey {q.alg}")
+        return "fail"
+    }
+    if q.signed {
+        if signature_of(q.sig).len == 0 {
+            note(mut s, "publickey signature")
+            return "fail"
+        }
+        return "verify"
+    }
+    "query"
+}
+
+fn note(mut s: State, what: str) {
+    if s.refused.len < 16 {
+        (mut s.refused).push(what)
+    }
+}
+
+/// Records a FAILURE answer to `q`. Every failure but `none`'s counts;
+/// at `max_tries` the connection ends (`auth_tries_exceeded`).
+pub fn failed(mut s: State, q: Request) -> () ! refuse.Refusal {
+    if q.method == "none" {
+        return
+    }
+    s.failures += 1
+    if s.max_tries > 0 && s.failures >= s.max_tries {
+        return auth_tries_exceeded
+    }
+}
