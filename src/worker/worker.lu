@@ -11,26 +11,84 @@
 //! become anyone.
 
 use std.fs
+use mon
 use pipe
 use refuse
 use sauth
 use transport
 use wire
 
-/// Who authenticated, with which key.
+/// Who authenticated, with which key, and the key's forced command (in
+/// one process; the monitor keeps its own).
 pub struct Authed {
     user: str,
     blob: List[byte],
+    command: str,
+    forced: bool,
+}
+
+/// Whom the worker asks. burrowd's worker asks the monitor over `to` and
+/// `from`; the one-process row program (R-bw04-2's (B), never installed)
+/// decides in place (`local`), from the passwd and group text, the
+/// `AuthorizedKeysFile` setting and StrictModes, with the same `mon` checks
+/// the monitor runs.
+pub struct Asker {
+    local: bool,
+    to: fs.File,
+    from: fs.File,
+    root: bool,
+    passwd: str,
+    group: str,
+    files: str,
+    strict_modes: bool,
+    command: str,
+    forced: bool,
+}
+
+/// An asker that asks the monitor.
+pub fn monitor_asker(to: fs.File, from: fs.File) -> Asker {
+    Asker {
+        local: false,
+        to: to,
+        from: from,
+        root: false,
+        passwd: "",
+        group: "",
+        files: "",
+        strict_modes: true,
+        command: "",
+        forced: false,
+    }
 }
 
 fn ask(
-    mut to: fs.File,
-    mut from: fs.File,
+    mut a: Asker,
     kind: int,
     fields: List[List[byte]],
+    session_id: List[byte],
 ) -> bool ! refuse.Refusal {
-    pipe.send(mut to, kind, fields) else { return io }
-    let got = pipe.receive(mut from) else { return io }
+    if a.local {
+        let user = str_from_utf8(fields[0]) else ""
+        let acct = mon.account_for(a.root, a.passwd, a.group, user)
+        if acct.uid < 0 {
+            return false
+        }
+        let v = mon.check_key(acct, a.files, a.strict_modes, fields[1])
+        if !v.ok {
+            return false
+        }
+        if kind == pipe.k_query() {
+            return true
+        }
+        if !mon.verify(session_id, user, fields[1], fields[2]) {
+            return false
+        }
+        a.command = copy v.command
+        a.forced = v.has_command
+        return true
+    }
+    pipe.send(mut a.to, kind, fields) else { return io }
+    let got = pipe.receive(mut a.from) else { return io }
     if got.kind != pipe.k_answer() || got.fields.len != 1 || got.fields[0].len != 1 {
         return io
     }
@@ -45,8 +103,7 @@ fn ask(
 pub fn authenticate(
     mut c: transport.Conn,
     mut st: sauth.State,
-    mut to: fs.File,
-    mut from: fs.File,
+    mut a: Asker,
 ) -> Authed ! refuse.Refusal {
     let first = transport.next(mut c)?
     if transport.kind(first) != refuse.msg_service_request() {
@@ -74,7 +131,7 @@ pub fn authenticate(
             var f = List[List[byte]]()
             (mut f).push(wire.bytes_of(q.user))
             (mut f).push(copy q.blob)
-            if ask(mut to, mut from, pipe.k_query(), f)? {
+            if ask(mut a, pipe.k_query(), f, c.session_id)? {
                 transport.send(mut c, sauth.pk_ok_msg(q.alg, q.blob))?
                 continue
             }
@@ -83,9 +140,14 @@ pub fn authenticate(
             (mut f).push(wire.bytes_of(q.user))
             (mut f).push(copy q.blob)
             (mut f).push(copy q.sig)
-            if ask(mut to, mut from, pipe.k_verify(), f)? {
+            if ask(mut a, pipe.k_verify(), f, c.session_id)? {
                 transport.send(mut c, sauth.success_msg())?
-                return Authed { user: q.user, blob: copy q.blob }
+                return Authed {
+                    user: q.user,
+                    blob: copy q.blob,
+                    command: copy a.command,
+                    forced: a.forced,
+                }
             }
         }
         transport.note(mut c, "{st.failures + 1} failed attempts, MaxAuthTries {st.max_tries}")
