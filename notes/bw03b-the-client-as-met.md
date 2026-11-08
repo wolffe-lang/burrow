@@ -377,6 +377,7 @@ each), `github` (2) and `live` (2) all exit 0, and the scan finds nothing.
 | a match in either file wins over another key in the other | hit both ways: the pinned `ssh` connects with the user's file matching and the system's changed, and with the system's matching and the user's changed (`kh-user-over-global`, `kh-global-over-user`), as `sshd(8)` says |
 | `accept-new` appends nothing for a host the system file knows | hit, both clients (`kh-global-accept-new`) |
 | the pinned build's default is under its prefix | hit: `ssh -G` gives `.oracle/openssh-10.0p2/etc/ssh_known_hosts` and `…2` |
+| `GlobalKnownHostsFile none`, which the page does not describe | measured by `kh-global-none` (a file named `none` in the working directory tells a path from "no files"); burrow, which reads it as no files, is held to the pinned `ssh`, and the row's PASS line in the final record says which reading that is |
 | `-T` runs the shell with no `pty-req`, byte-clean, the exit mapped | hit (`shell-stdin`, `shell-binary`, `shell-env`, `shell-signal`; `sshd` logs a shell request and no `pty-req`) |
 | a greeting then exit 1, stdin left open | hit: both exit 1 with the same stderr bytes and empty stdout (`shell-greeting`) |
 | no `-T`, stdin a pipe: `ssh`'s line, then the shell | hit, with a detail not predicted: the line ends in CR LF (`…not a terminal.\r\n`), and burrow now writes the same bytes |
