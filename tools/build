@@ -39,15 +39,19 @@ esac
 # On the native and release tiers, a row program as well, never installed,
 # never built --static and never uploaded: target/<tier>/rows/kexprobe
 # (src/kexprobe.lu), the transport with strict kex waived for the
-# downgrade-caught row; burrow itself has no waiver on any tier.
+# downgrade-caught row; burrow itself has no waiver on any tier. And
+# target/<tier>/rows/burrowd-oneproc (src/oneproc.lu): burrowd in one root
+# process per connection, R-bw04-2's (B), for tools/measure-server only.
 for tier in $tiers; do
     mkdir -p "target/$tier"
     if [ "$tier" != static ]; then
         mkdir -p "target/$tier/rows"
         if [ "$tier" = release ]; then
             "$WOLF" build --release --deny-warnings src/kexprobe.lu -o "target/$tier/rows/kexprobe"
+            "$WOLF" build --release --deny-warnings src/oneproc.lu -o "target/$tier/rows/burrowd-oneproc"
         else
             "$WOLF" build --deny-warnings src/kexprobe.lu -o "target/$tier/rows/kexprobe"
+            "$WOLF" build --deny-warnings src/oneproc.lu -o "target/$tier/rows/burrowd-oneproc"
         fi
     fi
     if [ "$tier" = static ]; then
@@ -73,6 +77,6 @@ for tier in $tiers; do
     if [ "$tier" = static ]; then
         echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd"
     else
-        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd target/$tier/rows/kexprobe"
+        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd target/$tier/rows/kexprobe target/$tier/rows/burrowd-oneproc"
     fi
 done

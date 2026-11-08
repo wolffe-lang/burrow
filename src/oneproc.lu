@@ -1,0 +1,12 @@
+//! member: false
+
+// rows/burrowd-oneproc — a row program, never installed and never built
+// `--static`: burrowd with R-bw04-2's (B), one root process per connection
+// until the command starts, so tools/measure-server can measure what the
+// separated processes of (A) cost. burrowd itself has no way to ask for it.
+use std.env
+use server
+
+fn main() -> int {
+    server.run(env.args(), true)
+}
