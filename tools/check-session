@@ -138,7 +138,8 @@ def refused(r, name):
 def same_verdict(rb, rs, d, what):
     """burrow's exit code is ssh's, and ssh's last stderr line is among burrow's."""
     last = [x for x in lines(rs[2]) if x.strip()][-1:] or [""]
-    compare(d, f"{what}\nssh exit {rs[0]}, last line {last[0]!r}\nburrow exit {rb[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}")
+    compare(d, f"{what}\nssh exit {rs[0]}, last line {last[0]!r}\nburrow exit {rb[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}"
+               f"ssh stderr:\n{rs[2].decode('utf-8', 'replace')}")
     check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}")
     check(last[0] in lines(rb[2]), f"ssh's line {last[0]!r} not in burrow's stderr {tail(rb[2])}")
     return last[0]
