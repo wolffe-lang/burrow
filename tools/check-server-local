@@ -1,0 +1,252 @@
+#!/usr/bin/env python3
+"""check-server-local — burrowd as the invoking user, burrow's own client, no oracle.
+
+    python3 -I tools/check-server-local --bin target/native/burrowd
+
+The macOS rows (and any host without the pinned container): burrowd runs
+unprivileged, serving the user who runs it (on macOS it can do nothing
+else: std cannot change a process's ids there), on 127.0.0.1, with a host
+key and a user key made by burrow-keygen for the run under a scratch HOME.
+burrow is the client. There is no pinned sshd on such a host, so these rows
+hold burrowd to its own behaviour on Linux (tools/check-server holds that
+to sshd): a command and its exit codes, both streams byte for byte, 64 MiB
+through cat, an unlisted key, no command, root refused, git through it when
+git is on PATH, and the log line.
+"""
+import argparse
+import hashlib
+import os
+import pathlib
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+WORK = ROOT / "target" / "server-local"
+ROWS = []
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def run(argv, inp=None, env=None, timeout=300, cwd=None):
+    p = subprocess.run(argv, input=inp, stdin=None if inp is not None else subprocess.DEVNULL, capture_output=True,
+                       env=env, timeout=timeout, cwd=cwd)
+    return p.returncode, p.stdout, p.stderr
+
+
+class Local:
+    def __init__(self, bindir):
+        self.bin = bindir
+        if WORK.exists():
+            shutil.rmtree(WORK)
+        self.home = WORK / "home"
+        (self.home / ".ssh").mkdir(parents=True)
+        os.chmod(WORK, 0o755)
+        os.chmod(self.home, 0o755)
+        os.chmod(self.home / ".ssh", 0o700)
+        self.user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+        self.keygen(WORK / "host", "host")
+        self.keygen(self.home / ".ssh" / "id_ed25519", "user")
+        shutil.copyfile(self.home / ".ssh" / "id_ed25519.pub", self.home / ".ssh" / "authorized_keys")
+        os.chmod(self.home / ".ssh" / "authorized_keys", 0o600)
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        self.port = s.getsockname()[1]
+        s.close()
+        (WORK / "burrowd_config").write_text(f"ListenAddress 127.0.0.1\nPort {self.port}\nHostKey {WORK / 'host'}\nAcceptEnv GIT_PROTOCOL\n")
+        self.log = open(WORK / "burrowd.log", "wb")
+        self.proc = subprocess.Popen([str(self.bin / "burrowd"), "-D", "-e", "-f", str(WORK / "burrowd_config")],
+                                     stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
+                                     env=self.env())
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", self.port), timeout=0.5) as c:
+                    c.settimeout(2)
+                    c.recv(64)
+                break
+            except OSError:
+                time.sleep(0.05)
+        pub = (WORK / "host.pub").read_text().split()
+        (self.home / ".ssh" / "known_hosts").write_text(f"[127.0.0.1]:{self.port} {pub[0]} {pub[1]}\n")
+
+    def env(self, extra=None):
+        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "USER": self.user,
+             "LOGNAME": self.user, "SHELL": "/bin/sh", "LC_ALL": "C"}
+        e.update(extra or {})
+        return e
+
+    def keygen(self, path, comment):
+        r = run([str(self.bin / "burrow-keygen"), "-q", "-t", "ed25519", "-f", str(path), "-N", "", "-C", comment])
+        check(r[0] == 0, f"burrow-keygen: {r[2][-200:]!r}")
+
+    def ssh(self, args, user=None, inp=None, env=None):
+        return run([str(self.bin / "burrow"), "-p", str(self.port), "-l", user or self.user, "127.0.0.1"] + list(args),
+                   inp=inp, env=self.env(env))
+
+    def lines(self):
+        time.sleep(0.5)
+        return [x for x in (WORK / "burrowd.log").read_text().splitlines() if " from " in x]
+
+    def stop(self):
+        self.proc.terminate()
+        self.proc.wait(timeout=10)
+        self.log.close()
+
+
+L = None
+
+
+@row
+def local_command():
+    r = L.ssh(["printf 'out\\0\\377'; echo err >&2; exit 3"])
+    check(r == (3, b"out\x00\xff", b"err\n"), f"{r}")
+    return "exit 3, both streams byte for byte"
+
+
+@row
+def local_exit_codes():
+    got = [L.ssh([c])[0] for c in ("exit 0", "exit 1", "nosuchcommand-bw04")]
+    check(got == [0, 1, 127], f"{got}")
+    return "0, 1, 127"
+
+
+@row
+def local_cat_64m():
+    data = os.urandom(64 * 1024 * 1024)
+    r = L.ssh(["cat"], inp=data)
+    check(r[0] == 0 and hashlib.sha256(r[1]).digest() == hashlib.sha256(data).digest(), f"exit {r[0]}, {len(r[1])} bytes")
+    return "64 MiB, digest equal"
+
+
+@row
+def local_signal():
+    r = L.ssh(["kill -TERM $$"])
+    check(r[0] == 255, f"exit {r[0]}")
+    check(any(" signal TERM" in x for x in L.lines()), "no signal TERM in the log")
+    return "exit 255, signal TERM logged"
+
+
+@row
+def local_env():
+    r = run([str(L.bin / "burrow"), "-o", "SendEnv=GIT_PROTOCOL", "-p", str(L.port), "-l", L.user, "127.0.0.1",
+             "echo $GIT_PROTOCOL:$HOME:$USER"], env=L.env({"GIT_PROTOCOL": "version=2"}))
+    check(r[1] == f"version=2:{L.home}:{L.user}\n".encode(), f"{r[1]!r}")
+    return "GIT_PROTOCOL, HOME and USER"
+
+
+@row
+def local_unlisted():
+    k = WORK / "other"
+    L.keygen(k, "other")
+    r = run([str(L.bin / "burrow"), "-i", str(k), "-o", "IdentitiesOnly=yes", "-p", str(L.port), "-l", L.user,
+             "127.0.0.1", "true"], env=L.env())
+    check(r[0] == 255 and b"Permission denied (publickey)." in r[2], f"{r[0]} {r[2][-200:]!r}")
+    return "Permission denied (publickey)."
+
+
+@row
+def local_other_user():
+    r = L.ssh(["true"], user="root")
+    check(r[0] == 255 and b"Permission denied (publickey)." in r[2], f"{r[0]} {r[2][-200:]!r}")
+    check(any(" outcome auth_root_refused " in x + " " for x in L.lines()), "root's refusal not named")
+    return "root refused; only the running user is served"
+
+
+@row
+def local_no_command():
+    r = L.ssh([])
+    check(r[0] == 255, f"exit {r[0]}")
+    return "burrow refuses a shell by name"
+
+
+@row
+def local_git():
+    git = shutil.which("git")
+    if not git:
+        return "SKIP-NOTE no git on PATH"
+    srv = L.home / "repo.git"
+    seed = WORK / "seed"
+    env = L.env({"GIT_AUTHOR_NAME": "R", "GIT_AUTHOR_EMAIL": "r@example.invalid", "GIT_COMMITTER_NAME": "R",
+                 "GIT_COMMITTER_EMAIL": "r@example.invalid", "GIT_CONFIG_NOSYSTEM": "1"})
+    for argv in ([git, "init", "-q", "-b", "main", str(seed)],):
+        check(run(argv, env=env)[0] == 0, "git init")
+    (seed / "a").write_text("one\n")
+    check(run([git, "-C", str(seed), "add", "."], env=env)[0] == 0, "add")
+    check(run([git, "-C", str(seed), "commit", "-q", "-m", "one"], env=env)[0] == 0, "commit")
+    check(run([git, "clone", "-q", "--bare", str(seed), str(srv)], env=env)[0] == 0, "bare")
+    cmd = f"{L.bin / 'burrow'} -p {L.port}"
+    url = f"{L.user}@127.0.0.1:repo.git"
+    # The session's PATH is burrowd's fixed one: git's own programs by path.
+    up = shutil.which("git-upload-pack") or "git-upload-pack"
+    rp = shutil.which("git-receive-pack") or "git-receive-pack"
+    r = run([git, "-c", f"core.sshCommand={cmd}", "clone", "-q", f"--upload-pack={up}", url, str(WORK / "clone")], env=env)
+    check(r[0] == 0, f"clone: {r[2][-300:]!r}")
+    (WORK / "clone" / "b").write_text("two\n")
+    run([git, "-C", str(WORK / "clone"), "add", "."], env=env)
+    run([git, "-C", str(WORK / "clone"), "commit", "-q", "-m", "two"], env=env)
+    r = run([git, "-c", f"core.sshCommand={cmd}", "-C", str(WORK / "clone"), "push", "-q", f"--receive-pack={rp}", "origin", "main"], env=env)
+    check(r[0] == 0, f"push: {r[2][-300:]!r}")
+    a = run([git, "-C", str(srv), "rev-parse", "main"], env=env)[1]
+    b = run([git, "-C", str(WORK / "clone"), "rev-parse", "main"], env=env)[1]
+    check(a == b, "the pushed commit is not the server's main")
+    return "clone and push through burrowd"
+
+
+@row
+def local_log():
+    got = L.lines()
+    check(got and all(" burrowd[" in x for x in got), f"{got[-2:]}")
+    check(any(" outcome ok status 3" in x for x in got), "no line for the exit-3 command")
+    log = (WORK / "burrowd.log").read_text()
+    check("PRIVATE KEY" not in log, "private key text in the log")
+    return got[0].split(": ", 1)[1]
+
+
+def main():
+    global L
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    a = ap.parse_args()
+    bindir = pathlib.Path(a.bin).resolve().parent
+    if os.geteuid() == 0:
+        print("FAIL setup check-server-local runs as an ordinary user (root is tools/check-server's)")
+        sys.exit(1)
+    os.umask(0o022)
+    L = Local(bindir)
+    fails = ran = 0
+    try:
+        for fn in ROWS:
+            ran += 1
+            name = fn.__name__.replace("_", "-")
+            try:
+                note = fn()
+                print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+            except Fail as e:
+                fails += 1
+                print(f"FAIL {name} {e}", flush=True)
+            except Exception as e:
+                fails += 1
+                print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    finally:
+        L.stop()
+    print(f"check-server-local: {ran} rows, {fails} failed, 0 SKIP ({sys.platform})")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
