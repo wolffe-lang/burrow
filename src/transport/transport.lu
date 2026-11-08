@@ -32,9 +32,11 @@
 //! change (`host_key_changed`). Messages for the layer above that arrive
 //! while burrow waits for the server's KEXINIT are kept, in order.
 //!
-//! **Host keys** (`src/hostkey`): strict by default. Under
+//! **Host keys** (`src/hostkey`): strict by default, judged on the lines
+//! of the user's known_hosts files and then the system's, together (as
+//! `sshd(8)` has it, a match in either file is accepted). Under
 //! `StrictHostKeyChecking=accept-new` or `no` an unknown host's line is
-//! appended to the first known_hosts file, as the pinned `ssh` appends it,
+//! appended to the first user known_hosts file, as the pinned `ssh` appends it,
 //! with its warning; under `no` a changed key is warned of and the
 //! connection goes on, as the pinned `ssh` does.
 //!
@@ -66,6 +68,7 @@ pub struct Options {
     host: str,
     port: int,
     known_hosts: List[str],
+    global_known_hosts: List[str],
     strict: str,
     hash_known: bool,
     key_alias: str,
@@ -78,12 +81,14 @@ pub struct Options {
 }
 
 /// The defaults for `host` and `port`: strict kex, strict host keys
-/// (`known_hosts` is filled by the caller), RFC 4253 §9's rekey points.
+/// (`known_hosts` and `global_known_hosts` are filled by the caller), RFC
+/// 4253 §9's rekey points.
 pub fn options(host: str, port: int) -> Options {
     Options {
         host: host,
         port: port,
         known_hosts: List[str](),
+        global_known_hosts: List[str](),
         strict: "yes",
         hash_known: false,
         key_alias: "",
@@ -400,10 +405,14 @@ pub fn key_name(o: Options) -> str {
 
 fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
     let name = key_name(c.opts)
+    var files = copy c.opts.known_hosts
+    for g in c.opts.global_known_hosts {
+        (mut files).push(g)
+    }
     var text = ""
     var i = 0
-    while i < c.opts.known_hosts.len {
-        let path = c.opts.known_hosts[i]
+    while i < files.len {
+        let path = files[i]
         if fs.exists(path) {
             let t = fs.read_text(path) else {
                 note(mut c, "{path} cannot be read")
@@ -415,7 +424,7 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
         i += 1
     }
     let fp = hostkey.fingerprint(k_s)
-    note(mut c, "{name} presents ssh-ed25519 {fp}; known_hosts: {join(c.opts.known_hosts)}")
+    note(mut c, "{name} presents ssh-ed25519 {fp}; known_hosts: {join(files)}")
     var verdict = "ok"
     hostkey.check_text(text, name, k_s) else |e| {
         verdict = "{e}"
