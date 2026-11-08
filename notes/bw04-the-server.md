@@ -748,21 +748,27 @@ listening socket outside loopback: every row binds `127.0.0.1` or `::1`.
 
 ## Done-when
 
-- [ ] The prediction, committed first.
-- [ ] The transport's server role: version, KEXINIT, strict kex required,
-  the host key's signature on H, EXT_INFO, rekeying both ways, DISCONNECT.
-- [ ] The host key: made by `burrow-keygen`, required, its fingerprint at
-  start, its mode and owner checked.
-- [ ] Authentication, key-only, against `authorized_keys` with StrictModes;
-  root refused; the methods list `publickey` only.
-- [ ] The session channel, commands only; every other request refused by
-  name.
-- [ ] git over the server, against the same through `sshd`.
-- [ ] The limits and the log line.
-- [ ] Privileges: the session as the user, no way back; R-bw04-2.
-- [ ] Hostile clients, red first.
-- [ ] Measured against `sshd`, with margins.
-- [ ] For B6: the px lane's items.
-- [ ] README, MAP, SOURCES and CHANGELOG.
-- [ ] The final-head gauntlet record, the plant record and the audit: in
+- [x] The prediction, committed first (`a049e60`; the rulings answered,
+  `5de6297`).
+- [x] The transport's server role: version, KEXINIT, strict kex required,
+  the host key's signature on H, EXT_INFO, rekeying both ways, DISCONNECT
+  (`tools/check-server`'s transport rows, `hostile-no-strict-kex`).
+- [x] The host key: made by `burrow-keygen`, required, its fingerprint at
+  start, its mode and owner checked (the `hostkey-*` rows).
+- [x] Authentication, key-only, against `authorized_keys` with StrictModes;
+  root refused; the methods list `publickey` only (the `auth-*` rows).
+- [x] The session channel, commands only; every other request refused by
+  name (the `session-*` rows, `hostile-requests-refused`).
+- [x] git over the server, against the same through `sshd`
+  (`tools/check-server-git`: clone, fetch, push, a refused push).
+- [x] The limits and the log line (`limits-*`, `log-line`, `auth-tries`,
+  `auth-grace`, `hostile-thousand`).
+- [x] Privileges: the session as the user, no way back (`session-id`,
+  `priv-worker`); the separate processes measured against one.
+- [x] Hostile clients, red first: the checks red first in the unit rows,
+  and each hostile row red against a mutant without its check.
+- [x] Measured against `sshd`, with margins (above).
+- [x] For B6: the px lane's items (above).
+- [x] README, MAP, SOURCES and CHANGELOG.
+- [x] The final-head gauntlet record, the plant record and the audit: in
   the PR body.
