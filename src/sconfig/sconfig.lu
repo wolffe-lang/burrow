@@ -1,0 +1,659 @@
+//! member: true
+//!
+//! burrow.sconfig — burrowd's command line and configuration file
+//! (R-bw04-1): a subset of `sshd(8)`'s flags and of `sshd_config(5)`.
+//!
+//! **The command line:** `burrowd [-DeqTtV] [-E log_file] [-f config_file]
+//! [-g login_grace_time] [-h host_key_file] [-o option] [-p port]`. `-D`
+//! changes nothing (burrowd never detaches); `-e` logs to stderr; `-E`
+//! appends the log to a file; `-q` logs nothing; `-T` prints the effective
+//! configuration in `sshd -T`'s shape for the keywords burrowd has; `-t`
+//! checks the configuration and the host key and exits; `-V` prints the
+//! version. sshd's other flags (`-4 -6 -C -c -d -G -i -u`) are
+//! `option_unsupported`; any other is `option_unknown`. Command-line values
+//! win over the file's (`sshd(8)`), and in the file the first value wins
+//! (`sshd_config(5)`).
+//!
+//! **The file** (default `/etc/burrowd/burrowd_config`; when it is absent
+//! the defaults stand, where `sshd` refuses to start without one):
+//! `keyword value` or `keyword=value`, keywords case-insensitive, `#` lines
+//! comments, double quotes around a value with spaces. The keywords burrowd
+//! takes, with `sshd_config(5)`'s defaults where burrowd has the feature:
+//! `AcceptEnv` (`GIT_PROTOCOL` only, R-bw04-4), `AuthorizedKeysFile`
+//! (`.ssh/authorized_keys .ssh/authorized_keys2`; `%h`, `%u`, `%%`),
+//! `HostKey` (one; `/etc/burrowd/ssh_host_ed25519_key`), `ListenAddress`
+//! (loopback, `127.0.0.1` and `::1`, unless named, R-bw04-6),
+//! `LoginGraceTime` (120), `LogLevel`, `MaxAuthTries` (6), `MaxStartups`
+//! (10:30:100), `PermitRootLogin` (`no` only, R-bw04-3), `PidFile`, `Port`
+//! (22), `RekeyLimit`, `StrictModes` (yes); and the keywords whose one value
+//! is burrowd's: `PasswordAuthentication no`, `KbdInteractiveAuthentication
+//! no` (and its alias `ChallengeResponseAuthentication`),
+//! `PubkeyAuthentication yes`, `AuthenticationMethods publickey` or `any`,
+//! `PermitTTY no`, `X11Forwarding no`, `AllowTcpForwarding no`,
+//! `AllowAgentForwarding no`, `AllowStreamLocalForwarding no`,
+//! `DisableForwarding yes`, `GatewayPorts no`, `PermitTunnel no`,
+//! `PermitUserEnvironment no`, `PermitUserRC no`, `PermitEmptyPasswords
+//! no`, `HostbasedAuthentication no`, `PerSourcePenalties no`, `UsePAM no`,
+//! `UseDNS no`, `Compression no`, `PrintMotd no`, `PrintLastLog no`,
+//! `Banner none`, `VersionAddendum none`, and `Ciphers`, `KexAlgorithms`,
+//! `HostKeyAlgorithms`, `PubkeyAcceptedAlgorithms` and `MACs` naming only
+//! burrowd's own. Another value of one of those, or another keyword
+//! `sshd_config(5)` lists (`Match`, `Include` and `Subsystem` among them),
+//! is `config_unsupported`; a keyword it does not list is `config_unknown`.
+//! Every refusal names the file and line; burrowd exits 1, as `sshd` does.
+
+/// Everything burrowd runs with.
+pub struct Settings {
+    config_file: str,
+    host_key: str,
+    listen: List[str],
+    port: int,
+    log_file: str,
+    log_stderr: bool,
+    quiet: bool,
+    debug: bool,
+    grace: int,
+    max_tries: int,
+    startups_begin: int,
+    startups_rate: int,
+    startups_full: int,
+    authorized_files: str,
+    strict_modes: bool,
+    accept_env: List[str],
+    rekey_bytes: int,
+    rekey_seconds: int,
+    pid_file: str,
+    test_only: bool,
+    print_config: bool,
+    version: bool,
+    given: List[str],
+    refusal: str,
+    detail: str,
+}
+
+/// The defaults.
+pub fn defaults() -> Settings {
+    Settings {
+        config_file: "/etc/burrowd/burrowd_config",
+        host_key: "/etc/burrowd/ssh_host_ed25519_key",
+        listen: List[str](),
+        port: 22,
+        log_file: "",
+        log_stderr: false,
+        quiet: false,
+        debug: false,
+        grace: 120,
+        max_tries: 6,
+        startups_begin: 10,
+        startups_rate: 30,
+        startups_full: 100,
+        authorized_files: ".ssh/authorized_keys .ssh/authorized_keys2",
+        strict_modes: true,
+        accept_env: List[str](),
+        rekey_bytes: 0,
+        rekey_seconds: 0,
+        pid_file: "",
+        test_only: false,
+        print_config: false,
+        version: false,
+        given: List[str](),
+        refusal: "",
+        detail: "",
+    }
+}
+
+/// burrowd's usage line.
+pub fn usage() -> str {
+    "usage: burrowd [-DeqTtV] [-E log_file] [-f config_file] [-g login_grace_time]\n               [-h host_key_file] [-o option] [-p port]"
+}
+
+/// Every keyword `sshd_config(5)` (10.0p2) lists, lower-cased, and the
+/// deprecated alias it names.
+pub fn known(k: str) -> bool {
+    let all = "acceptenv addressfamily allowagentforwarding allowgroups allowstreamlocalforwarding allowtcpforwarding allowusers authenticationmethods authorizedkeyscommand authorizedkeyscommanduser authorizedkeysfile authorizedprincipalscommand authorizedprincipalscommanduser authorizedprincipalsfile banner casignaturealgorithms channeltimeout chrootdirectory ciphers clientalivecountmax clientaliveinterval compression denygroups denyusers disableforwarding exposeauthinfo fingerprinthash forcecommand gatewayports gssapiauthentication gssapicleanupcredentials gssapistrictacceptorcheck hostbasedacceptedalgorithms hostbasedauthentication hostbasedusesnamefrompacketonly hostcertificate hostkey hostkeyagent hostkeyalgorithms ignorerhosts ignoreuserknownhosts include ipqos kbdinteractiveauthentication kerberosauthentication kerberosgetafstoken kerberosorlocalpasswd kerberosticketcleanup kexalgorithms listenaddress logingracetime loglevel logverbose macs match maxauthtries maxsessions maxstartups modulifile pamservicename passwordauthentication permitemptypasswords permitlisten permitopen permitrootlogin permittty permittunnel permituserenvironment permituserrc persourcemaxstartups persourcenetblocksize persourcepenalties persourcepenaltyexemptlist pidfile port printlastlog printmotd pubkeyacceptedalgorithms pubkeyauthentication pubkeyauthoptions rdomain refuseconnection rekeylimit requiredrsasize revokedkeys securitykeyprovider setenv sshdauthpath sshdsessionpath streamlocalbindmask streamlocalbindunlink strictmodes subsystem syslogfacility tcpkeepalive trustedusercakeys unusedconnectiontimeout usedns usepam versionaddendum x11displayoffset x11forwarding x11uselocalhost xauthlocation challengeresponseauthentication"
+    for w in all.words() {
+        if w == k {
+            return true
+        }
+    }
+    false
+}
+
+// The one value burrowd takes for each keyword whose feature it lacks.
+fn fixed(k: str) -> str {
+    match k {
+        "passwordauthentication" => "no",
+        "kbdinteractiveauthentication" => "no",
+        "challengeresponseauthentication" => "no",
+        "pubkeyauthentication" => "yes",
+        "permittty" => "no",
+        "x11forwarding" => "no",
+        "allowtcpforwarding" => "no",
+        "allowagentforwarding" => "no",
+        "allowstreamlocalforwarding" => "no",
+        "disableforwarding" => "yes",
+        "gatewayports" => "no",
+        "permittunnel" => "no",
+        "permituserenvironment" => "no",
+        "permituserrc" => "no",
+        "permitemptypasswords" => "no",
+        "hostbasedauthentication" => "no",
+        "persourcepenalties" => "no",
+        "usepam" => "no",
+        "usedns" => "no",
+        "compression" => "no",
+        "printmotd" => "no",
+        "printlastlog" => "no",
+        "banner" => "none",
+        "versionaddendum" => "none",
+        "ciphers" => "chacha20-poly1305@openssh.com",
+        "hostkeyalgorithms" => "ssh-ed25519",
+        "pubkeyacceptedalgorithms" => "ssh-ed25519",
+        "macs" => "hmac-sha2-256",
+        _ => "",
+    }
+}
+
+fn refuse(mut s: Settings, name: str, detail: str) {
+    if s.refusal == "" {
+        s.refusal = name
+        s.detail = detail
+    }
+}
+
+fn given(s: Settings, k: str) -> bool {
+    for g in s.given {
+        if g == k {
+            return true
+        }
+    }
+    false
+}
+
+/// A time in `sshd_config(5)`'s TIME FORMATS (`600`, `10m`, `1h30m`), in
+/// seconds; -1 when it is not one.
+pub fn seconds(v: str) -> int {
+    if v.len == 0 {
+        return -1
+    }
+    var total = 0
+    var n = 0
+    var digits = 0
+    for b in v.bytes() {
+        let c = b as int
+        if c >= 48 && c <= 57 {
+            n = n * 10 + c - 48
+            digits += 1
+            if n > 1000000000 {
+                return -1
+            }
+            continue
+        }
+        if digits == 0 {
+            return -1
+        }
+        let unit = match c {
+            115 => 1,
+            83 => 1,
+            109 => 60,
+            77 => 60,
+            104 => 3600,
+            72 => 3600,
+            100 => 86400,
+            68 => 86400,
+            119 => 604800,
+            87 => 604800,
+            _ => 0,
+        }
+        if unit == 0 {
+            return -1
+        }
+        total += n * unit
+        n = 0
+        digits = 0
+    }
+    total + n
+}
+
+fn integer(v: str) -> int {
+    if v.len == 0 || v.len > 9 {
+        return -1
+    }
+    var n = 0
+    for b in v.bytes() {
+        let d = b as int - 48
+        if d < 0 || d > 9 {
+            return -1
+        }
+        n = n * 10 + d
+    }
+    n
+}
+
+fn size(v: str) -> int {
+    if v.len == 0 {
+        return -1
+    }
+    let last = v.bytes()[v.len - 1] as int
+    let mult = match last {
+        75 => 1024,
+        107 => 1024,
+        77 => 1048576,
+        109 => 1048576,
+        71 => 1073741824,
+        103 => 1073741824,
+        _ => 1,
+    }
+    let digits = if mult == 1 then v else v[0..v.len - 1]
+    let n = integer(digits)
+    if n < 0 then -1 else n * mult
+}
+
+/// Applies one `keyword value` pair from `origin` (`-o`, a flag, or `FILE
+/// line N`). The first value of each keyword wins.
+pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
+    let k = keyword.lower()
+    if !known(k) {
+        refuse(mut s, "config_unknown", "{origin}: {keyword}, which sshd_config(5) does not list")
+        return
+    }
+    let accumulates = k == "listenaddress" || k == "acceptenv"
+    if !accumulates && given(s, k) {
+        return
+    }
+    (mut s.given).push(k)
+    let f = fixed(k)
+    if f != "" {
+        if value.lower() != f {
+            refuse(
+                mut s,
+                "config_unsupported",
+                "{origin}: {keyword} {value}: burrowd takes {f} only",
+            )
+        }
+        return
+    }
+    if k == "authenticationmethods" {
+        if value != "publickey" && value != "any" {
+            refuse(
+                mut s,
+                "config_unsupported",
+                "{origin}: {keyword} {value}: burrowd takes publickey only",
+            )
+        }
+        return
+    }
+    if k == "kexalgorithms" {
+        for a in value.split(",") {
+            if a != "curve25519-sha256" && a != "curve25519-sha256@libssh.org" {
+                refuse(
+                    mut s,
+                    "config_unsupported",
+                    "{origin}: {keyword} {value}: burrowd has curve25519-sha256 only",
+                )
+                return
+            }
+        }
+        return
+    }
+    if k == "acceptenv" {
+        for n in value.words() {
+            if n != "GIT_PROTOCOL" {
+                refuse(
+                    mut s,
+                    "config_unsupported",
+                    "{origin}: AcceptEnv {n}: burrowd accepts GIT_PROTOCOL only",
+                )
+                return
+            }
+            (mut s.accept_env).push(n)
+        }
+        return
+    }
+    if k == "authorizedkeysfile" {
+        let pct = value.find("%") else -1
+        if value != "none" && pct >= 0 {
+            for w in value.words() {
+                var ok = true
+                let b = w.bytes()
+                var i = 0
+                while i < b.len {
+                    if b[i] as int == 37 {
+                        let t = if i + 1 < b.len then b[i + 1] as int else 0
+                        if t != 104 && t != 117 && t != 37 {
+                            ok = false
+                        }
+                        i += 2
+                    } else {
+                        i += 1
+                    }
+                }
+                if !ok {
+                    refuse(
+                        mut s,
+                        "config_unsupported",
+                        "{origin}: {keyword} {value}: burrowd takes the tokens %h, %u and %% only",
+                    )
+                    return
+                }
+            }
+        }
+        s.authorized_files = if value == "none" then "" else value
+        return
+    }
+    if k == "hostkey" {
+        s.host_key = value
+        return
+    }
+    if k == "listenaddress" {
+        (mut s.listen).push(value)
+        return
+    }
+    if k == "logingracetime" {
+        let n = seconds(value)
+        if n < 0 {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}: not a time")
+        }
+        s.grace = n
+        return
+    }
+    if k == "loglevel" {
+        let l = value.lower()
+        if l == "quiet" {
+            s.quiet = true
+        } else if l.starts_with("debug") {
+            s.debug = true
+        } else if l != "info" && l != "verbose" && l != "error" && l != "fatal" {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+        }
+        return
+    }
+    if k == "maxauthtries" {
+        let n = integer(value)
+        if n < 1 {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}: not a count")
+        }
+        s.max_tries = n
+        return
+    }
+    if k == "maxstartups" {
+        let parts = value.split(":")
+        if parts.len == 1 {
+            let n = integer(parts[0])
+            if n < 1 {
+                refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+                return
+            }
+            s.startups_begin = n
+            s.startups_rate = 100
+            s.startups_full = n
+            return
+        }
+        if parts.len != 3 {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+            return
+        }
+        let a = integer(parts[0])
+        let r = integer(parts[1])
+        let f2 = integer(parts[2])
+        if a < 1 || r < 1 || r > 100 || f2 < a {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+            return
+        }
+        s.startups_begin = a
+        s.startups_rate = r
+        s.startups_full = f2
+        return
+    }
+    if k == "permitrootlogin" {
+        if value != "no" {
+            refuse(
+                mut s,
+                "config_unsupported",
+                "{origin}: {keyword} {value}: root is refused always",
+            )
+        }
+        return
+    }
+    if k == "pidfile" {
+        s.pid_file = if value == "none" then "" else value
+        return
+    }
+    if k == "port" {
+        let n = integer(value)
+        if n < 1 || n > 65535 {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}: not a port")
+        }
+        s.port = n
+        return
+    }
+    if k == "rekeylimit" {
+        let w = value.words()
+        if w.len < 1 || w.len > 2 {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+            return
+        }
+        if w[0] != "default" {
+            let n = size(w[0])
+            if n < 16 {
+                refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+                return
+            }
+            s.rekey_bytes = n
+        }
+        if w.len == 2 && w[1] != "none" {
+            let t = seconds(w[1])
+            if t < 1 {
+                refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+                return
+            }
+            s.rekey_seconds = t
+        }
+        return
+    }
+    if k == "strictmodes" {
+        if value != "yes" && value != "no" {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}")
+        }
+        s.strict_modes = value == "yes"
+        return
+    }
+    refuse(mut s, "config_unsupported", "{origin}: {keyword}, which burrowd does not have")
+}
+
+// `keyword value`, `keyword=value`, or with a quoted value.
+fn split_line(line: str) -> List[str] {
+    var out = List[str]()
+    let b = line.bytes()
+    var i = 0
+    while i < b.len && b[i] as int != 32 && b[i] as int != 9 && b[i] as int != 61 {
+        i += 1
+    }
+    (mut out).push(line[0..i])
+    var rest = line[i..line.len].trim()
+    if rest.starts_with("=") {
+        rest = rest[1..rest.len].trim()
+    }
+    if rest.len >= 2 && rest.starts_with("\"") && rest.ends_with("\"") {
+        rest = rest[1..rest.len - 1]
+    }
+    (mut out).push(rest)
+    out
+}
+
+/// Applies a configuration file's text, named `file` in refusals.
+pub fn apply_file(mut s: Settings, text: str, file: str) {
+    var n = 0
+    for raw in text.lines() {
+        n += 1
+        let line = raw.trim()
+        if line.len == 0 || line.starts_with("#") {
+            continue
+        }
+        let kv = split_line(line)
+        if kv[1] == "" {
+            refuse(mut s, "config_unsupported", "{file} line {n}: {kv[0]} has no value")
+            return
+        }
+        apply(mut s, kv[0], kv[1], "{file} line {n}")
+        if s.refusal != "" {
+            return
+        }
+    }
+}
+
+/// Parses burrowd's arguments (without the program name).
+pub fn parse_args(args: List[str]) -> Settings {
+    var s = defaults()
+    var i = 0
+    while i < args.len && s.refusal == "" {
+        let a = args[i]
+        if !a.starts_with("-") || a.len < 2 {
+            refuse(mut s, "usage", "{a}: burrowd takes no operands")
+            return s
+        }
+        var j = 1
+        while j < a.len && s.refusal == "" {
+            let f = a[j..j + 1]
+            j += 1
+            if f == "D" {
+                continue
+            }
+            if f == "e" {
+                s.log_stderr = true
+                continue
+            }
+            if f == "q" {
+                s.quiet = true
+                continue
+            }
+            if f == "T" {
+                s.print_config = true
+                continue
+            }
+            if f == "t" {
+                s.test_only = true
+                continue
+            }
+            if f == "V" {
+                s.version = true
+                continue
+            }
+            if f == "4" || f == "6" || f == "d" || f == "G" || f == "i" {
+                refuse(mut s, "option_unsupported", "-{f}, which burrowd does not have")
+                continue
+            }
+            if f == "E" ||
+                f == "f" ||
+                f == "g" ||
+                f == "h" ||
+                f == "o" ||
+                f == "p" ||
+                f == "C" ||
+                f == "c" ||
+                f == "u" {
+                var v = a[j..a.len]
+                j = a.len
+                if v == "" {
+                    if i + 1 >= args.len {
+                        refuse(mut s, "usage", "-{f} needs an argument")
+                        continue
+                    }
+                    i += 1
+                    v = args[i]
+                }
+                if f == "C" || f == "c" || f == "u" {
+                    refuse(mut s, "option_unsupported", "-{f}, which burrowd does not have")
+                } else if f == "E" {
+                    s.log_file = v
+                } else if f == "f" {
+                    s.config_file = v
+                } else if f == "g" {
+                    apply(mut s, "LoginGraceTime", v, "-g")
+                } else if f == "h" {
+                    apply(mut s, "HostKey", v, "-h")
+                } else if f == "p" {
+                    apply(mut s, "Port", v, "-p")
+                } else {
+                    let kv = split_line(v.trim())
+                    apply(mut s, kv[0], kv[1], "-o")
+                }
+                continue
+            }
+            refuse(mut s, "option_unknown", "-{f}")
+        }
+        i += 1
+    }
+    s
+}
+
+/// The addresses to listen on, as `host:port` endpoints (IPv6 bracketed):
+/// each `ListenAddress` with its own port or `Port`'s; with none,
+/// loopback alone (R-bw04-6).
+pub fn endpoints(s: Settings) -> List[str] {
+    var out = List[str]()
+    if s.listen.len == 0 {
+        (mut out).push("127.0.0.1:{s.port}")
+        (mut out).push("[::1]:{s.port}")
+        return out
+    }
+    for a in s.listen {
+        if a.starts_with("[") {
+            let close = a.find("]") else -1
+            if close > 0 && close + 1 < a.len && a[close + 1..close + 2] == ":" {
+                (mut out).push(a)
+            } else {
+                (mut out).push("{a}:{s.port}")
+            }
+        } else if (a.find(":") else -1) < 0 {
+            (mut out).push("{a}:{s.port}")
+        } else if (a.rfind(":") else -1) == (a.find(":") else -1) {
+            (mut out).push(a)
+        } else {
+            (mut out).push("[{a}]:{s.port}")
+        }
+    }
+    out
+}
+
+/// `burrowd -T`'s lines, in `sshd -T`'s shape: one `keyword value` per
+/// line, keywords lower-cased.
+pub fn effective(s: Settings) -> List[str] {
+    var out = List[str]()
+    (mut out).push("port {s.port}")
+    for e in endpoints(s) {
+        (mut out).push("listenaddress {e}")
+    }
+    (mut out).push("hostkey {s.host_key}")
+    (mut out).push("logingracetime {s.grace}")
+    (mut out).push("maxauthtries {s.max_tries}")
+    (mut out).push("maxstartups {s.startups_begin}:{s.startups_rate}:{s.startups_full}")
+    (mut out).push("permitrootlogin no")
+    (mut out).push("strictmodes {if s.strict_modes then "yes" else "no"}")
+    (mut out).push(
+        "authorizedkeysfile {if s.authorized_files == "" then "none" else s.authorized_files}",
+    )
+    (mut out).push("pubkeyauthentication yes")
+    (mut out).push("passwordauthentication no")
+    (mut out).push("kbdinteractiveauthentication no")
+    (mut out).push("permittty no")
+    (mut out).push("x11forwarding no")
+    (mut out).push("allowtcpforwarding no")
+    (mut out).push("allowagentforwarding no")
+    (mut out).push("disableforwarding yes")
+    var env = ""
+    for e in s.accept_env {
+        if env.len > 0 {
+            env += " "
+        }
+        env += e
+    }
+    if env != "" {
+        (mut out).push("acceptenv {env}")
+    }
+    (mut out).push("ciphers chacha20-poly1305@openssh.com")
+    (mut out).push("kexalgorithms curve25519-sha256,curve25519-sha256@libssh.org")
+    (mut out).push("hostkeyalgorithms ssh-ed25519")
+    (mut out).push("pubkeyacceptedalgorithms ssh-ed25519")
+    out
+}
