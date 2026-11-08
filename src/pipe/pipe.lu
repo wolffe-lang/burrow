@@ -1,0 +1,188 @@
+//! member: true
+//!
+//! burrow.pipe — length-prefixed frames over a pipe, between burrowd's
+//! processes (the worker and the session to the monitor, the monitor to the
+//! holder and the listener): `uint32 length, byte kind, body`. A frame
+//! longer than `max_frame` is refused before its body is read, so no
+//! process can be made to hold an unbounded message by another.
+//!
+//! The body is a sequence of RFC 4251 strings (`fields`); every message's
+//! shape is fixed by its kind (`src/mon`).
+
+use std.fs
+use std.list
+use wire
+
+/// The largest frame body accepted: 1 MiB (a transport state handed over
+/// after authentication holds at most one packet of buffered input and
+/// the pending queue's packets).
+pub fn max_frame() -> int {
+    1048576
+}
+
+/// The frame kind `sign` [H]: sign this exchange hash.
+pub fn k_sign() -> int {
+    1
+}
+
+/// The frame kind `query` [user, blob]: is the key authorized?
+pub fn k_query() -> int {
+    2
+}
+
+/// The frame kind `verify` [user, blob, signature blob]: does the signature verify?
+pub fn k_verify() -> int {
+    3
+}
+
+/// The frame kind `authed` [user, blob, transport state]: the worker is done.
+pub fn k_authed() -> int {
+    4
+}
+
+/// The frame kind `outcome` [name, detail]: how the worker's part ended.
+pub fn k_outcome() -> int {
+    5
+}
+
+/// The frame kind `answer` [1 or 0]: the monitor's yes or no.
+pub fn k_answer() -> int {
+    6
+}
+
+/// The frame kind `signed` [signature blob]: the host key's signature on H.
+pub fn k_signed() -> int {
+    7
+}
+
+/// The frame kind `go` [account, forced command, original command, transport state]: the holder becomes the session.
+pub fn k_go() -> int {
+    8
+}
+
+/// The frame kind `stop` []: the holder exits.
+pub fn k_stop() -> int {
+    9
+}
+
+/// The frame kind `ended` [kind, value]: the session's command ended (`status N` or `signal NAME`).
+pub fn k_ended() -> int {
+    10
+}
+
+/// The frame kind `authenticated` []: to the listener, one connection no longer unauthenticated.
+pub fn k_authenticated() -> int {
+    11
+}
+
+/// The frame kind `key` [K_S]: to the worker, the host key's public blob
+/// (the monitor reads the host key only after the worker is forked).
+pub fn k_key() -> int {
+    12
+}
+
+/// How a pipe fails: its end (or a frame over `max_frame`), or a frame
+/// that does not parse.
+pub error Broken = {closed, malformed}
+
+/// One frame.
+pub struct Frame {
+    kind: int,
+    fields: List[List[byte]],
+}
+
+/// The bytes of a frame of `kind` carrying `fields`.
+pub fn encode(kind: int, fields: List[List[byte]]) -> List[byte] {
+    var body = List[byte]()
+    wire.put_u8(mut body, kind)
+    for f in fields {
+        wire.put_string(mut body, f)
+    }
+    var out = List[byte]()
+    wire.put_u32(mut out, body.len)
+    wire.put_raw(mut out, body)
+    out
+}
+
+/// Parses a frame body (its kind and fields); `malformed` when it does
+/// not parse.
+pub fn decode(body: List[byte]) -> Frame ! {malformed} {
+    if body.len < 1 {
+        return malformed
+    }
+    var r = wire.reader(body[1..body.len])
+    var fields = List[List[byte]]()
+    while !wire.at_end(r) {
+        let f = wire.read_string(mut r) else { return malformed }
+        (mut fields).push(f)
+    }
+    Frame { kind: body[0] as int, fields: fields }
+}
+
+/// Writes a frame.
+pub fn send(mut f: fs.File, kind: int, fields: List[List[byte]]) -> () ! {closed} {
+    fs.write_chunk(mut f, encode(kind, fields)) else { return closed }
+}
+
+fn read_exact(mut f: fs.File, n: int) -> List[byte] ! {closed} {
+    var out = List[byte]()
+    while out.len < n {
+        let got = fs.read_chunk(mut f, n - out.len) else { return closed }
+        if got.len == 0 {
+            return closed
+        }
+        for b in got {
+            (mut out).push(b)
+        }
+    }
+    out
+}
+
+/// Reads one frame, waiting for it; `closed` at the end of the pipe or on
+/// a frame over `max_frame`, `malformed` for one that does not parse.
+pub fn receive(mut f: fs.File) -> Frame ! Broken {
+    let head = read_exact(mut f, 4)?
+    let n = head[0] as int * 16777216 +
+        head[1] as int * 65536 +
+        head[2] as int * 256 +
+        head[3] as int
+    if n < 1 || n > max_frame() {
+        return closed
+    }
+    let body = read_exact(mut f, n)?
+    decode(body)?
+}
+
+/// A field as text ("" when it is not UTF-8).
+pub fn text(fr: Frame, i: int) -> str {
+    if i >= fr.fields.len {
+        return ""
+    }
+    str_from_utf8(fr.fields[i]) else ""
+}
+
+/// A field's bytes (empty when absent).
+pub fn bytes_at(fr: Frame, i: int) -> List[byte] {
+    if i >= fr.fields.len {
+        return List[byte]()
+    }
+    copy fr.fields[i]
+}
+
+/// One field of text, as a list for `encode`/`send`.
+pub fn one(s: str) -> List[List[byte]] {
+    var out = List[List[byte]]()
+    (mut out).push(wire.bytes_of(s))
+    out
+}
+
+/// Drops the first `n` bytes of `buf`, in place.
+pub fn drop_front(mut buf: List[byte], n: int) {
+    let keep = buf.len - n
+    var i = 0
+    while i < keep {
+        buf[i] = buf[n + i]
+        i += 1
+    }
+    list.truncate(mut buf, keep)
+}
