@@ -1,0 +1,112 @@
+//! member: false
+
+// B5: burrowd's command line and configuration: sshd_config(5)'s defaults,
+// first value wins with the command line first, loopback by default
+// (R-bw04-6), `-T`'s lines, and every refusal by name.
+use sconfig
+
+fn args(s: str) -> List[str] {
+    var out = List[str]()
+    for w in s.words() {
+        (mut out).push(w)
+    }
+    out
+}
+
+fn refused(s: sconfig.Settings) -> str {
+    if s.refusal == "" then "ok" else s.refusal
+}
+
+fn file(text: str) -> sconfig.Settings {
+    var s = sconfig.parse_args(List[str]())
+    sconfig.apply_file(mut s, text, "/etc/burrowd/burrowd_config")
+    s
+}
+
+fn has(lines: List[str], want: str) -> bool {
+    for l in lines {
+        if l == want {
+            return true
+        }
+    }
+    false
+}
+
+fn main() {
+    // sshd_config(5)'s defaults, and loopback alone.
+    let d = sconfig.parse_args(List[str]())
+    assert(d.port == 22 && d.grace == 120 && d.max_tries == 6)
+    assert(d.startups_begin == 10 && d.startups_rate == 30 && d.startups_full == 100)
+    assert(d.strict_modes && d.authorized_files == ".ssh/authorized_keys .ssh/authorized_keys2")
+    let e = sconfig.endpoints(d)
+    assert(e.len == 2 && e[0] == "127.0.0.1:22" && e[1] == "[::1]:22")
+    let t = sconfig.effective(d)
+    assert(
+        has(t, "logingracetime 120") && has(t, "maxauthtries 6") && has(t, "maxstartups 10:30:100"),
+    )
+    assert(has(t, "permitrootlogin no") && has(t, "listenaddress 127.0.0.1:22"))
+    // Flags, bundled and apart; -o both ways.
+    let a = sconfig.parse_args(
+        args("-De -f /x/cfg -h /x/key -p 2222 -g 2m -o MaxAuthTries=3 -oStrictModes=no -t"),
+    )
+    assert(
+        refused(a) == "ok" && a.log_stderr && a.config_file == "/x/cfg" && a.host_key == "/x/key",
+    )
+    assert(a.port == 2222 && a.grace == 120 && a.max_tries == 3 && !a.strict_modes && a.test_only)
+    let a2 = sconfig.parse_args(args("-g 1h30m -E /x/log -q -T"))
+    assert(a2.grace == 5400 && a2.log_file == "/x/log" && a2.quiet && a2.print_config)
+    // The command line wins over the file; in the file the first value wins.
+    var w = sconfig.parse_args(args("-p 2222"))
+    sconfig.apply_file(mut w, "Port 3333\nLoginGraceTime 5\nLoginGraceTime 9\n", "f")
+    assert(w.port == 2222 && w.grace == 5)
+    // ListenAddress forms; AcceptEnv accumulates.
+    let l = file(
+        "Port 2200\nListenAddress 127.0.0.1\nListenAddress [::1]:2201\nListenAddress 127.0.0.1:2202\nListenAddress ::1\nAcceptEnv GIT_PROTOCOL\n",
+    )
+    let le = sconfig.endpoints(l)
+    assert(
+        le.len == 4 &&
+            le[0] == "127.0.0.1:2200" &&
+            le[1] == "[::1]:2201" &&
+            le[2] == "127.0.0.1:2202" &&
+            le[3] == "[::1]:2200",
+    )
+    assert(l.accept_env.len == 1)
+    // Keywords with burrowd's one value, the equivalents of an sshd row's.
+    let fixed = file(
+        "PasswordAuthentication no\nKbdInteractiveAuthentication no\nPubkeyAuthentication yes\nPermitRootLogin no\nX11Forwarding no\nAllowTcpForwarding no\nDisableForwarding yes\nPermitTTY no\nPerSourcePenalties no\nCiphers chacha20-poly1305@openssh.com\nKexAlgorithms curve25519-sha256\nHostKeyAlgorithms ssh-ed25519\nAuthenticationMethods publickey\nMaxStartups 3\nRekeyLimit 256K\nStrictModes yes\n# a comment\n\n",
+    )
+    assert(
+        refused(fixed) == "ok" &&
+            fixed.startups_full == 3 &&
+            fixed.startups_begin == 3 &&
+            fixed.rekey_bytes == 262144,
+    )
+    // Refusals by name.
+    assert(refused(file("PasswordAuthentication yes\n")) == "config_unsupported")
+    assert(refused(file("PermitRootLogin prohibit-password\n")) == "config_unsupported")
+    assert(refused(file("AcceptEnv LANG LC_*\n")) == "config_unsupported")
+    assert(refused(file("Subsystem sftp /usr/lib/sftp-server\n")) == "config_unsupported")
+    assert(refused(file("Match User x\n")) == "config_unsupported")
+    assert(refused(file("Ciphers aes128-ctr\n")) == "config_unsupported")
+    assert(refused(file("AuthorizedKeysFile %h/.ssh/keys %d\n")) == "config_unsupported")
+    assert(refused(file("Frobnicate yes\n")) == "config_unknown")
+    assert(
+        file("Frobnicate yes\n").detail ==
+            "/etc/burrowd/burrowd_config line 1: Frobnicate, which sshd_config(5) does not list",
+    )
+    assert(refused(file("LoginGraceTime soon\n")) == "config_unsupported")
+    assert(refused(file("MaxStartups 10:30\n")) == "config_unsupported")
+    assert(refused(sconfig.parse_args(args("-d"))) == "option_unsupported")
+    assert(refused(sconfig.parse_args(args("-C user=x"))) == "option_unsupported")
+    assert(refused(sconfig.parse_args(args("-Z"))) == "option_unknown")
+    assert(refused(sconfig.parse_args(args("-p"))) == "usage")
+    assert(refused(sconfig.parse_args(args("extra"))) == "usage")
+    // TIME FORMATS.
+    assert(
+        sconfig.seconds("600") == 600 &&
+            sconfig.seconds("10m") == 600 &&
+            sconfig.seconds("1h30m") == 5400,
+    )
+    assert(sconfig.seconds("2") == 2 && sconfig.seconds("m") == -1 && sconfig.seconds("") == -1)
+}
