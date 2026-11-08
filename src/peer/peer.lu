@@ -1,0 +1,240 @@
+//! member: true
+//!
+//! burrow.peer — the two ends of burrowd's accepted connection, for
+//! `SSH_CONNECTION` (`ssh(1)`, ENVIRONMENT: the client's address and port,
+//! then the server's) and the log line.
+//!
+//! wolf-std has no peer address (wolf-std#140; `std.net` reports a
+//! listener's local port alone). So on linux burrowd reads the kernel's
+//! table instead (R-bw04-7): `/proc/self/fd` names the process's sockets
+//! (`socket:[INODE]`), and `/proc/net/tcp` and `tcp6` hold each socket's
+//! local and remote address and port by inode. The monitor, which has
+//! closed its copy of the listener, holds one connected socket on the
+//! listening port: that entry is the connection. Where there is no
+//! `/proc/net` (macOS; PAX, which answers `getpeername(2)` but has no such
+//! table), the ends are `UNKNOWN` and port 0, and the log says so.
+
+use std.fs
+
+/// One end: an address as text and a port.
+pub struct End {
+    addr: str,
+    port: int,
+}
+
+/// Both ends, and whether they were found.
+pub struct Ends {
+    found: bool,
+    client: End,
+    server: End,
+}
+
+/// What an unknown connection's ends read as.
+pub fn unknown() -> Ends {
+    Ends {
+        found: false,
+        client: End { addr: "UNKNOWN", port: 0 },
+        server: End { addr: "UNKNOWN", port: 0 },
+    }
+}
+
+fn hexval(c: int) -> int {
+    if c >= 48 && c <= 57 {
+        return c - 48
+    }
+    if c >= 65 && c <= 70 {
+        return c - 55
+    }
+    if c >= 97 && c <= 102 {
+        return c - 87
+    }
+    -1
+}
+
+fn hexnum(s: str) -> int {
+    var n = 0
+    for b in s.bytes() {
+        let v = hexval(b as int)
+        if v < 0 {
+            return -1
+        }
+        n = n * 16 + v
+    }
+    n
+}
+
+// The address bytes of a /proc/net/tcp address field: 8 or 32 hex digits,
+// each 32-bit word printed in the host's order (little-endian on every
+// linux burrowd builds for), so each word's bytes are reversed.
+fn addr_bytes(h: str) -> List[int] {
+    var out = List[int]()
+    if h.len != 8 && h.len != 32 {
+        return out
+    }
+    var w = 0
+    while w < h.len / 8 {
+        var i = 3
+        while i >= 0 {
+            let at = w * 8 + i * 2
+            let v = hexnum(h[at..at + 2])
+            if v < 0 {
+                return List[int]()
+            }
+            (mut out).push(v)
+            i -= 1
+        }
+        w += 1
+    }
+    out
+}
+
+fn hex16(n: int) -> str {
+    let digits = "0123456789abcdef"
+    if n == 0 {
+        return "0"
+    }
+    var out = ""
+    var v = n
+    while v > 0 {
+        out = digits[v % 16..v % 16 + 1] + out
+        v = v / 16
+    }
+    out
+}
+
+/// An address's text: dotted quad for 4 bytes, RFC 5952 for 16 (the
+/// longest run of two or more zero groups compressed, the first on a tie;
+/// an IPv4-mapped address as `::ffff:a.b.c.d`).
+pub fn text(b: List[int]) -> str {
+    if b.len == 4 {
+        return "{b[0]}.{b[1]}.{b[2]}.{b[3]}"
+    }
+    if b.len != 16 {
+        return "UNKNOWN"
+    }
+    var mapped = true
+    var i = 0
+    while i < 10 {
+        if b[i] != 0 {
+            mapped = false
+        }
+        i += 1
+    }
+    if mapped && b[10] == 255 && b[11] == 255 {
+        return "::ffff:{b[12]}.{b[13]}.{b[14]}.{b[15]}"
+    }
+    var groups = List[int]()
+    i = 0
+    while i < 16 {
+        (mut groups).push(b[i] * 256 + b[i + 1])
+        i += 2
+    }
+    var best = -1
+    var best_len = 1
+    var g = 0
+    while g < 8 {
+        if groups[g] == 0 {
+            var e = g
+            while e < 8 && groups[e] == 0 {
+                e += 1
+            }
+            if e - g > best_len {
+                best = g
+                best_len = e - g
+            }
+            g = e
+        } else {
+            g += 1
+        }
+    }
+    var out = ""
+    g = 0
+    while g < 8 {
+        if g == best {
+            out += "::"
+            g += best_len
+            continue
+        }
+        if out.len > 0 && !out.ends_with(":") {
+            out += ":"
+        }
+        out += hex16(groups[g])
+        g += 1
+    }
+    out
+}
+
+fn endpoint(field: str) -> End {
+    let colon = field.find(":") else -1
+    if colon < 0 {
+        return End { addr: "UNKNOWN", port: 0 }
+    }
+    let b = addr_bytes(field[0..colon])
+    let port = hexnum(field[colon + 1..field.len])
+    if b.len == 0 || port < 0 {
+        return End { addr: "UNKNOWN", port: 0 }
+    }
+    End { addr: text(b), port: port }
+}
+
+/// The entry of `/proc/net/tcp` or `tcp6` text whose inode is one of
+/// `inodes`, whose local port is `port` and whose remote port is not 0.
+pub fn find(table: str, inodes: List[str], port: int) -> Ends {
+    for line in table.lines() {
+        let w = line.words()
+        if w.len < 10 || !w[0].ends_with(":") {
+            continue
+        }
+        var mine = false
+        for n in inodes {
+            if n == w[9] {
+                mine = true
+            }
+        }
+        if !mine {
+            continue
+        }
+        let local = endpoint(w[1])
+        let remote = endpoint(w[2])
+        if local.port == port && remote.port != 0 {
+            return Ends { found: true, client: remote, server: local }
+        }
+    }
+    unknown()
+}
+
+/// The inodes of this process's sockets, from `/proc/self/fd`'s links.
+pub fn socket_inodes() -> List[str] {
+    var out = List[str]()
+    let names = fs.read_dir("/proc/self/fd") else { return out }
+    for n in names {
+        let link = fs.read_link("/proc/self/fd/" + n) else { continue }
+        let s = str_from_utf8(link) else ""
+        if s.starts_with("socket:[") && s.ends_with("]") {
+            (mut out).push(s[8..s.len - 1])
+        }
+    }
+    out
+}
+
+/// The ends of this process's one connection on `port`, from the
+/// kernel's tables, or `unknown()` where there are none.
+pub fn of_connection(port: int) -> Ends {
+    let inodes = socket_inodes()
+    if inodes.len == 0 {
+        return unknown()
+    }
+    var tables = List[str]()
+    (mut tables).push("/proc/net/tcp")
+    (mut tables).push("/proc/net/tcp6")
+    for path in tables {
+        if fs.exists(path) {
+            let t = fs.read_text(path) else ""
+            let e = find(t, inodes, port)
+            if e.found {
+                return e
+            }
+        }
+    }
+    unknown()
+}

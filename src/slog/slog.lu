@@ -1,0 +1,112 @@
+//! member: true
+//!
+//! burrow.slog — burrowd's one log line per connection, written by the
+//! monitor when the connection ends:
+//!
+//! ```text
+//! 2026-11-08T04:10:00Z burrowd[PID]: from ADDR port N user NAME key SHA256:… outcome NAME status N refused a,b
+//! ```
+//!
+//! The time in UTC; the client's address and port (`src/peer`); the user
+//! as the client sent it, every byte outside printable ASCII (and the
+//! space) written `\ooo` and at most 64 bytes kept, so a name cannot forge
+//! or break a line; the fingerprint of the key that authenticated, or of
+//! the last one offered, else `-`; the outcome by name; the session's
+//! `status N`, `signal NAME` or `status -` (burrowd's own words, never
+//! the client's); and the non-final refusals, when there
+//! were any. Never a private key, the command, an environment value or a
+//! byte of the session: none of them is an argument here.
+
+/// One connection's facts, as the monitor gathers them.
+pub struct Line {
+    time: str,
+    pid: int,
+    addr: str,
+    port: int,
+    user: str,
+    key: str,
+    outcome: str,
+    status: str,
+    refused: List[str],
+}
+
+/// A line with nothing known yet but the time, the pid and the peer.
+pub fn start(time: str, pid: int, addr: str, port: int) -> Line {
+    Line {
+        time: time,
+        pid: pid,
+        addr: addr,
+        port: port,
+        user: "",
+        key: "-",
+        outcome: "closed",
+        status: "status -",
+        refused: List[str](),
+    }
+}
+
+/// `s` with every byte outside printable ASCII, the space and the
+/// backslash written `\ooo`, at most `max` input bytes kept, `-` when
+/// empty.
+pub fn clean(s: str, max: int) -> str {
+    if s.len == 0 {
+        return "-"
+    }
+    var out = List[byte]()
+    var n = 0
+    for b in s.bytes() {
+        if n >= max {
+            break
+        }
+        n += 1
+        let v = b as int
+        if v > 32 && v < 127 && v != 92 {
+            (mut out).push(b)
+        } else {
+            (mut out).push(92 as byte)
+            (mut out).push((48 + v / 64) as byte)
+            (mut out).push((48 + v / 8 % 8) as byte)
+            (mut out).push((48 + v % 8) as byte)
+        }
+    }
+    str_from_utf8(out) else "-"
+}
+
+/// The line, without its newline.
+pub fn format(l: Line) -> str {
+    var out = "{l.time} burrowd[{l.pid}]: from {clean(l.addr, 64)} port {l.port} user {clean(l.user, 64)} key {clean(l.key, 64)} outcome {clean(l.outcome, 64)} {if l.status == "" then "status -" else l.status}"
+    if l.refused.len > 0 {
+        var names = ""
+        for r in l.refused {
+            if names.len > 0 {
+                names += ","
+            }
+            names += clean(r, 64)
+        }
+        out += " refused {names}"
+    }
+    out
+}
+
+/// The UTC time of `unix_seconds`, as `YYYY-MM-DDTHH:MM:SSZ` (days from
+/// the civil calendar, proleptic Gregorian).
+pub fn utc(unix_seconds: int) -> str {
+    let days = unix_seconds / 86400
+    let secs = unix_seconds % 86400
+    // Howard Hinnant's days-to-civil, in integers.
+    let z = days + 719468
+    let era = z / 146097
+    let doe = z - era * 146097
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+    let y = yoe + era * 400
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+    let mp = (5 * doy + 2) / 153
+    let d = doy - (153 * mp + 2) / 5 + 1
+    let m = if mp < 10 then mp + 3 else mp - 9
+    let year = if m <= 2 then y + 1 else y
+    "{year}-{two(m)}-{two(d)}T{two(secs / 3600)}:{two(secs / 60 % 60)}:{two(secs % 60)}Z"
+}
+
+fn two(n: int) -> str {
+    if n < 10 then "0{n}" else "{n}"
+}
