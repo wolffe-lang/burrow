@@ -13,8 +13,9 @@
 //! and stderr are three pipes; the stdin end is non-blocking, so a command
 //! that does not read never stalls the connection, and burrowd's window
 //! gives back only what the command has read. When `/etc/nologin` exists
-//! the command is not run: its text goes to stderr and the status is 1
-//! (LOGIN PROCESS, step 3; root, who could pass, never logs in).
+//! the command is not run: its text goes to stderr and the status is 254,
+//! as the pinned `sshd`'s session ends (measured; LOGIN PROCESS, step 3;
+//! root, who could pass, never logs in).
 //!
 //! **Waiting.** wolf-std at the pin has no one wait over a socket and
 //! files (wolf-std#134): an idle turn waits up to 5 ms on the socket, then
@@ -241,7 +242,7 @@ fn turn_once(
                 transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
             }
             flow.started = true
-            pr.status = 1
+            pr.status = 254
         } else if s.start {
             var ok = true
             let got = start_command(plan, ch) else |e| {
