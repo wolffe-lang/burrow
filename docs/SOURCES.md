@@ -157,3 +157,54 @@ unchanged), and `notes/vc22-the-smart-http-transport.md`'s ssh program
 word section. The command `sshd` is sent is read through `sshd(8)`'s
 `command=` option, the same copy of the page as above (its sha256
 unchanged).
+
+## B5: burrowd, the server for commands
+
+The same RFC texts and the same `PROTOCOL` as above (their digests
+unchanged), read again for the server's side of each: RFC 4252 §5 to §7
+(the request as the server parses it, FAILURE's list, a user or service
+that changes, the signed data the server verifies), RFC 4253 §4.2 (only the
+server may send lines before its identification), §7.1 (negotiation with
+the client's lists first), §8 (the server's signature on H), §10 and §11;
+RFC 4254 §5 and §6 from the server's side (the window it grants, `exec`,
+`env`, `exit-status` and `exit-signal`, the requests it refuses); RFC 8308
+§2.4 (EXT_INFO after the first NEWKEYS) and §3.1 (`server-sig-algs`);
+RFC 8709 §6 (the server's signature blob); `PROTOCOL` §1.9, §1.10 (strict
+kex from the server's side: `kex-strict-s-v00@openssh.com`), §1.11, §2.1,
+§2.2, §2.5 and §3.1.
+
+One RFC is new on the list, fetched from rfc-editor.org on 2026-11-08, for
+the client's address in the log line:
+
+| document | sha256 of the text | read |
+|---|---|---|
+| RFC 5952, IPv6 address text representation | `c75e82c5f53bcec8148820fadf0d65935336ee2031fa6ce10504797ed4c1979d` | §4.1 leading zeros, §4.2 `::` (as long as possible, never for one group, the first on a tie), §4.3 lower case, §5 IPv4-mapped addresses |
+
+The man pages, from the same signed `openssh-10.0p2.tar.gz` (its signature
+checked again first), extracted by name:
+
+| page | sha256 | read |
+|---|---|---|
+| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` (unchanged) | SYNOPSIS and the flags burrowd takes (`-D -E -e -f -g -h -o -p -q -T -t -V`), LOGIN PROCESS, AUTHORIZED_KEYS FILE FORMAT (every option, to take or refuse each by name), FILES (the modes `sshd` requires) |
+| `sshd_config.5` | `9f499c39e00e92f05621c0b259f4d0b05d1cedf34b376fde31fa2787a0d1978c` | DESCRIPTION (first value wins), the keyword list (every keyword, so one burrowd lacks is refused as unsupported, not unknown), TOKENS (`%h`, `%u`, `%%`), and the entries and defaults of `AcceptEnv`, `AuthorizedKeysFile`, `HostKey`, `ListenAddress`, `LoginGraceTime`, `MaxAuthTries`, `MaxStartups`, `PermitRootLogin`, `PidFile`, `Port`, `RekeyLimit`, `StrictModes` and the keywords whose one value burrowd has |
+| `ssh.1` | `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea` (unchanged) | ENVIRONMENT (`SSH_CLIENT`, `SSH_CONNECTION`, `SSH_ORIGINAL_COMMAND` and the rest a session is given) |
+
+The pinned `sshd` as a black box, beside burrowd in every server row: what
+the pinned `ssh` prints and exits with against it for each refusal, its
+KEXINIT's lists, `sshd -T`'s lines for the limits, its refusal of a host
+key's mode, the environment a session is given (`env` inside the session),
+`id` inside the session, the users of its processes (`ps`), and the
+repositories git leaves through it. No `.c` or `.h` file was opened, of
+OpenSSH or any other server.
+
+Organisation code: wolf-std at the same pin, read for what a server can be
+built from: `std/net` (`listen_with`, `accept`, `wait`; it has no peer
+address, filed as
+[wolf-std#140](https://github.com/wolffe-lang/wolf-std/issues/140)),
+`std/process` (`fork`, `exec`, `pipe`, `set_ids`, `poll_core`),
+`std/signal`, `std/fs` (`set_nonblock`, `write_some`, `info`), `std/env`
+and `std/os/users`. On linux the client's address comes from
+`/proc/net/tcp` and `tcp6` (their format measured from the files
+themselves, in the pinned container) until that call exists. PAX at its trunk, for what B6 needs:
+its kernel README and the notes of the lanes that added set-ID,
+credentials and its init.
