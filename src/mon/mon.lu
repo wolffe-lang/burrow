@@ -82,6 +82,27 @@ pub fn self_account() -> Account {
     }
 }
 
+/// The account `user` may log in as: from passwd and group as root (root
+/// refused always, R-bw04-3); without root the running user alone. uid -1
+/// (and the name `root` for root's refusal) when there is none.
+pub fn account_for(root: bool, passwd: str, group: str, user: str) -> Account {
+    let none = Account { name: "", uid: -1, gid: -1, home: "", shell: "", groups: List[int]() }
+    if !root {
+        let me = self_account()
+        if me.name != user || me.uid == 0 {
+            var r = copy none
+            r.name = if user == "root" then "root" else ""
+            return r
+        }
+        return me
+    }
+    account(passwd, group, user) else |e| {
+        var r = copy none
+        r.name = if "{e}" == "root" then "root" else ""
+        return r
+    }
+}
+
 /// The monitor's verdict on a key for an account.
 pub struct Verdict {
     ok: bool,
