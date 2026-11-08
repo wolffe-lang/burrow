@@ -170,7 +170,10 @@ def git_fetch():
         ok(git(["-C", str(r.seed), "commit", "-q", "-m", "to fetch"]), "commit")
         for which in ("burrowd", "sshd"):
             dst = r.srv / f"{which}.git"
-            ok(git(["-C", str(dst), "fetch", "-q", str(r.seed), "main:main"], user=USER), "seed fetch")
+            # The seed is root's; git reads another user's repository only
+            # when told it is safe, which the command line may say.
+            ok(git(["-c", f"safe.directory={r.seed / '.git'}", "-C", str(dst), "fetch", "-q", str(r.seed), "main:main"],
+                   user=USER), "seed fetch")
         out = {w: through(p, w, ["fetch", "-q"], cwd=r.local / f"clone-{w}") for w in ("burrowd", "sshd")}
         same(out["burrowd"][0], out["sshd"][0], "fetch")
         st = same_repos(r.local / "clone-burrowd", r.local / "clone-sshd", "fetch")
