@@ -852,10 +852,6 @@ pub fn finish(mut s: Settings, home: str, user: str) {
     }
     s.known_hosts = kh
     var gk = List[str]()
-    if !was_set(s, "globalknownhostsfile") {
-        (mut gk).push("/etc/ssh/ssh_known_hosts")
-        (mut gk).push("/etc/ssh/ssh_known_hosts2")
-    }
     for p in s.global_known_hosts {
         (mut gk).push(expand(p, home))
     }
