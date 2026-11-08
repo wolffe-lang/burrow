@@ -1,0 +1,248 @@
+#!/usr/bin/env python3
+"""check-server-git — git over burrowd, held to the same through the pinned sshd.
+
+    tools/in-container python3 -I tools/check-server-git --bin target/native/burrowd [--only ROW...]
+
+The image's git (Ubuntu 24.04's, from the snapshot the image pins; its
+version is in the image's package list) is both the client, with
+core.sshCommand the pinned ssh, and the server's git-upload-pack and
+git-receive-pack, run by each server as the account. Each row runs the same
+git command through burrowd and through sshd, against two copies of one
+template repository, and compares git's exit status, stdout and stderr, and
+the repositories (every ref and every object, fsck clean). Protocol v2:
+git sends GIT_PROTOCOL through `SendEnv`, both servers accept it
+(`AcceptEnv GIT_PROTOCOL`), and the client's packet trace shows the
+server's `version 2` advertisement, which git-upload-pack makes only when
+the variable reached it.
+"""
+import argparse
+import os
+import pathlib
+import pwd
+import shutil
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+import serverlib  # noqa: E402
+from serverlib import Pair, USER  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "server-git"
+ROWS = []
+BIN = None
+GIT = "/usr/bin/git"
+IDENT = {"GIT_AUTHOR_NAME": "Row", "GIT_AUTHOR_EMAIL": "row@example.invalid", "GIT_COMMITTER_NAME": "Row",
+         "GIT_COMMITTER_EMAIL": "row@example.invalid", "GIT_AUTHOR_DATE": "2026-11-08T00:00:00Z",
+         "GIT_COMMITTER_DATE": "2026-11-08T00:00:00Z", "GIT_CONFIG_NOSYSTEM": "1", "LC_ALL": "C", "TZ": "UTC"}
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def git(args, cwd=None, env=None, user=None):
+    e = {"PATH": "/usr/bin:/bin", "HOME": str(WORK), **IDENT}
+    e.update(env or {})
+    argv = [GIT] + list(args)
+    if user:
+        argv = ["setpriv", "--reuid", user, "--regid", user, "--init-groups", "--"] + argv
+        e["HOME"] = pwd.getpwnam(user).pw_dir
+    r = subprocess.run(argv, cwd=cwd, env=e, capture_output=True, timeout=300)
+    return (r.returncode, r.stdout, r.stderr)
+
+
+def ok(r, what):
+    check(r[0] == 0, f"{what}: exit {r[0]}, {r[2][-300:]!r}")
+    return r
+
+
+def state(repo, user=None):
+    """Every ref and every object of a repository, and fsck's verdict."""
+    refs = ok(git(["-C", str(repo), "for-each-ref", "--format=%(refname) %(objectname)"], user=user), "for-each-ref")[1]
+    objs = ok(git(["-C", str(repo), "rev-list", "--objects", "--all"], user=user), "rev-list")[1]
+    fsck = git(["-C", str(repo), "fsck", "--full", "--no-progress"], user=user)
+    return refs, b"\n".join(sorted(objs.splitlines())), fsck[0]
+
+
+class Repos:
+    """Two server copies of one template bare repository in the account's
+    home (one per server), and the client's work area."""
+
+    def __init__(self, name, commits=2, deny_nff=False):
+        self.name = name
+        a = pwd.getpwnam(USER)
+        self.home = pathlib.Path(a.pw_dir)
+        self.srv = self.home / "repos"
+        if self.srv.exists():
+            shutil.rmtree(self.srv)
+        self.srv.mkdir()
+        os.chown(self.srv, a.pw_uid, a.pw_gid)
+        self.local = WORK / name
+        if self.local.exists():
+            shutil.rmtree(self.local)
+        self.local.mkdir(parents=True)
+        seed = self.local / "seed"
+        ok(git(["init", "-q", "-b", "main", str(seed)]), "init")
+        for i in range(commits):
+            (seed / f"f{i}.txt").write_text(f"line {i}\n" * (i + 1))
+            ok(git(["-C", str(seed), "add", "."]), "add")
+            ok(git(["-C", str(seed), "commit", "-q", "-m", f"commit {i}"]), "commit")
+        for which in ("burrowd", "sshd"):
+            dst = self.srv / f"{which}.git"
+            ok(git(["clone", "-q", "--bare", str(seed), str(dst)]), "clone --bare")
+            if deny_nff:
+                ok(git(["-C", str(dst), "config", "receive.denyNonFastForwards", "true"]), "config")
+            subprocess.run(["chown", "-R", f"{a.pw_uid}:{a.pw_gid}", str(dst)], check=True)
+        self.seed = seed
+
+    def url(self, which):
+        return f"{USER}@127.0.0.1:repos/{which}.git"
+
+
+def ssh_command(p, port):
+    return (f"{serverlib.SSH} -F none -o BatchMode=yes -o IdentitiesOnly=yes -o UserKnownHostsFile={p.kh} "
+            f"-o StrictHostKeyChecking=yes -i {p.key} -p {port}")
+
+
+def through(p, which, args, cwd=None):
+    """git `args` with core.sshCommand the pinned ssh to `which` server,
+    protocol v2, its packet trace kept apart from its stderr."""
+    port = p.burrowd.port if which == "burrowd" else p.sshd.port
+    trace = WORK / f"trace-{which}.txt"
+    if trace.exists():
+        trace.unlink()
+    r = git(["-c", f"core.sshCommand={ssh_command(p, port)}", "-c", "protocol.version=2"] + list(args), cwd=cwd,
+            env={"GIT_TRACE_PACKET": str(trace)})
+    t = trace.read_bytes() if trace.exists() else b""
+    norm = lambda b: b.replace(b"burrowd.git", b"X.git").replace(b"sshd.git", b"X.git")
+    return (r[0], norm(r[1]), norm(r[2])), t
+
+
+def same(rb, rs, what):
+    check(rb[0] == rs[0], f"{what}: exit {rb[0]} through burrowd, {rs[0]} through sshd; {rb[2][-300:]!r} / {rs[2][-300:]!r}")
+    check(rb[1] == rs[1], f"{what}: stdout differs {rb[1][-200:]!r} / {rs[1][-200:]!r}")
+    check(rb[2] == rs[2], f"{what}: stderr differs {rb[2][-300:]!r} / {rs[2][-300:]!r}")
+
+
+def same_repos(a, b, what, user=None):
+    sa, sb = state(a, user), state(b, user)
+    check(sa[0] == sb[0], f"{what}: refs differ")
+    check(sa[1] == sb[1], f"{what}: objects differ")
+    check(sa[2] == 0 and sb[2] == 0, f"{what}: fsck {sa[2]} / {sb[2]}")
+    return sa
+
+
+@row
+def git_clone():
+    with Pair(BIN, WORK / "pair-clone") as p:
+        r = Repos("git-clone")
+        out = {}
+        for which in ("burrowd", "sshd"):
+            out[which] = through(p, which, ["clone", "-q", r.url(which), str(r.local / f"clone-{which}")])
+        (rb, tb), (rs, ts) = out["burrowd"], out["sshd"]
+        same(rb, rs, "clone")
+        st = same_repos(r.local / "clone-burrowd", r.local / "clone-sshd", "clone")
+        check(b"version 2" in tb and b"version 2" in ts, "no protocol v2 advertisement in a packet trace")
+        return f"{len(st[1].splitlines())} objects, refs equal, fsck clean, protocol v2 both"
+
+
+@row
+def git_fetch():
+    with Pair(BIN, WORK / "pair-fetch") as p:
+        r = Repos("git-fetch")
+        for which in ("burrowd", "sshd"):
+            ok(through(p, which, ["clone", "-q", r.url(which), str(r.local / f"clone-{which}")])[0], "clone")
+        # A new commit on both server copies, the same bytes.
+        (r.seed / "new.txt").write_text("fetched\n")
+        ok(git(["-C", str(r.seed), "add", "."]), "add")
+        ok(git(["-C", str(r.seed), "commit", "-q", "-m", "to fetch"]), "commit")
+        for which in ("burrowd", "sshd"):
+            dst = r.srv / f"{which}.git"
+            ok(git(["-C", str(dst), "fetch", "-q", str(r.seed), "main:main"], user=USER), "seed fetch")
+        out = {w: through(p, w, ["fetch", "-q"], cwd=r.local / f"clone-{w}") for w in ("burrowd", "sshd")}
+        same(out["burrowd"][0], out["sshd"][0], "fetch")
+        st = same_repos(r.local / "clone-burrowd", r.local / "clone-sshd", "fetch")
+        return f"{len(st[1].splitlines())} objects after the fetch, equal"
+
+
+@row
+def git_push():
+    with Pair(BIN, WORK / "pair-push") as p:
+        r = Repos("git-push")
+        for which in ("burrowd", "sshd"):
+            c = r.local / f"clone-{which}"
+            ok(through(p, which, ["clone", "-q", r.url(which), str(c)])[0], "clone")
+            (c / "pushed.txt").write_text("pushed\n")
+            ok(git(["-C", str(c), "add", "."]), "add")
+            ok(git(["-C", str(c), "commit", "-q", "-m", "pushed"]), "commit")
+        out = {w: through(p, w, ["push", "-q", "origin", "main"], cwd=r.local / f"clone-{w}") for w in ("burrowd", "sshd")}
+        same(out["burrowd"][0], out["sshd"][0], "push")
+        st = same_repos(r.srv / "burrowd.git", r.srv / "sshd.git", "push (the server repositories)", user=USER)
+        return f"the servers' repositories equal after the push, {len(st[1].splitlines())} objects"
+
+
+@row
+def git_push_rejected():
+    with Pair(BIN, WORK / "pair-push-rejected") as p:
+        r = Repos("git-push-rejected", commits=3, deny_nff=True)
+        for which in ("burrowd", "sshd"):
+            c = r.local / f"clone-{which}"
+            ok(through(p, which, ["clone", "-q", r.url(which), str(c)])[0], "clone")
+            ok(git(["-C", str(c), "reset", "-q", "--hard", "HEAD~1"]), "reset")
+        out = {w: through(p, w, ["push", "-q", "--force", "origin", "main"], cwd=r.local / f"clone-{w}") for w in ("burrowd", "sshd")}
+        rb, rs = out["burrowd"][0], out["sshd"][0]
+        same(rb, rs, "a non-fast-forward the server denies")
+        check(rb[0] != 0 and b"denying non-fast-forward" in rb[2], f"the server's refusal did not reach git: {rb[2][-300:]!r}")
+        same_repos(r.srv / "burrowd.git", r.srv / "sshd.git", "after the rejected push", user=USER)
+        return "refused alike, the servers unchanged"
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    if not BIN.exists():
+        print(f"FAIL setup no binary at {BIN}")
+        sys.exit(1)
+    oraclelib.require_oracle()
+    serverlib.ensure_accounts()
+    os.umask(0o022)
+    WORK.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK, 0o711)
+    print("check-server-git: " + subprocess.run([GIT, "--version"], capture_output=True, text=True).stdout.strip())
+    fails = ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-server-git: {ran} rows, {fails} failed, 0 SKIP")
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
