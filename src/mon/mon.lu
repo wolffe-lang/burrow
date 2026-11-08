@@ -1,0 +1,197 @@
+//! member: true
+//!
+//! burrow.mon — what burrowd's monitor knows and decides, and the frames
+//! its pipes carry (`src/pipe`).
+//!
+//! **The frames** (their kinds are `src/pipe`'s). Worker to monitor: `sign` [H], `query` [user, blob],
+//! `verify` [user, blob, signature blob], `authed` [user, blob, transport
+//! state], `outcome` [name, detail]. Monitor to worker: `answer` [one byte,
+//! 1 or 0] or `signed` [signature blob]. Monitor to holder: `go` [the
+//! account's fields, the forced command, the transport state] or `stop`.
+//! Session to monitor: `sign` [H], `ended` [kind, value]. Monitor to the
+//! listener: `authenticated` [] (one connection no longer counts against
+//! MaxStartups).
+//!
+//! **What only the monitor decides.** Whether an account may log in
+//! (`account`: in passwd, not root, R-bw04-3), whether a key is authorized
+//! (`check_key`: `authorized_keys` under StrictModes, `src/akeys`), and
+//! whether a signature verifies (`verify`): the signed data is rebuilt here
+//! from the session identifier the monitor itself signed (`auth.signed_data`,
+//! RFC 4252 §7), so a worker cannot have a signature over another session,
+//! another user or another key accepted.
+
+use std.fs
+use std.os.users
+use std.x.crypto.curve25519
+use akeys
+use auth
+use sauth
+use wire
+
+/// Why an account cannot log in: no passwd line, or root.
+pub error Barred = {unknown, root}
+
+/// An account burrowd may log in as.
+pub struct Account {
+    name: str,
+    uid: int,
+    gid: int,
+    home: str,
+    shell: str,
+    groups: List[int],
+}
+
+/// The account `name` from passwd and group text, or why there is none
+/// for burrowd: `unknown` (no passwd line) or `root` (uid 0, refused
+/// always). An empty shell is `/bin/sh` (`sshd(8)`'s login shell).
+pub fn account(passwd: str, group: str, name: str) -> Account ! Barred {
+    let u = users.user_named(passwd, name) else { return unknown }
+    if u.uid == 0 {
+        return root
+    }
+    let shell = if u.shell == "" then "/bin/sh" else u.shell
+    Account {
+        name: u.name,
+        uid: u.uid,
+        gid: u.gid,
+        home: u.home,
+        shell: shell,
+        groups: users.groups_of(group, u.name, u.gid),
+    }
+}
+
+/// The monitor's verdict on a key for an account.
+pub struct Verdict {
+    ok: bool,
+    command: str,
+    has_command: bool,
+    /// Why not, for the log ("" when ok, or no line names the key).
+    why: str,
+}
+
+fn parent(path: str) -> str {
+    let slash = path.rfind("/") else 0
+    if slash == 0 then "/" else path[0..slash]
+}
+
+/// Whether `blob` is authorized for `a`: each of `AuthorizedKeysFile`'s
+/// paths in order, the first line naming the key deciding; under
+/// StrictModes a file whose home, directory or self fails `sshd(8)`'s
+/// mode and owner checks is not read. Read as root, by the monitor alone.
+pub fn check_key(a: Account, files: str, strict_modes: bool, blob: List[byte]) -> Verdict {
+    var why = ""
+    for path in akeys.paths(files, a.home, a.name) {
+        if !fs.is_file(path) {
+            continue
+        }
+        if strict_modes {
+            var bad = ""
+            var checked = List[str]()
+            (mut checked).push(a.home)
+            let dir = parent(path)
+            if dir != a.home {
+                (mut checked).push(dir)
+            }
+            (mut checked).push(path)
+            for p in checked {
+                if bad == "" {
+                    let info = fs.stat(p) else {
+                        bad = "{p} cannot be read"
+                        continue
+                    }
+                    bad = akeys.mode_problem(p, info, a.uid)
+                }
+            }
+            if bad != "" {
+                why = "StrictModes: {bad}"
+                continue
+            }
+        }
+        let text = fs.read_text(path) else {
+            why = "{path} cannot be read"
+            continue
+        }
+        let f = akeys.find(text, blob)
+        if f.line > 0 {
+            return Verdict { ok: f.ok, command: f.command, has_command: f.has_command, why: f.why }
+        }
+    }
+    Verdict { ok: false, command: "", has_command: false, why: why }
+}
+
+/// Whether `sig_blob` is `blob`'s Ed25519 signature over RFC 4252 §7's
+/// signed data for `user` under `session_id`.
+pub fn verify(session_id: List[byte], user: str, blob: List[byte], sig_blob: List[byte]) -> bool {
+    let key = sauth.public_of(blob)
+    let sig = sauth.signature_of(sig_blob)
+    if key.len != 32 || sig.len != 64 || session_id.len == 0 {
+        return false
+    }
+    curve25519.verify(key, auth.signed_data(session_id, user, blob), sig)
+}
+
+/// An account as frame fields: name, uid, gid, home, shell, groups.
+pub fn account_fields(a: Account) -> List[List[byte]] {
+    var out = List[List[byte]]()
+    (mut out).push(wire.bytes_of(a.name))
+    (mut out).push(wire.bytes_of("{a.uid}"))
+    (mut out).push(wire.bytes_of("{a.gid}"))
+    (mut out).push(wire.bytes_of(a.home))
+    (mut out).push(wire.bytes_of(a.shell))
+    var g = ""
+    for n in a.groups {
+        if g.len > 0 {
+            g += ","
+        }
+        g += "{n}"
+    }
+    (mut out).push(wire.bytes_of(g))
+    out
+}
+
+fn number(b: List[byte]) -> int {
+    let s = str_from_utf8(b) else ""
+    if s == "" {
+        return -1
+    }
+    var n = 0
+    for c in s.bytes() {
+        let d = c as int - 48
+        if d < 0 || d > 9 || n > 4294967295 {
+            return -1
+        }
+        n = n * 10 + d
+    }
+    n
+}
+
+/// The account in `fields` from `at` on (the inverse of `account_fields`).
+pub fn account_from(fields: List[List[byte]], at: int) -> Account ! {malformed} {
+    if fields.len < at + 6 {
+        return malformed
+    }
+    let uid = number(fields[at + 1])
+    let gid = number(fields[at + 2])
+    if uid < 0 || gid < 0 {
+        return malformed
+    }
+    var groups = List[int]()
+    let g = str_from_utf8(fields[at + 5]) else ""
+    if g != "" {
+        for w in g.split(",") {
+            let n = number(wire.bytes_of(w))
+            if n < 0 {
+                return malformed
+            }
+            (mut groups).push(n)
+        }
+    }
+    Account {
+        name: str_from_utf8(fields[at]) else "",
+        uid: uid,
+        gid: gid,
+        home: str_from_utf8(fields[at + 3]) else "",
+        shell: str_from_utf8(fields[at + 4]) else "",
+        groups: groups,
+    }
+}
