@@ -1,0 +1,679 @@
+#!/usr/bin/env python3
+"""check-server — B5's rows: burrowd held to the pinned sshd, on loopback.
+
+    tools/in-container python3 -I tools/check-server --bin target/native/burrowd [--only ROW...]
+
+Every row starts the pinned sshd and burrowd side by side (tools/serverlib.py:
+one per-run host key, one account, one client key, equivalent
+configurations), runs the pinned ssh against both with the same arguments,
+and holds burrowd's client-visible outcome to sshd's: stdout bytes, stderr
+lines with each server's port written PORT, and the exit status. Where sshd
+has no equivalent (strict kex required, a shell refused), the row says so
+and holds burrowd to the prediction. A row prints `PASS <row>` or `FAIL <row>
+<why>` at column 0; the exit status is the number of failures (capped at 100).
+
+Runs as root in the pinned container: burrowd becomes the account (and its
+worker the unprivileged `burrowd` account, made here if absent), as sshd
+does. Private keys stay in the run directories; each row's two server logs
+and its compare.txt are copied to target/evidence/server-<tier>/<row>/ and
+the copy is checked to hold no key material.
+"""
+import argparse
+import hashlib
+import os
+import pathlib
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import oraclelib  # noqa: E402
+import serverlib  # noqa: E402
+from serverlib import Pair, USER  # noqa: E402
+
+ROOT = oraclelib.ROOT
+WORK = ROOT / "target" / "server"
+ROWS = []
+BIN = None
+
+
+def row(fn):
+    ROWS.append(fn)
+    return fn
+
+
+class Fail(Exception):
+    pass
+
+
+def check(cond, why):
+    if not cond:
+        raise Fail(why)
+
+
+def tail(b, n=400):
+    s = b.decode("utf-8", "replace") if isinstance(b, bytes) else b
+    return s.strip()[-n:].replace("\n", " | ")
+
+
+def lines(b):
+    return [x for x in b.decode("utf-8", "replace").splitlines()]
+
+
+def rundir(name):
+    d = WORK / name
+    if d.exists():
+        shutil.rmtree(d)
+    return d
+
+
+def record(p, text):
+    (p.dir / "compare.txt").write_text(text)
+
+
+def show(r):
+    return f"exit {r[0]}, stdout {r[1][:200]!r}, stderr {tail(r[2])!r}"
+
+
+def same(p, rb, rs, what, stdout=True):
+    """burrowd's outcome is sshd's: the exit status, stdout and stderr."""
+    record(p, f"{what}\nsshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+    check(rb[0] == rs[0], f"exit {rb[0]} through burrowd, {rs[0]} through sshd; burrowd stderr {tail(rb[2])!r}, sshd's {tail(rs[2])!r}")
+    if stdout:
+        check(rb[1] == rs[1], f"stdout differs: burrowd {rb[1][:200]!r}, sshd {rs[1][:200]!r}")
+    check(lines(rb[2]) == lines(rs[2]), f"stderr differs: burrowd {tail(rb[2])!r}, sshd {tail(rs[2])!r}")
+    return f"exit {rs[0]}, stderr {tail(rs[2], 160)!r}" if rs[2] else f"exit {rs[0]}"
+
+
+def outcome(p, name):
+    """burrowd's log names the connection's outcome `name`."""
+    got = p.burrowd.conn_lines()
+    check(any(f" outcome {name} " in x + " " for x in got), f"burrowd's log has no outcome {name}: {got[-3:]}")
+
+
+# ---- transport ----------------------------------------------------------------
+@row
+def server_true():
+    with Pair(BIN, rundir("server-true")) as p:
+        rb, rs = p.both(["true"])
+        note = same(p, rb, rs, "ssh host true")
+        outcome(p, "ok")
+        return note
+
+
+@row
+def server_version():
+    with Pair(BIN, rundir("server-version")) as p:
+        rb = p.ssh(p.burrowd.port, ["-v", "true"])
+        text = rb[2].decode("utf-8", "replace")
+        record(p, text)
+        check(rb[0] == 0, show(rb))
+        for want in ("remote software version burrowd_0.0.0", "kex: algorithm: curve25519-sha256",
+                     "kex: host key algorithm: ssh-ed25519", "chacha20-poly1305@openssh.com",
+                     "Server host key: ssh-ed25519"):
+            check(want in text, f"ssh -v does not show {want!r}")
+        return "curve25519-sha256, ssh-ed25519, chacha20-poly1305@openssh.com"
+
+
+@row
+def server_ext_info():
+    with Pair(BIN, rundir("server-ext-info")) as p:
+        rb = p.ssh(p.burrowd.port, ["-vvv", "true"])
+        text = rb[2].decode("utf-8", "replace")
+        record(p, text)
+        check(rb[0] == 0, show(rb))
+        check("server-sig-algs=<ssh-ed25519>" in text, "no server-sig-algs=<ssh-ed25519> in ssh -vvv")
+        check("strict KEX" in text or "kex-strict" in text, "no strict kex in ssh -vvv")
+        return "server-sig-algs=<ssh-ed25519>"
+
+
+def refused_alg(name, client_opt, sshd_line, log_name):
+    with Pair(BIN, rundir(name), sshd=[sshd_line]) as p:
+        rb, rs = p.both(["true"], opts=["-o", client_opt])
+        note = same(p, rb, rs, f"ssh -o {client_opt}")
+        return note
+
+
+@row
+def server_refused_cipher():
+    return refused_alg("server-refused-cipher", "Ciphers=aes128-ctr", "Ciphers chacha20-poly1305@openssh.com",
+                       "no_common_cipher")
+
+
+@row
+def server_refused_kex():
+    return refused_alg("server-refused-kex", "KexAlgorithms=ecdh-sha2-nistp256",
+                       "KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org", "no_common_kex")
+
+
+@row
+def server_refused_hostkey():
+    return refused_alg("server-refused-hostkey", "HostKeyAlgorithms=rsa-sha2-256", "HostKeyAlgorithms ssh-ed25519",
+                       "no_common_hostkey")
+
+
+@row
+def server_rekey():
+    data = bytes((i * 131 + 7) % 256 for i in range(4 * 1024 * 1024))
+    with Pair(BIN, rundir("server-rekey"), sshd=["RekeyLimit 256K"], burrowd=["RekeyLimit 256K"]) as p:
+        rb, rs = p.both(["cat"], inp=data, opts=["-o", "RekeyLimit=256K"])
+        note = same(p, rb, rs, "4 MiB through cat at RekeyLimit 256K both sides")
+        check(hashlib.sha256(rb[1]).digest() == hashlib.sha256(data).digest(), "burrowd's cat is not the input")
+        return note
+
+
+# ---- the host key ----------------------------------------------------------------
+def start_only(name, key_setup):
+    """burrowd and sshd started on a host key `key_setup(path)` prepared;
+    their exit statuses (both must refuse) and burrowd's line."""
+    d = rundir(name)
+    d.mkdir(parents=True)
+    key = d / "host_ed25519"
+    serverlib.keygen(key, "host")
+    key_setup(key)
+    cfg = d / "burrowd_config"
+    cfg.write_text(f"ListenAddress 127.0.0.1\nPort {serverlib.free_port()}\nHostKey {key}\n")
+    rb = serverlib.run([str(BIN), "-t", "-f", str(cfg)], timeout=30)
+    scfg = d / "sshd_config"
+    scfg.write_text(f"ListenAddress 127.0.0.1:{serverlib.free_port()}\nHostKey {key}\nPidFile {d / 'sshd.pid'}\n")
+    rs = serverlib.run([serverlib.SSHD, "-t", "-f", str(scfg)], timeout=30)
+    (d / "compare.txt").write_text(f"sshd -t: {show(rs)}\nburrowd -t: {show(rb)}\n")
+    return rb, rs
+
+
+@row
+def hostkey_required():
+    rb, rs = start_only("hostkey-required", lambda k: (k.unlink(), pathlib.Path(str(k) + ".pub").unlink()))
+    check(rs[0] != 0 and rb[0] == 1, f"sshd -t exit {rs[0]}, burrowd -t exit {rb[0]}")
+    check(b"burrowd: host_key_missing:" in rb[2], f"burrowd: {tail(rb[2])}")
+    return f"both refuse to start; sshd: {tail(rs[2], 120)!r}"
+
+
+@row
+def hostkey_mode():
+    rb, rs = start_only("hostkey-mode", lambda k: os.chmod(k, 0o644))
+    check(rs[0] != 0 and rb[0] == 1, f"sshd -t exit {rs[0]}, burrowd -t exit {rb[0]}")
+    check(b"burrowd: host_key_permissions:" in rb[2], f"burrowd: {tail(rb[2])}")
+    return f"both refuse a 0644 key; sshd: {tail(rs[2], 120)!r}"
+
+
+@row
+def hostkey_owner():
+    uid = serverlib.account().pw_uid
+    rb, rs = start_only("hostkey-owner", lambda k: os.chown(k, uid, -1))
+    check(rb[0] == 1 and b"burrowd: host_key_permissions:" in rb[2], f"burrowd -t exit {rb[0]}: {tail(rb[2])}")
+    return f"burrowd refuses another user's key file; sshd -t exit {rs[0]}"
+
+
+@row
+def hostkey_fingerprint():
+    with Pair(BIN, rundir("hostkey-fingerprint")) as p:
+        key = p.sshd.dir / "host_ed25519"
+        want = serverlib.run([serverlib.KEYGEN, "-l", "-f", str(key)])[1].decode().strip()
+        bk = serverlib.run([str(BIN.parent / "burrow-keygen"), "-l", "-f", str(key)])[1].decode().strip()
+        logged = [x for x in p.burrowd.log_text().splitlines() if "host key" in x]
+        record(p, f"ssh-keygen -l: {want}\nburrow-keygen -l: {bk}\nburrowd: {logged}\n")
+        check(logged and logged[0].endswith("host key " + want), f"burrowd's start line {logged} is not ssh-keygen -l's {want!r}")
+        check(bk == want, f"burrow-keygen -l {bk!r}, ssh-keygen -l {want!r}")
+        return want.split()[1]
+
+
+@row
+def hostkey_by_burrow_keygen():
+    d = rundir("hostkey-by-burrow-keygen")
+    d.mkdir(parents=True)
+    key = d / "host"
+    r = serverlib.run([str(BIN.parent / "burrow-keygen"), "-q", "-t", "ed25519", "-f", str(key), "-N", "", "-C", "h"])
+    check(r[0] == 0, show(r))
+    user = d / "id_user"
+    serverlib.keygen(user)
+    serverlib.install_keys([pathlib.Path(str(user) + ".pub").read_text()])
+    with serverlib.Burrowd(BIN, d / "burrowd", key) as b:
+        kh = d / "known_hosts"
+        kh.write_text(f"[127.0.0.1]:{b.port} " + " ".join(pathlib.Path(str(key) + ".pub").read_text().split()[:2]) + "\n")
+        r = serverlib.run([serverlib.SSH, "-F", "none", "-o", "BatchMode=yes", "-o", f"UserKnownHostsFile={kh}",
+                           "-i", str(user), "-p", str(b.port), "-l", USER, "127.0.0.1", "echo", "made"])
+        check(r[0] == 0 and r[1] == b"made\n", show(r))
+    return "a host key made by burrow-keygen serves"
+
+
+# ---- authentication -----------------------------------------------------------------
+@row
+def auth_accepted():
+    with Pair(BIN, rundir("auth-accepted")) as p:
+        rb, rs = p.both(["id", "-un"])
+        note = same(p, rb, rs, "an authorized key logs in")
+        check(rb[1] == b"burrowtest\n", f"id -un {rb[1]!r}")
+        return note
+
+
+@row
+def auth_burrow_key():
+    d = rundir("auth-burrow-key")
+    d.mkdir(parents=True)
+    key = d / "id_burrow"
+    r = serverlib.run([str(BIN.parent / "burrow-keygen"), "-q", "-t", "ed25519", "-f", str(key), "-N", "", "-C", "b"])
+    check(r[0] == 0, show(r))
+    with Pair(BIN, d / "pair", keys=[pathlib.Path(str(key) + ".pub").read_text()]) as p:
+        rb, rs = p.both(["true"], keys=[key])
+        return same(p, rb, rs, "a key made by burrow-keygen logs in")
+
+
+@row
+def auth_unlisted():
+    with Pair(BIN, rundir("auth-unlisted"), keys=[]) as p:
+        rb, rs = p.both(["true"])
+        note = same(p, rb, rs, "an unlisted key is refused")
+        outcome(p, "auth_key_unlisted")
+        return note
+
+
+def strict_row(name, **modes):
+    with Pair(BIN, rundir(name), install=False) as p:
+        serverlib.install_keys([pathlib.Path(str(p.key) + ".pub").read_text()], **modes)
+        rb, rs = p.both(["true"])
+        note = same(p, rb, rs, f"StrictModes: {modes}")
+        outcome(p, "auth_strict_modes")
+        return note
+
+
+@row
+def auth_ssh_dir_writable():
+    return strict_row("auth-ssh-dir-writable", dir_mode=0o777)
+
+
+@row
+def auth_home_group_writable():
+    return strict_row("auth-home-group-writable", home_mode=0o770)
+
+
+@row
+def auth_keys_file_writable():
+    return strict_row("auth-keys-file-writable", file_mode=0o666)
+
+
+@row
+def auth_keys_owner():
+    nobody = serverlib.account("nobody").pw_uid
+    return strict_row("auth-keys-owner", file_owner=nobody)
+
+
+@row
+def auth_tries():
+    with Pair(BIN, rundir("auth-tries"), keys=[]) as p:
+        keys = []
+        for i in range(7):
+            k = p.dir / f"id_other{i}"
+            serverlib.keygen(k)
+            keys.append(k)
+        rb, rs = p.both(["true"], keys=keys)
+        note = same(p, rb, rs, "seven unlisted keys, MaxAuthTries 6 both")
+        outcome(p, "auth_tries_exceeded")
+        return note
+
+
+@row
+def auth_grace():
+    with Pair(BIN, rundir("auth-grace"), sshd=["LoginGraceTime 2"], burrowd=["LoginGraceTime 2"]) as p:
+        # Each client's bytes are held after its first 1500 (its version
+        # line, KEXINIT and ECDH_INIT pass; the rest waits), so neither
+        # server sees a login before its grace time ends.
+        out = []
+        for port in (p.burrowd.port, p.sshd.port):
+            with serverlib.HoldRelay(port, 1500) as relay:
+                r = p.ssh(relay.port, ["true"], timeout=60)
+                out.append(serverlib.norm(r, relay.port))
+        rb, rs = out
+        note = same(p, rb, rs, "LoginGraceTime 2, the client held mid-login")
+        outcome(p, "grace_expired")
+        return note
+
+
+@row
+def auth_root():
+    with Pair(BIN, rundir("auth-root")) as p:
+        root = pathlib.Path("/root/.ssh")
+        root.mkdir(mode=0o700, exist_ok=True)
+        ak = root / "authorized_keys"
+        saved = ak.read_bytes() if ak.exists() else None
+        ak.write_text(pathlib.Path(str(p.key) + ".pub").read_text())
+        os.chmod(ak, 0o600)
+        try:
+            rb, rs = p.both(["true"], user="root")
+        finally:
+            if saved is None:
+                ak.unlink()
+            else:
+                ak.write_bytes(saved)
+        note = same(p, rb, rs, "root's own key listed; PermitRootLogin no")
+        outcome(p, "auth_root_refused")
+        return note
+
+
+@row
+def auth_methods():
+    with Pair(BIN, rundir("auth-methods")) as p:
+        rb, rs = p.both(["true"], opts=["-o", "PreferredAuthentications=password,keyboard-interactive"])
+        return same(p, rb, rs, "password and keyboard-interactive only")
+
+
+@row
+def auth_unknown_user():
+    with Pair(BIN, rundir("auth-unknown-user")) as p:
+        rb, rs = p.both(["true"], user="nosuchuser")
+        note = same(p, rb, rs, "no such account")
+        outcome(p, "auth_user_unknown")
+        return note
+
+
+@row
+def auth_forced_command():
+    with Pair(BIN, rundir("auth-forced-command"), install=False) as p:
+        line = 'command="echo forced: $SSH_ORIGINAL_COMMAND" ' + pathlib.Path(str(p.key) + ".pub").read_text()
+        serverlib.install_keys([line])
+        rb, rs = p.both(["echo", "asked"])
+        note = same(p, rb, rs, "authorized_keys command=")
+        check(rb[1] == b"forced: echo asked\n", f"stdout {rb[1]!r}")
+        return note
+
+
+@row
+def auth_option_unhonoured():
+    with Pair(BIN, rundir("auth-option-unhonoured"), install=False) as p:
+        pub = pathlib.Path(str(p.key) + ".pub").read_text()
+        serverlib.install_keys(['from="10.9.9.9" ' + pub, pub])
+        rb = serverlib.norm(p.ssh(p.burrowd.port, ["true"]), p.burrowd.port)
+        record(p, f"burrowd: {show(rb)}\n")
+        check(rb[0] == 255 and b"Permission denied (publickey)" in rb[2], show(rb))
+        outcome(p, "auth_key_unlisted")
+        return "a from= line burrowd cannot honour admits nothing, and the plain line after it is not consulted"
+
+
+# ---- the session ----------------------------------------------------------------------
+@row
+def session_cat_64m():
+    data = os.urandom(64 * 1024 * 1024)
+    with Pair(BIN, rundir("session-cat-64m")) as p:
+        rb, rs = p.both(["cat"], inp=data, timeout=600)
+        want = hashlib.sha256(data).hexdigest()
+        record(p, f"input {want}\nsshd {hashlib.sha256(rs[1]).hexdigest()} exit {rs[0]}\nburrowd {hashlib.sha256(rb[1]).hexdigest()} exit {rb[0]}\n")
+        check(rb[0] == 0 and rs[0] == 0, f"exits {rb[0]}, {rs[0]}: {tail(rb[2])}")
+        check(hashlib.sha256(rb[1]).hexdigest() == want, "burrowd's output is not the input")
+        check(rb[1] == rs[1] and lines(rb[2]) == lines(rs[2]), "burrowd's streams differ from sshd's")
+        return f"64 MiB, sha256 {want[:16]}…"
+
+
+@row
+def session_interleaved():
+    script = "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i >&2; done; printf 'tail\\0\\377'"
+    with Pair(BIN, rundir("session-interleaved")) as p:
+        rb, rs = p.both([script])
+        return same(p, rb, rs, "stdout and stderr interleaved")
+
+
+@row
+def session_exit_codes():
+    notes = []
+    with Pair(BIN, rundir("session-exit-codes")) as p:
+        for cmd in ("exit 0", "exit 1", "nosuchcommand-bw04"):
+            rb, rs = p.both([cmd])
+            notes.append(same(p, rb, rs, cmd))
+        return "; ".join(notes)
+
+
+@row
+def session_sigterm():
+    with Pair(BIN, rundir("session-sigterm")) as p:
+        rb, rs = p.both(["kill -TERM $$"])
+        note = same(p, rb, rs, "the command killed by SIGTERM")
+        got = p.burrowd.conn_lines()
+        check(any(" signal TERM" in x for x in got), f"burrowd's log has no signal TERM: {got[-2:]}")
+        return note
+
+
+@row
+def session_env():
+    with Pair(BIN, rundir("session-env")) as p:
+        env = {"GIT_PROTOCOL": "version=2", "LANG": "C.UTF-8"}
+        rb, rs = p.both(["env | LC_ALL=C sort"], opts=["-o", "SendEnv=GIT_PROTOCOL", "-o", "SendEnv=LANG"], env=env)
+        record(p, f"sshd:\n{rs[1].decode()}\nburrowd:\n{rb[1].decode()}\n")
+        def names(out, port):
+            got = {}
+            for l in out.decode().splitlines():
+                k, _, v = l.partition("=")
+                got[k] = re.sub(r" \d+ ", " N ", v).replace(str(port), "PORT")
+            return got
+        b, s = names(rb[1], p.burrowd.port), names(rs[1], p.sshd.port)
+        check(b.get("GIT_PROTOCOL") == "version=2", "GIT_PROTOCOL did not arrive through burrowd")
+        check("LANG" not in b, "LANG arrived through burrowd")
+        diff = sorted(k for k in set(b) | set(s) if b.get(k) != s.get(k))
+        named = {"SSH_CLIENT"}
+        check(set(diff) <= named, f"the environments differ beyond the named SSH_CLIENT: {[(k, b.get(k), s.get(k)) for k in diff]}")
+        return f"equal but {sorted(diff)}" if diff else "equal"
+
+
+@row
+def session_id():
+    with Pair(BIN, rundir("session-id")) as p:
+        rb, rs = p.both(["id; grep -E '^(Uid|Gid|Groups|CapEff|CapPrm|NoNewPrivs):' /proc/self/status"])
+        return same(p, rb, rs, "id and the credentials inside the session")
+
+
+@row
+def session_stdin_held():
+    data = bytes(i % 251 for i in range(8 * 1024 * 1024))
+    with Pair(BIN, rundir("session-stdin-held")) as p:
+        rb, rs = p.both(["sleep 2; cat"], inp=data, timeout=300)
+        check(rb[1] == data and rs[1] == data, "the bytes did not arrive whole")
+        return same(p, rb, rs, "8 MiB to a command that sleeps before it reads", stdout=False)
+
+
+@row
+def session_pty_refused():
+    with Pair(BIN, rundir("session-pty-refused")) as p:
+        rb, rs = p.both(["-tt", "echo", "ran"])
+        note = same(p, rb, rs, "ssh -tt host echo ran; PermitTTY no")
+        got = p.burrowd.conn_lines()
+        check(any("pty_refused" in x for x in got), f"burrowd's log does not name pty_refused: {got[-2:]}")
+        return note
+
+
+@row
+def session_shell_refused():
+    with Pair(BIN, rundir("session-shell-refused")) as p:
+        rb = serverlib.norm(p.ssh(p.burrowd.port, []), p.burrowd.port)
+        record(p, f"burrowd: {show(rb)}\n")
+        check(rb[0] == 255, show(rb))
+        check(b"shell request failed on channel 0" in rb[2], f"ssh did not print its shell refusal: {tail(rb[2])}")
+        got = p.burrowd.conn_lines()
+        check(any("shell_refused" in x for x in got), f"burrowd's log does not name shell_refused: {got[-2:]}")
+        return f"exit 255, {tail(rb[2], 120)!r} (sshd has no equivalent)"
+
+
+@row
+def session_subsystem_refused():
+    with Pair(BIN, rundir("session-subsystem-refused")) as p:
+        rb, rs = p.both(["-s", "sftp"])
+        return same(p, rb, rs, "ssh -s host sftp; no Subsystem")
+
+
+@row
+def session_x11_refused():
+    with Pair(BIN, rundir("session-x11-refused")) as p:
+        rb, rs = p.both(["-X", "echo", "ran"], env={"DISPLAY": ":99"})
+        return same(p, rb, rs, "ssh -X; X11Forwarding no")
+
+
+@row
+def session_agent_refused():
+    with Pair(BIN, rundir("session-agent-refused")) as p:
+        rb, rs = p.both(["-A", "echo", "ran"], env={"SSH_AUTH_SOCK": str(p.dir / "no-agent")})
+        return same(p, rb, rs, "ssh -A; AllowAgentForwarding no")
+
+
+@row
+def session_forward_refused():
+    notes = []
+    with Pair(BIN, rundir("session-forward-refused")) as p:
+        rb, rs = p.both(["-o", "ExitOnForwardFailure=yes", "-R", "127.0.0.1:0:127.0.0.1:9", "true"])
+        notes.append(same(p, rb, rs, "-R, DisableForwarding yes"))
+        rb, rs = p.both(["-W", "127.0.0.1:9"])
+        notes.append(same(p, rb, rs, "-W, DisableForwarding yes"))
+        return "; ".join(notes)
+
+
+# ---- limits and the log -----------------------------------------------------------------
+@row
+def limits_defaults():
+    d = rundir("limits-defaults")
+    d.mkdir(parents=True)
+    key = d / "host_ed25519"
+    serverlib.keygen(key, "host")
+    cfg = d / "burrowd_config"
+    cfg.write_text(f"HostKey {key}\n")
+    rb = serverlib.run([str(BIN), "-T", "-f", str(cfg)])
+    scfg = d / "sshd_config"
+    scfg.write_text(f"HostKey {key}\n")
+    rs = serverlib.run([serverlib.SSHD, "-T", "-f", str(scfg)])
+    keys = ("logingracetime", "maxauthtries", "maxstartups", "port")
+    pick = lambda out: {l.split()[0]: l for l in out.decode().splitlines() if l.split() and l.split()[0] in keys}
+    b, s = pick(rb[1]), pick(rs[1])
+    (d / "compare.txt").write_text(f"sshd -T: {s}\nburrowd -T: {b}\n")
+    check(rb[0] == 0 and rs[0] == 0, f"burrowd -T {show(rb)}; sshd -T {show(rs)}")
+    check(b == s, f"burrowd -T {b} differs from sshd -T {s}")
+    return ", ".join(s[k] for k in keys)
+
+
+@row
+def limits_startups():
+    import socket as so
+    with Pair(BIN, rundir("limits-startups"), sshd=["MaxStartups 3"], burrowd=["MaxStartups 3"]) as p:
+        out = []
+        for port in (p.burrowd.port, p.sshd.port):
+            held = []
+            for _ in range(3):
+                c = so.create_connection(("127.0.0.1", port))
+                c.settimeout(5)
+                c.recv(64)
+                held.append(c)
+            time.sleep(0.5)
+            r = serverlib.norm(p.ssh(port, ["true"], timeout=30), port)
+            for c in held:
+                c.close()
+            time.sleep(1.0)
+            r2 = p.ssh(port, ["true"], timeout=30)
+            out.append((r, r2))
+        (rb, rb2), (rs, rs2) = out
+        note = same(p, rb, rs, "a fourth connection past MaxStartups 3")
+        check(rb2[0] == 0 and rs2[0] == 0, f"after the held ones ended: burrowd {show(rb2)}, sshd {show(rs2)}")
+        outcome(p, "startups_exceeded")
+        return note
+
+
+@row
+def log_line():
+    marker = b"bw04-marker-" + os.urandom(8).hex().encode()
+    with Pair(BIN, rundir("log-line")) as p:
+        rb = p.ssh(p.burrowd.port, ["cat"], inp=marker)
+        check(rb[0] == 0 and rb[1] == marker, show(rb))
+        got = p.burrowd.conn_lines()
+        fp = serverlib.run([serverlib.KEYGEN, "-l", "-f", str(p.key) + ".pub"])[1].decode().split()[1]
+        log = p.burrowd.log_text()
+        record(p, log)
+        check(len(got) == 1, f"{len(got)} connection lines, wanted 1: {got}")
+        l = got[0]
+        check(re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ burrowd\[\d+\]: from 127\.0\.0\.1 port \d+ user burrowtest key "
+                       + re.escape(fp) + r" outcome ok status 0$", l), f"the line {l!r}")
+        check(marker.decode() not in log, "the session's data reached the log")
+        check("PRIVATE KEY" not in log and "b3BlbnNzaC1rZXktdjE" not in log, "private key text in the log")
+        return l.split(": ", 1)[1]
+
+
+# ---- privileges -----------------------------------------------------------------
+@row
+def priv_worker():
+    import socket as so
+    with Pair(BIN, rundir("priv-worker"), burrowd=["LoginGraceTime 20"]) as p:
+        c = so.create_connection(("127.0.0.1", p.burrowd.port))
+        c.settimeout(5)
+        c.recv(64)
+        time.sleep(0.5)
+        master = p.burrowd.proc.pid
+        ps = subprocess.run(["ps", "-e", "-o", "pid=,ppid=,user=,comm="], capture_output=True, text=True).stdout
+        procs = [l.split() for l in ps.splitlines() if l.split()]
+        mons = [x for x in procs if x[1] == str(master)]
+        kids = [x for x in procs if mons and x[1] == mons[0][0]]
+        c.close()
+        record(p, f"master {master}\nmonitors {mons}\nchildren {kids}\n")
+        check(len(mons) == 1 and mons[0][2] == "root", f"the monitor: {mons}")
+        users = sorted(x[2] for x in kids)
+        check(users == ["burrowd", "root"], f"the monitor's two children run as {users}, wanted burrowd (the worker) and root (the holder)")
+        return "monitor root; worker burrowd; holder root until it becomes the user"
+
+
+def keep_evidence(tier):
+    out = ROOT / "target" / "evidence" / f"server-{tier}"
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    kept = 0
+    for d in sorted(WORK.iterdir()) if WORK.exists() else []:
+        for src in list(d.rglob("*.log")) + list(d.rglob("compare.txt")):
+            dst = out / d.name / src.relative_to(d)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dst)
+            kept += 1
+    bad = []
+    for p in [out.parent, out] + sorted(out.rglob("*")):
+        os.chmod(p, 0o755 if p.is_dir() else 0o644)
+        if p.is_file():
+            b = p.read_bytes()
+            if b"PRIVATE KEY" in b or b"b3BlbnNzaC1rZXktdjE" in b:
+                bad.append(f"{p.relative_to(ROOT)} holds private key text")
+    for why in bad:
+        print(f"FAIL evidence {why}", flush=True)
+    if not bad:
+        print(f"check-server: {kept} evidence files in {out.relative_to(ROOT)}, readable, no key material")
+    return len(bad)
+
+
+def main():
+    global BIN
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--bin", required=True)
+    ap.add_argument("--only", nargs="*")
+    a = ap.parse_args()
+    BIN = pathlib.Path(a.bin).resolve()
+    for b in (BIN, BIN.parent / "burrow-keygen"):
+        if not b.exists():
+            print(f"FAIL setup no binary at {b}")
+            sys.exit(1)
+    oraclelib.require_oracle()
+    serverlib.ensure_accounts()
+    os.umask(0o022)
+    WORK.mkdir(parents=True, exist_ok=True)
+    os.chmod(WORK, 0o711)
+    fails = ran = 0
+    for fn in ROWS:
+        name = fn.__name__.replace("_", "-")
+        if a.only and name not in a.only:
+            continue
+        ran += 1
+        try:
+            note = fn()
+            print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+        except Fail as e:
+            fails += 1
+            print(f"FAIL {name} {e}", flush=True)
+        except Exception as e:  # a harness fault is a red row too, by name
+            fails += 1
+            print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
+    print(f"check-server: {ran} rows, {fails} failed, 0 SKIP")
+    fails += keep_evidence(BIN.parent.name)
+    sys.exit(min(fails, 100))
+
+
+if __name__ == "__main__":
+    main()
