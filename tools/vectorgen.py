@@ -230,7 +230,7 @@ def derive(K_mp, H, letter, session_id, n):
 
 # ---- the fixed inputs ---------------------------------------------------------
 BURROW_KEX = ["curve25519-sha256", "curve25519-sha256@libssh.org", "ext-info-c", "kex-strict-c-v00@openssh.com"]
-BURROWD_KEX = ["curve25519-sha256", "curve25519-sha256@libssh.org", "kex-strict-s-v00@openssh.com"]
+BURROWD_KEX = ["curve25519-sha256", "curve25519-sha256@libssh.org", "ext-info-s", "kex-strict-s-v00@openssh.com"]
 SERVER_KEX = ["mlkem768x25519-sha256", "sntrup761x25519-sha512", "sntrup761x25519-sha512@openssh.com",
               "curve25519-sha256", "curve25519-sha256@libssh.org", "ecdh-sha2-nistp256", "ecdh-sha2-nistp384",
               "ecdh-sha2-nistp521", "ext-info-s", "kex-strict-s-v00@openssh.com"]
@@ -367,7 +367,7 @@ def vectors():
     v["kh_hashed_name"] = ("|1|" + base64.b64encode(salt).decode() + "|" + base64.b64encode(mac).decode()).encode()
     # ---- B5: burrowd's side of the first exchange with burrow's client
     # (RFC 4253 §4.2, §7.1, §8, RFC 8731 §3, RFC 8709 §6): its
-    # identification, its KEXINIT (strict kex, no ext-info-s), the exchange
+    # identification, its KEXINIT (ext-info-s and strict kex), the exchange
     # hash it signs with the same host key and ephemeral scalar as above,
     # KEX_ECDH_REPLY; EXT_INFO (RFC 8308 §3.1 server-sig-algs, PROTOCOL §1.9
     # ping); RFC 4252's FAILURE and SUCCESS; RFC 4254's confirmation (window
