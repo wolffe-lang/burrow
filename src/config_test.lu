@@ -127,7 +127,9 @@ fn main() {
     // The global files: -o first, then the config; ~/ expanded; a
     // UserKnownHostsFile leaves them be.
     let gk = ready(["-o", "GlobalKnownHostsFile=/srv/kh ~/sys", "h.test", "x"], text)
-    assert(gk.refusal == "" && gk.known_hosts.len == 2 && gk.known_hosts[0] == "/home/u/.ssh/kh test")
+    assert(
+        gk.refusal == "" && gk.known_hosts.len == 2 && gk.known_hosts[0] == "/home/u/.ssh/kh test",
+    )
     assert(
         gk.global_known_hosts.len == 2 &&
             gk.global_known_hosts[0] == "/srv/kh" &&
@@ -214,5 +216,7 @@ fn main() {
     )
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
-    print("config: den's argv shapes, ssh's flags, Host and Match host, the global known_hosts, 21 refusals")
+    print(
+        "config: den's argv shapes, ssh's flags, Host and Match host, the global known_hosts, 21 refusals",
+    )
 }

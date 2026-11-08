@@ -216,5 +216,7 @@ fn main() {
     var x3 = opened()
     let _ = channel.shell_msg(mut x3)
     assert(why(mut x3, msg(100, 0)) == "shell_refused")
-    print("channel: vectorgen's messages, the shell request, both windows, both close orders, exits, 10 refusals")
+    print(
+        "channel: vectorgen's messages, the shell request, both windows, both close orders, exits, 10 refusals",
+    )
 }
