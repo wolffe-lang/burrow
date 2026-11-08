@@ -230,6 +230,7 @@ def derive(K_mp, H, letter, session_id, n):
 
 # ---- the fixed inputs ---------------------------------------------------------
 BURROW_KEX = ["curve25519-sha256", "curve25519-sha256@libssh.org", "ext-info-c", "kex-strict-c-v00@openssh.com"]
+BURROWD_KEX = ["curve25519-sha256", "curve25519-sha256@libssh.org", "kex-strict-s-v00@openssh.com"]
 SERVER_KEX = ["mlkem768x25519-sha256", "sntrup761x25519-sha512", "sntrup761x25519-sha512@openssh.com",
               "curve25519-sha256", "curve25519-sha256@libssh.org", "ecdh-sha2-nistp256", "ecdh-sha2-nistp384",
               "ecdh-sha2-nistp521", "ext-info-s", "kex-strict-s-v00@openssh.com"]
@@ -364,6 +365,32 @@ def vectors():
     mac = hmac.new(salt, b"[127.0.0.1]:2222", hashlib.sha1).digest()
     v["kh_salt"] = salt
     v["kh_hashed_name"] = ("|1|" + base64.b64encode(salt).decode() + "|" + base64.b64encode(mac).decode()).encode()
+    # ---- B5: burrowd's side of the first exchange with burrow's client
+    # (RFC 4253 §4.2, §7.1, §8, RFC 8731 §3, RFC 8709 §6): its
+    # identification, its KEXINIT (strict kex, no ext-info-s), the exchange
+    # hash it signs with the same host key and ephemeral scalar as above,
+    # KEX_ECDH_REPLY; EXT_INFO (RFC 8308 §3.1 server-sig-algs, PROTOCOL §1.9
+    # ping); RFC 4252's FAILURE and SUCCESS; RFC 4254's confirmation (window
+    # 0, as the pinned sshd confirms), exit-status, exit-signal and an open
+    # failure.
+    V_D = b"SSH-2.0-burrowd_0.0.0"
+    I_D = kexinit(bytes(range(0xF0, 0x100)), BURROWD_KEX, ["ssh-ed25519"], ["chacha20-poly1305@openssh.com"],
+                  ["hmac-sha2-256"], ["none"])
+    H_D = hashlib.sha256(string(V_C) + string(V_D) + string(I_C) + string(I_D) + string(K_S)
+                         + string(Q_C) + string(Q_S) + K_mp).digest()
+    sig_d = string(b"ssh-ed25519") + string(ed25519_sign(host_seed, H_D))
+    v.update(srv_v_s=V_D, srv_i_s=I_D, srv_secret=s_secret, srv_host_seed=host_seed, srv_h=H_D,
+             srv_sig_blob=sig_d, srv_ecdh_reply=bytes([31]) + string(K_S) + string(Q_S) + string(sig_d),
+             srv_ecdh_init=bytes([30]) + string(Q_C),
+             srv_ext_info=bytes([7]) + u32(2) + string(b"server-sig-algs") + string(b"ssh-ed25519")
+             + string(b"ping@openssh.com") + string(b"0"),
+             srv_auth_failure=bytes([51]) + namelist(["publickey"]) + b"\x00",
+             srv_auth_success=bytes([52]),
+             srv_chan_confirm=bytes([91]) + u32(0) + u32(0) + u32(0) + u32(32768),
+             srv_exit_status=bytes([98]) + u32(0) + string(b"exit-status") + b"\x00" + u32(127),
+             srv_exit_signal=bytes([98]) + u32(0) + string(b"exit-signal") + b"\x00" + string(b"TERM") + b"\x00"
+             + string(b"") + string(b""),
+             srv_open_failure=bytes([92]) + u32(1) + u32(1) + string(b"open failed") + string(b""))
     return v
 
 

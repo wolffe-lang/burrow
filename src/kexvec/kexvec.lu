@@ -240,6 +240,81 @@ pub fn signature() -> str {
     "e4b030a5f8473b9270e609b32088ea6be3c06e3aeb7438a1c05016af35ebf5d628a641eb1737c7a62dcadefc70ac67fb7b9b95b940e7ba26674660c9c2030d01"
 }
 
+/// The `srv_auth_failure` vector, as lowercase hex.
+pub fn srv_auth_failure() -> str {
+    "33000000097075626c69636b657900"
+}
+
+/// The `srv_auth_success` vector, as lowercase hex.
+pub fn srv_auth_success() -> str {
+    "34"
+}
+
+/// The `srv_chan_confirm` vector, as lowercase hex.
+pub fn srv_chan_confirm() -> str {
+    "5b00000000000000000000000000008000"
+}
+
+/// The `srv_ecdh_init` vector, as lowercase hex.
+pub fn srv_ecdh_init() -> str {
+    "1e000000200186cc17777a0745c1ba651768081aeb3ab2b261bf753806e1030be29efa7c4b"
+}
+
+/// The `srv_ecdh_reply` vector, as lowercase hex.
+pub fn srv_ecdh_reply() -> str {
+    "1f000000330000000b7373682d6564323535313900000020fc0a1279f1e4292b2d00c84cf45f8fb662c88434d4f56b49166d4130d3a9abae000000202e53f3d75c8b6f36c47006df0486aa183d15d4347cd886618d3a65c14365832b000000530000000b7373682d6564323535313900000040be9613beccd6904737932a40e11daec994b112f1a8e4db6de395ae4ab115b491f87226f59546c8f0f73a71dad969ba00eb76ab1d17cd8e2cc754d6ccc2e2f700"
+}
+
+/// The `srv_exit_signal` vector, as lowercase hex.
+pub fn srv_exit_signal() -> str {
+    "62000000000000000b657869742d7369676e616c00000000045445524d000000000000000000"
+}
+
+/// The `srv_exit_status` vector, as lowercase hex.
+pub fn srv_exit_status() -> str {
+    "62000000000000000b657869742d737461747573000000007f"
+}
+
+/// The `srv_ext_info` vector, as lowercase hex.
+pub fn srv_ext_info() -> str {
+    "07000000020000000f7365727665722d7369672d616c67730000000b7373682d656432353531390000001070696e67406f70656e7373682e636f6d0000000130"
+}
+
+/// The `srv_h` vector, as lowercase hex.
+pub fn srv_h() -> str {
+    "bb6df95d6abb9646607f7c2b4f93f54aabe556759aa6048414af05c50e44a85f"
+}
+
+/// The `srv_host_seed` vector, as lowercase hex.
+pub fn srv_host_seed() -> str {
+    "ba45e727d65afa75dc98d9ebc7cd5d2d50366d7b062be92b41111006d2e3cf2b"
+}
+
+/// The `srv_i_s` vector, as lowercase hex.
+pub fn srv_i_s() -> str {
+    "14f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff0000004b637572766532353531392d7368613235362c637572766532353531392d736861323536406c69627373682e6f72672c6b65782d7374726963742d732d763030406f70656e7373682e636f6d0000000b7373682d656432353531390000001d63686163686132302d706f6c7931333035406f70656e7373682e636f6d0000001d63686163686132302d706f6c7931333035406f70656e7373682e636f6d0000000d686d61632d736861322d3235360000000d686d61632d736861322d323536000000046e6f6e65000000046e6f6e6500000000000000000000000000"
+}
+
+/// The `srv_open_failure` vector, as lowercase hex.
+pub fn srv_open_failure() -> str {
+    "5c00000001000000010000000b6f70656e206661696c656400000000"
+}
+
+/// The `srv_secret` vector, as lowercase hex.
+pub fn srv_secret() -> str {
+    "c1d1dec471757480a99de60917fdbead5fa479648e8fa1318a6fe44f15dce5fd"
+}
+
+/// The `srv_sig_blob` vector, as lowercase hex.
+pub fn srv_sig_blob() -> str {
+    "0000000b7373682d6564323535313900000040be9613beccd6904737932a40e11daec994b112f1a8e4db6de395ae4ab115b491f87226f59546c8f0f73a71dad969ba00eb76ab1d17cd8e2cc754d6ccc2e2f700"
+}
+
+/// The `srv_v_s` vector, as lowercase hex.
+pub fn srv_v_s() -> str {
+    "5353482d322e302d627572726f77645f302e302e30"
+}
+
 /// The `topbit_mpint` vector, as lowercase hex.
 pub fn topbit_mpint() -> str {
     "000000210096503b505b3fe1796c0804866d7799f13a526da8be410ec483c5013bc84d9e79"
