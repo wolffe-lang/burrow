@@ -403,6 +403,28 @@ burrow passes the command as `ssh` does and changed nothing for it.
 the pin to the live fixture, read only: the old form is refused, and den's
 argv is accepted through both clients.
 
+## burrowd, measured (B5)
+
+`tools/measure-server`, release burrowd against the pinned `sshd` and the
+one-process build of burrowd (a row program), through the pinned `ssh`, one
+host key and one account, interleaved: five rounds of 20 logins each
+(connect to the first byte of `echo`), three of 64 MiB through `cat`, the
+minimum of each; the server's CPU is the listener's reaped descendants'.
+On the Linux x86-64 desktop's six-CPU block, with nothing beside it:
+
+| measure | burrowd | `sshd` | burrowd / `sshd` | margin |
+|---|---|---|---|---|
+| connect to the first byte, wall | 80.1 ms | 109.6 ms | 0.73x | 6x |
+| server CPU per login | 6.0 ms | 10.5 ms | 0.57x | 25x |
+| 64 MiB through `cat`, wall | 1.31 s | 0.83 s | 1.58x | 12x |
+| 64 MiB through `cat`, server CPU | 1.22 s | 0.47 s | 2.60x | 50x |
+
+The one-process build: 79.6 ms to the first byte and 5.0 ms of CPU a
+login, so the separate processes cost 1.01x in wall time and 1.20x in CPU
+(five forks and a few pipe round trips a login). `sshd` re-executes itself
+for every connection, which burrowd, a fork of its listener, does not; the
+transfer's cost is burrowd's ChaCha20 and Poly1305 in checked `int` code.
+
 ## PAX
 
 `tools/build --static` makes `target/static/burrow` and
