@@ -107,7 +107,8 @@ another user than root or the running user), `host_key_unreadable`,
 does not take), `option_unknown`, `option_unsupported`, `usage`,
 `listen_failed`, `privileges_unsupported` (root where the user cannot be
 changed: macOS) and `preauth_user_missing` (root without the `burrowd`
-account).
+account); `config_unsupported` too for `PasswordAuthentication yes` when
+burrowd is not root (px112: only root reads `/etc/shadow`).
 
 **Per connection:**
 
@@ -119,7 +120,9 @@ account).
 | `no_common_kex`, `no_common_hostkey`, `no_common_cipher` | negotiation | the client finds it first: `Unable to negotiate with … Their offer: …`, byte for byte as against `sshd` |
 | the transport's names (`packet_too_long`, `message_unexpected`, `mac_mismatch` and the rest above) | the shared transport, against a scripted client | DISCONNECT with the client's codes |
 | `service_refused` | a service other than `ssh-userauth` | |
-| `auth_method_refused` | `none`, `password`, `keyboard-interactive`, `hostbased` (named, not final) | `Permission denied (publickey).` once `ssh` has spent its methods |
+| `auth_method_refused` | `none`, `keyboard-interactive`, `hostbased`, and `password` while `PasswordAuthentication` is `no` (named, not final) | `Permission denied (publickey).` once `ssh` has spent its methods |
+| `auth_account_locked`, `auth_account_expired` | (px112, every method, `sshd(8)`'s rule) the account's `/etc/shadow` password starts with `!`; its expiry date, or its password's inactive period, has passed | `user@127.0.0.1: Permission denied (publickey,password).` |
+| `auth_password_bad`, `auth_password_unset`, `auth_password_empty`, `auth_password_unsupported`, `auth_password_over_cap`, `auth_password_expired`, `auth_password_too_long`, `auth_password_change_refused` | (px112, `PasswordAuthentication yes`) the wrong password; no password (`*`, no line); an empty field (`PermitEmptyPasswords no`); a crypt(5) method other than `$7$`; a `$7$` string over the shipped cost; field 3 `0` or the maximum age past (a key still logs in); over 1024 bytes; RFC 4252 §8's change request. Each after the same one hash, but the last two, which run none | `Permission denied, please try again.`, then `user@127.0.0.1: Permission denied (publickey,password).` |
 | `auth_key_unlisted`, `auth_user_unknown`, `auth_root_refused`, `auth_strict_modes`, `auth_key_unsupported` | no line admits the key; no such account; root, always; StrictModes; a key that is not `ssh-ed25519`. Alike to the client, so no account is disclosed | `user@127.0.0.1: Permission denied (publickey).` |
 | `auth_sig_bad` | a signature that does not verify over the monitor's own session identifier: another session's, another key's | (a scripted client: USERAUTH_FAILURE) |
 | `auth_tries_exceeded` | MaxAuthTries | `Received disconnect from … :2: Too many authentication failures` |
@@ -234,10 +237,11 @@ process that signs with it:
 | process | runs as | holds | does |
 |---|---|---|---|
 | listener | root | no private key (a forked child checks the key at start and exits) | accepts, counts unauthenticated connections from a pipe per monitor (MaxStartups), reaps |
-| monitor, one per connection | root | the host key, read after its two children are forked; the session identifier | signs exchange hashes; reads passwd, group and `authorized_keys`; checks StrictModes, the key and the signature; counts tries; writes the log line |
+| monitor, one per connection | root | the host key, read after its two children are forked; the session identifier; `/etc/shadow`'s text (px112) | signs exchange hashes; reads passwd, group, shadow and `authorized_keys`; checks the account's lock, StrictModes, the key and the signature; counts tries; writes the log line |
 | worker | the `burrowd` account, cwd `/` | the connection, before authentication | the version, KEXINIT, ECDH, the service and USERAUTH requests, asking the monitor over bounded frames; then hands the transport's state to the monitor and exits |
 | holder, then the session | root holding nothing, then the user's uid, gid and groups with no way back | the transport's state, after authentication | the session channel; asks the monitor to sign at a re-exchange |
 | the command | the user | its three pipes | the user's shell with `-c` |
+| checker, one password (px112) | root, forked by the monitor, one at a time across the server (a one-byte token the listener keeps in a pipe, put back by the listener when a monitor ends holding it) | the monitor's memory, the password and the field | scrypt at the field's cost (at most N = 2^17, r = 8, p = 1: 128 MiB), exits 0 on a match; the memory leaves with it |
 
 The session can ask the monitor to sign an exchange hash for as long as it
 lives, as any server whose post-authentication process re-keys without the
@@ -466,6 +470,12 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   a process's user there), and refuses to start as root.
 - burrowd runs commands only: no shell, pty, subsystem, X11, agent or
   forwarding, each refused by name.
+- burrowd checks crypt(5)'s `$7$` alone (wolf-std's scrypt): a stock Linux
+  account's `$y$` (yescrypt) or `$6$` password is refused by name where
+  `sshd` checks it. burrowd changes no password (no
+  SSH_MSG_USERAUTH_PASSWD_CHANGEREQ): an expired one is changed at the
+  console. wolf strings cannot be wiped, so a password stays in the worker's
+  and the monitor's memory until each exits.
 
 - wolf-std has no SHA-1 (wolf-std#131): `src/sha1` is burrow's own, for
   hashed known_hosts names only, until it lands.
