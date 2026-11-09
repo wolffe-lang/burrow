@@ -81,6 +81,14 @@ pub fn k_key() -> int {
     12
 }
 
+/// The frame kind `password` [user, kind, password] (px112): the worker
+/// to the monitor; kind `check` (decide this password), `change` (a
+/// change request, refused) or `long` (over the length burrowd hashes,
+/// refused; the password field empty). The answer is `answer`.
+pub fn k_password() -> int {
+    13
+}
+
 /// How a pipe fails: its end (or a frame over `max_frame`), or a frame
 /// that does not parse.
 pub error Broken = {closed, malformed}
