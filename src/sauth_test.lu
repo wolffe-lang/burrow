@@ -24,6 +24,9 @@ fn req(p: List[byte]) -> sauth.Request {
             alg: "",
             blob: List[byte](),
             sig: List[byte](),
+            change: false,
+            secret: List[byte](),
+            new_secret: List[byte](),
         }
     }
 }
@@ -34,6 +37,14 @@ fn head(user: str, service: str, method: str) -> List[byte] {
     wire.put_text(mut p, user)
     wire.put_text(mut p, service)
     wire.put_text(mut p, method)
+    p
+}
+
+// px112: a password request (RFC 4252 §8): FALSE and the password.
+fn password_req(user: str, password: str) -> List[byte] {
+    var p = head(user, "ssh-connection", "password")
+    wire.put_bool(mut p, false)
+    wire.put_string(mut p, wire.bytes_of(password))
     p
 }
 
@@ -68,7 +79,7 @@ fn main() {
     assert(decided(mut s, req(head("burrowtest", "ssh-connection", "none"))) == "fail")
     assert(decided(mut s, q) == "query")
     assert(decided(mut s, sr) == "verify")
-    assert(decided(mut s, req(head("burrowtest", "ssh-connection", "password"))) == "fail")
+    assert(decided(mut s, req(password_req("burrowtest", "unit-password"))) == "fail")
     assert(decided(mut s, req(head("root", "ssh-connection", "none"))) == "auth_changed")
     var s2 = sauth.start(6)
     assert(decided(mut s2, req(head("u", "ssh-userauth", "none"))) == "fail")
@@ -147,4 +158,51 @@ fn main() {
             back.home == a.home &&
             back.groups.len == a.groups.len,
     )
+    // px112: the password method. A check parses to its bytes; a change
+    // (TRUE, the old and the new) is marked; anything after them, or a
+    // missing one, is malformed.
+    let pq = req(password_req("burrowtest", "unit-password"))
+    assert(pq.method == "password" && !pq.change)
+    assert(wire.hex(pq.secret) == wire.hex(wire.bytes_of("unit-password")))
+    var chg = head("burrowtest", "ssh-connection", "password")
+    wire.put_bool(mut chg, true)
+    wire.put_string(mut chg, wire.bytes_of("old-one"))
+    wire.put_string(mut chg, wire.bytes_of("new-one"))
+    let pc = req(chg)
+    assert(pc.change && wire.hex(pc.new_secret) == wire.hex(wire.bytes_of("new-one")))
+    var extra = password_req("burrowtest", "unit-password")
+    (mut extra).push(0 as byte)
+    var short = head("burrowtest", "ssh-connection", "password")
+    wire.put_bool(mut short, false)
+    for b in [extra, short] {
+        var bad_pw = "none"
+        let _ = sauth.parse(b) else |e| {
+            bad_pw = "{e}"
+            copy pq
+        }
+        assert(bad_pw == "malformed")
+    }
+    // Passwords off (burrowd's default): a password request fails, named.
+    var off = sauth.start(6)
+    assert(decided(mut off, pq) == "fail")
+    assert(off.refused.len == 1 && off.refused[0] == "password")
+    assert(wire.hex(sauth.failure_for(off)) == wire.hex(sauth.failure_msg()))
+    // On: a check goes to the monitor, a change and an overlong password
+    // are refused by name, and the methods list says password too.
+    var on = sauth.start_with(6, true)
+    assert(decided(mut on, pq) == "password")
+    assert(decided(mut on, pc) == "change")
+    var long = ""
+    var k = 0
+    while k < 1025 {
+        long += "x"
+        k += 1
+    }
+    assert(decided(mut on, req(password_req("burrowtest", long))) == "long")
+    assert(decided(mut on, req(password_req("burrowtest", long[0..1024]))) == "password")
+    var f = List[byte]()
+    wire.put_u8(mut f, 51)
+    wire.put_text(mut f, "publickey,password")
+    wire.put_bool(mut f, false)
+    assert(wire.hex(sauth.failure_for(on)) == wire.hex(f))
 }
