@@ -295,7 +295,8 @@ send a version line. `tools/check-server-git` clones, fetches and pushes
 (and has a push refused) through burrowd and through `sshd`, and compares
 the repositories. `tools/measure-server` times connect to first byte and
 `cat` through burrowd, `sshd` and a one-process build of burrowd (a row
-program, never installed), interleaved, against stated margins.
+program, never installed), and a password login at PAX's cost through
+burrowd and `sshd`, interleaved, against stated margins.
 `tools/check-server-local` runs burrowd as the invoking user with burrow as
 the client, on macOS and anywhere without the pinned container.
 
