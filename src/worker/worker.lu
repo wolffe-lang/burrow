@@ -7,8 +7,10 @@
 //! asking the monitor, over two pipes, what only the monitor may decide:
 //! whether a key is authorized for the user (`query`) and whether a
 //! signature verifies over the session identifier the monitor signed
-//! (`verify`). It holds no host key, reads no user's file, and cannot
-//! become anyone.
+//! (`verify`), and, with passwords on (px112), whether a password opens
+//! the account (`password`: the worker parses it and hands it over; the
+//! monitor alone reads /etc/shadow). It holds no host key, reads no
+//! user's file, and cannot become anyone.
 
 use std.fs
 use mon
@@ -67,6 +69,11 @@ fn ask(
     fields: List[List[byte]],
     session_id: List[byte],
 ) -> bool ! refuse.Refusal {
+    if a.local && kind == pipe.k_password() {
+        // The one-process row program (R-bw04-2's (B), measurement only)
+        // checks no password.
+        return false
+    }
     if a.local {
         let user = str_from_utf8(fields[0]) else ""
         let acct = mon.account_for(a.root, a.passwd, a.group, user)
@@ -137,6 +144,15 @@ pub fn authenticate(
                 transport.send(mut c, sauth.pk_ok_msg(q.alg, q.blob))?
                 continue
             }
+        } else if d == "password" || d == "change" || d == "long" {
+            var f = List[List[byte]]()
+            (mut f).push(wire.bytes_of(q.user))
+            (mut f).push(wire.bytes_of(if d == "password" then "check" else d))
+            (mut f).push(if d == "password" then copy q.secret else List[byte]())
+            if ask(mut a, pipe.k_password(), f, c.session_id)? {
+                transport.send(mut c, sauth.success_msg())?
+                return Authed { user: q.user, blob: List[byte](), command: "", forced: false }
+            }
         } else if d == "verify" {
             var f = List[List[byte]]()
             (mut f).push(wire.bytes_of(q.user))
@@ -154,6 +170,6 @@ pub fn authenticate(
         }
         transport.note(mut c, "{st.failures + 1} failed attempts, MaxAuthTries {st.max_tries}")
         sauth.failed(mut st, q)?
-        transport.send(mut c, sauth.failure_msg())?
+        transport.send(mut c, sauth.failure_for(st))?
     }
 }
