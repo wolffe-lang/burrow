@@ -13,6 +13,7 @@ directory: rows print fingerprints and public lines only.
 import os
 import pathlib
 import pwd
+import secrets
 import shutil
 import socket
 import subprocess
@@ -226,6 +227,122 @@ class Pair:
         rb = self.ssh(self.burrowd.port, args, **kw)
         rs = self.ssh(self.sshd.port, args, **kw)
         return norm(rb, self.burrowd.port), norm(rs, self.sshd.port)
+
+    def ssh_pw(self, port, args, answers, user=USER, opts=(), delay=None, timeout=120, inp=None):
+        """The pinned ssh logging in with a password (px112): no key, no
+        batch mode, `answers` given one per prompt by the askpass program
+        (the last again past the end), from its environment only."""
+        self.asked = getattr(self, "asked", 0) + 1
+        count = self.dir / f"askpass-count-{self.asked}"
+        env = askpass_env(self.dir, count, answers, delay)
+        argv = [SSH, "-F", "none", "-o", "BatchMode=no", "-o", "IdentitiesOnly=yes", "-o",
+                f"UserKnownHostsFile={self.kh}", "-o", "StrictHostKeyChecking=yes", "-o",
+                "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no"]
+        argv += list(opts) + ["-p", str(port), "-l", user, "127.0.0.1"] + list(args)
+        return run(argv, inp=inp, env=self.env(env), timeout=timeout)
+
+    def both_pw(self, args, answers, **kw):
+        """`ssh_pw` through burrowd, then sshd, each port written PORT."""
+        rb = self.ssh_pw(self.burrowd.port, args, answers, **kw)
+        rs = self.ssh_pw(self.sshd.port, args, answers, **kw)
+        return norm(rb, self.burrowd.port), norm(rs, self.sshd.port)
+
+
+# ---- passwords (px112) -------------------------------------------------------------
+# A row's passwords are made per run (secrets) and reach the client only through
+# the askpass program's environment, and /etc/shadow only as mkpw's `$7$` string
+# (the password on mkpw's standard input) or chpasswd's: never a file, an
+# argument vector, a log or a record. `leaks` holds every place a row keeps to
+# them, in memory, and names a hit without printing it.
+ASKPASS = """#!/bin/sh
+# The password rows' askpass (px112): the Nth answer from the environment,
+# BURROW_ROW_PW_<N>, else BURROW_ROW_PW_LAST; the count, which holds no
+# secret, in the file BURROW_ROW_COUNT names; BURROW_ROW_DELAY seconds first.
+c=$(cat "$BURROW_ROW_COUNT" 2>/dev/null || echo 0)
+c=$((c + 1))
+echo "$c" > "$BURROW_ROW_COUNT"
+[ -z "${BURROW_ROW_DELAY:-}" ] || sleep "$BURROW_ROW_DELAY"
+eval "v=\\${BURROW_ROW_PW_$c-\\$BURROW_ROW_PW_LAST}"
+printf '%s\\n' "$v"
+"""
+
+
+def new_password():
+    return secrets.token_urlsafe(18)
+
+
+def askpass_env(run_dir, count, answers, delay=None):
+    prog = pathlib.Path(run_dir) / "askpass"
+    if not prog.exists():
+        prog.write_text(ASKPASS)
+        os.chmod(prog, 0o755)
+    env = {"SSH_ASKPASS": str(prog), "SSH_ASKPASS_REQUIRE": "force", "BURROW_ROW_COUNT": str(count),
+           "BURROW_ROW_PW_LAST": answers[-1]}
+    for i, a in enumerate(answers, 1):
+        env[f"BURROW_ROW_PW_{i}"] = a
+    if delay:
+        env["BURROW_ROW_DELAY"] = str(delay)
+    return env
+
+
+def make_hash(mkpw, password, cost=(14, 8, 1)):
+    """mkpw's `$7$` string for `password` (given on its standard input)."""
+    r = subprocess.run([str(mkpw)] + [str(x) for x in cost], input=(password + "\n").encode(),
+                       capture_output=True, timeout=900)
+    if r.returncode != 0:
+        raise RuntimeError(f"mkpw exited {r.returncode}: {r.stderr[-300:]!r}")
+    return r.stdout.decode().strip()
+
+
+class Shadow:
+    """/etc/shadow as the row found it, written back in place (its mode and
+    owner kept) when the row ends; `set` gives one account a line."""
+
+    PATH = pathlib.Path("/etc/shadow")
+
+    def __enter__(self):
+        self.saved = self.PATH.read_bytes()
+        return self
+
+    def __exit__(self, *exc):
+        with open(self.PATH, "r+b") as f:
+            f.write(self.saved)
+            f.truncate()
+
+    def set(self, user, field, last=None, maxage="99999", inactive="", expire="", drop=False):
+        """`user`'s line: its password field `field`, the last change `last`
+        (today when None), the maximum age, the inactive days and the expiry
+        as shadow(5) has them; `drop` leaves the account no line at all."""
+        today = str(int(time.time()) // 86400)
+        out = []
+        for line in self.PATH.read_text().splitlines():
+            if line.split(":", 1)[0] == user:
+                continue
+            out.append(line)
+        if not drop:
+            out.append(":".join([user, field, today if last is None else str(last), "0", maxage, "7", inactive,
+                                 expire, ""]))
+        with open(self.PATH, "r+") as f:
+            f.write("\n".join(out) + "\n")
+            f.truncate()
+
+    def chpasswd(self, user, password):
+        """The image's own chpasswd (Ubuntu's default method), the password on
+        its standard input."""
+        r = subprocess.run(["chpasswd"], input=f"{user}:{password}\n".encode(), capture_output=True, timeout=60)
+        if r.returncode != 0:
+            raise RuntimeError(f"chpasswd exited {r.returncode}: {r.stderr[-300:]!r}")
+
+
+def leaks(passwords, places):
+    """The names of `places` ((name, bytes or str)) holding any of
+    `passwords`, compared in memory; nothing is printed."""
+    hits = []
+    for name, data in places:
+        b = data.encode() if isinstance(data, str) else data
+        if any(pw.encode() in b for pw in passwords if pw):
+            hits.append(name)
+    return hits
 
 
 def norm(r, port):
