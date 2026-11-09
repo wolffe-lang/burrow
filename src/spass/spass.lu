@@ -1,0 +1,154 @@
+//! member: true
+//!
+//! burrow.spass — burrowd's passwords (px112): an account's `/etc/shadow`
+//! line read as shadow(5) has it, what it says about the account and its
+//! password, and the check, with no I/O. The monitor reads the file (as
+//! root) and decides with these; the check itself runs in a short-lived
+//! child of the monitor (src/server), one at a time across the server.
+//!
+//! **The account** (`account_state`, every method: `sshd(8)`, "an account
+//! is not accessible if it is locked ... a leading `!` on most Linuxes"):
+//! `auth_account_locked` for a password field starting `!`;
+//! `auth_account_expired` for an account expiry (field 8, a day after 0)
+//! before today, or a password expired for longer than its inactivity
+//! period (fields 3, 5 and 7 all set: shadow(5)'s "no login is possible
+//! for the user"). An account with no line is neither.
+//!
+//! **The password** (`password_state`, the `password` method alone):
+//! `auth_password_unset` (no line, or a field such as `*` that no password
+//! opens), `auth_password_empty` (an empty field: `PermitEmptyPasswords
+//! no`), `auth_password_unsupported` (any crypt(5) method but `$7$`, or a
+//! malformed string), `auth_password_over_cap` (a `$7$` string dearer than
+//! `cap()`), `auth_password_expired` (field 3 `0`, or field 3 plus field 5
+//! before today: RFC 4252 §8, "the server MUST NOT allow an expired
+//! password to be used"; a key still logs in, as shadow(5) has it).
+//!
+//! **The cap** is PAX's shipped cost, N = 2^17, r = 8, p = 1: wolf-std's
+//! `scrypt.memory` of it, 134,238,240 octets. **The dummy** is a `$7$`
+//! string at that cost that no password is known to open: a refused
+//! account's check runs against it, so a FAILURE takes the same time
+//! whether or not the account exists or has a password burrowd can check.
+//!
+//! ct: the comparison of the derived key is wolf-std's (constant time over
+//! its 32 octets); scrypt itself indexes memory by secret state, by design.
+
+use std.x.crypto.passwd
+use std.x.crypto.scrypt
+
+/// The longest password burrowd hashes, in bytes.
+pub fn max_password() -> int {
+    1024
+}
+
+/// The most memory one check may take: PAX's shipped cost.
+pub fn cap() -> int {
+    scrypt.memory(17, 8, 1, 32)
+}
+
+/// A `$7$` string at the shipped cost whose password nobody knows (made
+/// once by Ubuntu 24.04's crypt from a 22-character random salt and a
+/// 32-octet random password, the password discarded), for the equal-work
+/// check.
+pub fn dummy() -> str {
+    "$7$F6..../....BQr6i/a/nIfhjRwydgOCq8$./j8In74YIDktMvvo2xy/Y8chbiKumfEnBi4QR85FoA"
+}
+
+/// One account's line: whether there is one, and its fields as text.
+pub struct Entry {
+    found: bool,
+    field: str,
+    last: str,
+    max: str,
+    inactive: str,
+    expire: str,
+}
+
+/// `user`'s line in `text` (an `/etc/shadow`); a line with other than nine
+/// fields is no line.
+pub fn entry(text: str, user: str) -> Entry {
+    for line in text.split("\n") {
+        let f = line.split(":")
+        if f.len != 9 || f[0] != user {
+            continue
+        }
+        return Entry { found: true, field: f[1], last: f[2], max: f[4], inactive: f[6], expire: f[7] }
+    }
+    Entry { found: false, field: "", last: "", max: "", inactive: "", expire: "" }
+}
+
+// A field's day count, or -1 when it is empty or not one.
+fn day(s: str) -> int {
+    if s.len == 0 || s.len > 9 {
+        return -1
+    }
+    var n = 0
+    for b in s.bytes() {
+        let d = b as int - 48
+        if d < 0 || d > 9 {
+            return -1
+        }
+        n = n * 10 + d
+    }
+    n
+}
+
+/// "" when the account may log in by any method, else why not.
+pub fn account_state(e: Entry, today: int) -> str {
+    if !e.found {
+        return ""
+    }
+    if e.field.starts_with("!") {
+        return "auth_account_locked"
+    }
+    let expire = day(e.expire)
+    if expire > 0 && expire < today {
+        return "auth_account_expired"
+    }
+    let last = day(e.last)
+    let max = day(e.max)
+    let inactive = day(e.inactive)
+    if last > 0 && max >= 0 && inactive >= 0 && last + max + inactive < today {
+        return "auth_account_expired"
+    }
+    ""
+}
+
+/// "" when the account's password field is one burrowd can check, else
+/// why not (the account's own state is `account_state`'s).
+pub fn password_state(e: Entry, today: int, limit: int) -> str {
+    if !e.found {
+        return "auth_password_unset"
+    }
+    if e.field.len == 0 {
+        return "auth_password_empty"
+    }
+    let h = passwd.parse(e.field) else |err| match err {
+        empty => {
+            return "auth_password_empty"
+        },
+        locked => {
+            return "auth_password_unset"
+        },
+        _ => {
+            return "auth_password_unsupported"
+        },
+    }
+    if scrypt.memory(h.cost.n_log2, h.cost.r, h.cost.p, 32) > limit {
+        return "auth_password_over_cap"
+    }
+    let last = day(e.last)
+    if e.last == "0" {
+        return "auth_password_expired"
+    }
+    let max = day(e.max)
+    if last > 0 && max >= 0 && last + max < today {
+        return "auth_password_expired"
+    }
+    ""
+}
+
+/// Whether `password` opens `field` at no more than `limit`'s memory. A
+/// field the parser refuses opens nothing.
+pub fn check(password: List[byte], field: str, limit: int) -> bool {
+    passwd.verify_capped(password, field, limit) else false
+}
