@@ -549,9 +549,13 @@ def password_grace():
     with serverlib.Shadow() as sh, Pair(BIN, rundir("password-grace"), sshd=PW_SSHD + ["LoginGraceTime 2"],
                                         burrowd=PW_BURROWD + ["LoginGraceTime 2"]) as p:
         sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
-        rb, rs = p.both_pw(["true"], [pw], delay=5, timeout=60)
+        # The password comes 12 s after the connection, 10 s past the grace. At 5 s the pinned
+        # sshd sometimes let it in (its grace ended the session late: 2 of 8 tries under load on
+        # two busy CPUs, 0 of 8 at 10 s; both tiers of one trunk run), while burrowd closed every
+        # one at the grace.
+        rb, rs = p.both_pw(["true"], [pw], delay=12, timeout=60)
         check(rs[0] != -999 and rb[0] != -999, f"ssh did not end: burrowd {show(rb)}, sshd {show(rs)}")
-        note = same(p, rb, rs, "LoginGraceTime 2, the password typed after 5 s")
+        note = same(p, rb, rs, "LoginGraceTime 2, the password typed after 12 s")
         check(rb[0] == 255, show(rb))
         outcome(p, "grace_expired")
         no_leak(p, [pw], rb, rs)
