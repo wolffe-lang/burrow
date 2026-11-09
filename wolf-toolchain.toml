@@ -1,7 +1,11 @@
 # bw01 (2026-11-05): wolf release 435500500 and lupin release 433110898,
 # read twice from the release API, agreeing on asset ids and digests.
-# Whole release archives, including libwolf_rt.a; the std pin is the
-# commit the wolf 0.2.37 archive bundles (its std/STD-REV).
+# Whole release archives, including libwolf_rt.a. The std pin was the
+# commit the wolf 0.2.37 archive bundles (its std/STD-REV, 5b3a5994)
+# until px112 (2026-11-09) moved it to wolf-std trunk 2411d868, sc80's
+# merge, for std.x.crypto.passwd and std.x.crypto.scrypt (burrowd's
+# password check). No wolf release bundles them yet; tools/fetch-toolchain
+# stages the std at this pin either way.
 
 [wolf]
 version = "0.2.37"
@@ -23,4 +27,4 @@ aarch64-unknown-linux-gnu = "73bdf749f5c9699c724776d00995e16c6432c66d0e69c497ca6
 
 [std]
 repo = "wolffe-lang/wolf-std"
-rev = "5b3a59942b2ee69b99682544341ce8a12c984e9e"
+rev = "2411d868ee5c7ce6aee272c0475f049f29bab65d"
