@@ -455,6 +455,288 @@ def auth_nologin():
         return note + f"; sshd -e adds its log line {logged!r}"
 
 
+# ---- passwords (px112) ------------------------------------------------------------------
+# PasswordAuthentication yes on both servers, sshd at LogLevel VERBOSE (its
+# first LogLevel wins over oraclelib's DEBUG3), the account's /etc/shadow line
+# made for the row and the file put back after it. Every row holds its
+# passwords to neither server's log, the client's output nor its compare.txt.
+PW_SSHD = ["PasswordAuthentication yes", "LogLevel VERBOSE"]
+PW_BURROWD = ["PasswordAuthentication yes"]
+DENIED = "Permission denied, please try again."
+FINAL = "burrowtest@127.0.0.1: Permission denied (publickey,password)."
+
+
+def mkpw():
+    return BIN.parent / "rows" / "mkpw"
+
+
+def no_leak(p, passwords, *results):
+    places = [("burrowd's log", p.burrowd.log_text()), ("sshd's log", p.sshd.log_text())]
+    cmp = p.dir / "compare.txt"
+    if cmp.exists():
+        places.append(("compare.txt", cmp.read_bytes()))
+    for i, r in enumerate(results):
+        places += [(f"result {i} stdout", r[1]), (f"result {i} stderr", r[2])]
+    hits = serverlib.leaks(passwords, places)
+    check(not hits, f"a password reached: {', '.join(hits)}")
+
+
+def logged(p, words):
+    """burrowd's log has a line holding every one of `words`."""
+    got = p.burrowd.conn_lines()
+    check(any(all(w in x + " " for w in words) for x in got), f"burrowd's log has no line with {words}: {got[-3:]}")
+
+
+def denied_lines(n, user="burrowtest"):
+    return [DENIED] * (n - 1) + [f"{user}@127.0.0.1: Permission denied (publickey,password)."]
+
+
+@row
+def password_accepted():
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-accepted"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["echo", "in", ";", "id", "-un"], [pw])
+        note = same(p, rb, rs, "the right password")
+        check(rb[0] == 0 and rb[1] == b"in\nburrowtest\n", show(rb))
+        logged(p, ["user burrowtest ", "key password ", "outcome ok "])
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+@row
+def password_wrong():
+    pw, wrong = serverlib.new_password(), serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-wrong"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["true"], [wrong])
+        note = same(p, rb, rs, "a wrong password, three prompts")
+        check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), show(rb))
+        outcome(p, "auth_password_bad")
+        no_leak(p, [pw, wrong], rb, rs)
+        return note
+
+
+@row
+def password_retry():
+    pw, wrong = serverlib.new_password(), serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-retry"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["echo", "in"], [wrong, pw])
+        note = same(p, rb, rs, "wrong, then right")
+        check(rb[0] == 0 and rb[1] == b"in\n" and lines(rb[2]) == [DENIED], show(rb))
+        logged(p, ["key password ", "outcome ok "])
+        no_leak(p, [pw, wrong], rb, rs)
+        return note
+
+
+@row
+def password_tries():
+    pw, wrong = serverlib.new_password(), serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-tries"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["true"], [wrong], opts=["-o", "NumberOfPasswordPrompts=10"])
+        note = same(p, rb, rs, "ten prompts, every answer wrong, MaxAuthTries 6 both")
+        check(any("Too many authentication failures" in x for x in lines(rb[2])), show(rb))
+        outcome(p, "auth_tries_exceeded")
+        no_leak(p, [pw, wrong], rb, rs)
+        return note
+
+
+@row
+def password_grace():
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-grace"), sshd=PW_SSHD + ["LoginGraceTime 2"],
+                                        burrowd=PW_BURROWD + ["LoginGraceTime 2"]) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["true"], [pw], delay=5, timeout=60)
+        check(rs[0] != -999 and rb[0] != -999, f"ssh did not end: burrowd {show(rb)}, sshd {show(rs)}")
+        note = same(p, rb, rs, "LoginGraceTime 2, the password typed after 5 s")
+        check(rb[0] == 255, show(rb))
+        outcome(p, "grace_expired")
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+@row
+def password_root():
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-root"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set("root", serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["true"], [pw], user="root")
+        note = same(p, rb, rs, "root's right password, PermitRootLogin no")
+        check(rb[0] == 255 and lines(rb[2]) == denied_lines(3, "root"), show(rb))
+        outcome(p, "auth_root_refused")
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+def locked_pair(name, field_of, **shadow):
+    """The account's password line made by `field_of(hash)`; the right
+    password offered, then the account's listed key: (password results,
+    key results) through burrowd and sshd."""
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir(name), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, field_of(serverlib.make_hash(mkpw(), pw)), **shadow)
+        pr = p.both_pw(["true"], [pw])
+        kr = p.both(["true"])
+        no_leak(p, [pw], *pr, *kr)
+        return p, pr, kr
+
+
+@row
+def password_locked():
+    p, (rb, rs), (kb, ks) = locked_pair("password-locked", lambda h: "!" + h)
+    note = same(p, rb, rs, "a locked account (!), its right password")
+    check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), show(rb))
+    logged(p, ["outcome auth_account_locked "])
+    return note
+
+
+@row
+def password_locked_key():
+    p, (rb, rs), (kb, ks) = locked_pair("password-locked-key", lambda h: "!" + h)
+    note = same(p, kb, ks, "a locked account (!), its listed key (sshd(8): every method)")
+    check(kb[0] == 255 and lines(kb[2]) == [FINAL], show(kb))
+    return note
+
+
+@row
+def password_expired_account():
+    p, (rb, rs), (kb, ks) = locked_pair("password-expired-account", lambda h: h, expire="1")
+    note = same(p, rb, rs, "an account expired (field 8: day 1), its right password")
+    same(p, kb, ks, "an account expired, its listed key")
+    check(rb[0] == 255 and kb[0] == 255, f"password {show(rb)}; key {show(kb)}")
+    logged(p, ["outcome auth_account_expired "])
+    return note
+
+
+@row
+def password_expired():
+    """Field 3 `0`: the password must be changed. burrowd refuses the
+    password (RFC 4252 §8: never an expired password) and admits the key
+    (shadow(5): a password expiry bars the password only); sshd's answer
+    is recorded beside it, a named difference where it differs."""
+    p, (rb, rs), (kb, ks) = locked_pair("password-expired", lambda h: h, last=0)
+    record(p, f"field 3 0, the right password\nsshd:    {show(rs)}\nburrowd: {show(rb)}\n"
+              f"the listed key\nsshd:    {show(ks)}\nburrowd: {show(kb)}\n")
+    check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), f"burrowd: {show(rb)}")
+    check(kb[0] == 0, f"the key through burrowd: {show(kb)}")
+    logged(p, ["outcome auth_password_expired "])
+    return f"burrowd refuses the password; sshd: exit {rs[0]}, stderr {tail(rs[2], 160)!r}"
+
+
+@row
+def password_empty():
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-empty"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, "")
+        rb, rs = p.both_pw(["true"], [""])
+        note = same(p, rb, rs, "an empty password field, an empty answer, PermitEmptyPasswords no")
+        check(rb[0] == 255, show(rb))
+        outcome(p, "auth_password_empty")
+        return note
+
+
+@row
+def password_unset():
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-unset"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, "*")
+        rb, rs = p.both_pw(["true"], [pw])
+        note = same(p, rb, rs, "a `*` field: no password")
+        kb, ks = p.both(["true"])
+        same(p, kb, ks, "a `*` field: the listed key")
+        check(rb[0] == 255 and kb[0] == 0, f"password {show(rb)}; key {show(kb)}")
+        logged(p, ["outcome auth_password_unset "])
+        sh.set(serverlib.USER, "", drop=True)
+        nb, ns = p.both(["true"])
+        same(p, nb, ns, "no shadow line: the listed key")
+        check(nb[0] == 0, show(nb))
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+@row
+def password_unsupported():
+    """A `$y$` string (Ubuntu's chpasswd): sshd checks it, burrowd checks
+    `$7$` alone and refuses it by name, a named difference."""
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-unsupported"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.chpasswd(serverlib.USER, pw)
+        field = next(x.split(":")[1] for x in pathlib.Path("/etc/shadow").read_text().splitlines()
+                     if x.startswith(serverlib.USER + ":"))
+        rb, rs = p.both_pw(["true"], [pw])
+        record(p, f"field method {field[:3]!r}\nsshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+        check(field.startswith("$y$"), f"chpasswd made {field[:3]!r}, not $y$")
+        check(rs[0] == 0, f"sshd: {show(rs)}")
+        check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), f"burrowd: {show(rb)}")
+        logged(p, ["outcome auth_password_unsupported "])
+        no_leak(p, [pw], rb, rs)
+        return "sshd admits $y$; burrowd refuses it (auth_password_unsupported)"
+
+
+@row
+def password_over_cap():
+    """A `$7$` string one step past the shipped cost (N = 2^18): burrowd
+    refuses it by name; sshd checks it, a named difference."""
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-over-cap"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw, (18, 8, 1)))
+        rb, rs = p.both_pw(["true"], [pw])
+        record(p, f"N = 2^18\nsshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+        check(rs[0] == 0, f"sshd: {show(rs)}")
+        check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), f"burrowd: {show(rb)}")
+        logged(p, ["outcome auth_password_over_cap "])
+        no_leak(p, [pw], rb, rs)
+        return "sshd admits N = 2^18; burrowd refuses it (auth_password_over_cap)"
+
+
+@row
+def password_shipped_cost():
+    """The shipped cost, 2^17, 8, 1: the most burrowd checks."""
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-shipped-cost"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw, (17, 8, 1)))
+        rb, rs = p.both_pw(["echo", "in"], [pw], timeout=300)
+        note = same(p, rb, rs, "the right password at the shipped cost")
+        check(rb[0] == 0, show(rb))
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+@row
+def password_off():
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("password-off")) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        rb, rs = p.both_pw(["true"], [pw])
+        note = same(p, rb, rs, "PasswordAuthentication no on both: the methods list is publickey")
+        check(lines(rb[2]) == ["burrowtest@127.0.0.1: Permission denied (publickey)."], show(rb))
+        no_leak(p, [pw], rb, rs)
+        return note
+
+
+@row
+def password_start_refused():
+    """burrowd not run as root cannot read /etc/shadow: PasswordAuthentication
+    yes is refused at start, by name."""
+    d = rundir("password-start-refused")
+    d.mkdir(parents=True)
+    os.chmod(d, 0o755)
+    key = d / "host_ed25519"
+    serverlib.keygen(key, "host")
+    a = serverlib.account()
+    os.chown(key, a.pw_uid, a.pw_gid)
+    cfg = d / "burrowd_config"
+    cfg.write_text(f"ListenAddress 127.0.0.1\nPort {serverlib.free_port()}\nHostKey {key}\nPasswordAuthentication yes\n")
+    os.chmod(cfg, 0o644)
+    r = serverlib.run(["setpriv", f"--reuid={a.pw_uid}", f"--regid={a.pw_gid}", "--clear-groups", str(BIN), "-t", "-f",
+                       str(cfg)], timeout=30)
+    (d / "compare.txt").write_text(f"burrowd -t as {serverlib.USER}: {show(r)}\n")
+    check(r[0] == 1 and b"config_unsupported" in r[2] and b"root" in r[2], show(r))
+    return tail(r[2], 160)
+
+
 # ---- the session ----------------------------------------------------------------------
 @row
 def session_cat_64m():
