@@ -71,7 +71,14 @@ pub fn entry(text: str, user: str) -> Entry {
         if f.len != 9 || f[0] != user {
             continue
         }
-        return Entry { found: true, field: f[1], last: f[2], max: f[4], inactive: f[6], expire: f[7] }
+        return Entry {
+            found: true,
+            field: f[1],
+            last: f[2],
+            max: f[4],
+            inactive: f[6],
+            expire: f[7],
+        }
     }
     Entry { found: false, field: "", last: "", max: "", inactive: "", expire: "" }
 }
