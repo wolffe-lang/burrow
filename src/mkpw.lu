@@ -1,0 +1,61 @@
+//! member: false
+
+// mkpw — a row program, never installed: the `$7$` string (wolf-std's
+// scrypt in crypt(5)'s form, std.x.crypto.passwd) of the password on its
+// standard input, for the password rows' /etc/shadow lines (px112).
+//
+//   mkpw [NLOG2 R P] < PASSWORD
+//
+// Reads one line (its newline dropped) and prints the string made with a
+// fresh salt from /dev/urandom, at N = 2^NLOG2, r = R, p = P (default the
+// shipped cost burrowd caps a check at, 2^17, 8, 1). The password is read
+// from standard input only, so it is on no argument vector, and never
+// printed. Exit 0, 1 when the input or the cost is refused, 2 for a bad
+// command line. tools/build puts it at target/<tier>/rows/mkpw on the
+// native and release tiers, never `--static`.
+use std.env
+use std.fs
+use std.x.crypto.passwd
+
+fn main() -> int {
+    let a = env.args()
+    var n = 17
+    var r = 8
+    var p = 1
+    if a.len == 3 {
+        n = a[0].to_int() else -1
+        r = a[1].to_int() else -1
+        p = a[2].to_int() else -1
+    } else if a.len != 0 {
+        eprint("mkpw: usage: mkpw [NLOG2 R P] < PASSWORD")
+        return 2
+    }
+    let line = read_line() else {
+        eprint("mkpw: no password on standard input")
+        return 1
+    }
+    var f = fs.open("/dev/urandom") else {
+        eprint("mkpw: /dev/urandom cannot be read")
+        return 1
+    }
+    let random = fs.read_chunk(mut f, 16) else List[byte]()
+    fs.close(take f) else {}
+    if random.len != 16 {
+        eprint("mkpw: /dev/urandom gave {random.len} bytes, not 16")
+        return 1
+    }
+    let salt = passwd.gen_salt(random) else |e| {
+        eprint("mkpw: salt: {e}")
+        return 1
+    }
+    let c = passwd.cost(n, r, p) else |e| {
+        eprint("mkpw: cost {n} {r} {p}: {e}")
+        return 1
+    }
+    let s = passwd.hash(line.bytes(), salt, c) else |e| {
+        eprint("mkpw: hash: {e}")
+        return 1
+    }
+    print(s)
+    0
+}

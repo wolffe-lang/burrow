@@ -42,6 +42,8 @@ esac
 # downgrade-caught row; burrow itself has no waiver on any tier. And
 # target/<tier>/rows/burrowd-oneproc (src/oneproc.lu): burrowd in one root
 # process per connection, R-bw04-2's (B), for tools/measure-server only.
+# And target/<tier>/rows/mkpw (src/mkpw.lu): a password on standard input
+# made into a `$7$` string, for the password rows' /etc/shadow lines (px112).
 for tier in $tiers; do
     mkdir -p "target/$tier"
     if [ "$tier" != static ]; then
@@ -49,9 +51,11 @@ for tier in $tiers; do
         if [ "$tier" = release ]; then
             "$WOLF" build --release --deny-warnings src/kexprobe.lu -o "target/$tier/rows/kexprobe"
             "$WOLF" build --release --deny-warnings src/oneproc.lu -o "target/$tier/rows/burrowd-oneproc"
+            "$WOLF" build --release --deny-warnings src/mkpw.lu -o "target/$tier/rows/mkpw"
         else
             "$WOLF" build --deny-warnings src/kexprobe.lu -o "target/$tier/rows/kexprobe"
             "$WOLF" build --deny-warnings src/oneproc.lu -o "target/$tier/rows/burrowd-oneproc"
+            "$WOLF" build --deny-warnings src/mkpw.lu -o "target/$tier/rows/mkpw"
         fi
     fi
     if [ "$tier" = static ]; then
@@ -77,6 +81,6 @@ for tier in $tiers; do
     if [ "$tier" = static ]; then
         echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd"
     else
-        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd target/$tier/rows/kexprobe target/$tier/rows/burrowd-oneproc"
+        echo "build: target/$tier/burrow target/$tier/burrow-keygen target/$tier/burrowd target/$tier/rows/kexprobe target/$tier/rows/burrowd-oneproc target/$tier/rows/mkpw"
     fi
 done
