@@ -208,3 +208,50 @@ and `std/os/users`. On linux the client's address comes from
 themselves, in the pinned container) until that call exists. PAX at its trunk, for what B6 needs:
 its kernel README and the notes of the lanes that added set-ID,
 credentials and its init.
+
+## px112: passwords from /etc/shadow (for B6)
+
+RFC 4252, the same text as above (its sha256 unchanged), read again: §5 and
+§5.1 (the methods list a FAILURE carries) and §8, the `password` method:
+the request (FALSE and the password), the change request (TRUE, the old and
+the new), SSH_MSG_USERAUTH_PASSWD_CHANGEREQ, and "the server MUST NOT allow
+an expired password to be used".
+
+The man pages, from the same signed `openssh-10.0p2.tar.gz` (its digest
+checked again first), extracted by name:
+
+| page | sha256 | read |
+|---|---|---|
+| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` (unchanged) | DESCRIPTION's paragraph on accounts that are not accessible: a locked account (a leading `!` on Linux) refused whatever the method, and `NP` for an account that keeps keys and not a password |
+| `sshd_config.5` | `9f499c39e00e92f05621c0b259f4d0b05d1cedf34b376fde31fa2787a0d1978c` (unchanged) | `PasswordAuthentication` (default yes), `PermitEmptyPasswords` (no), `KbdInteractiveAuthentication`, `UsePAM` (no), `PermitRootLogin`, `MaxAuthTries`, `LoginGraceTime` |
+| `ssh.1` | `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea` (unchanged) | ENVIRONMENT: `SSH_ASKPASS` and `SSH_ASKPASS_REQUIRE` (`force`), how the rows give the pinned `ssh` a password from its environment |
+| `ssh_config.5` | `5b196bcd9b4f49f94ee903fede196e02035521fb21f9060a51030d1fd2d4eb34` | `NumberOfPasswordPrompts` (3), `PreferredAuthentications`, `PasswordAuthentication`, `KbdInteractiveAuthentication` |
+
+shadow(5), from Ubuntu 24.04's `passwd` package
+(`passwd_4.13+dfsg1-4ubuntu3.2_amd64.deb`, sha256
+`139b51228c8065eefa3051f649d8480eb986f1cf629448e49d2eaf9813318412`, from
+the Ubuntu archive), the page itself sha256
+`52c0c09aed98bdb56af7ea2a8497f9e1ffe90e2f0a920f8484cd887c381afdbc`: the
+nine fields; a leading `!` locks the password; `!` or `*` is no password;
+field 3's `0`; the maximum age; the inactivity period after which "no login
+is possible for the user"; the account's expiry. A manual page, read as
+documentation; no shadow-utils source.
+
+crypt(5)'s `$7$` as wolf-std's sc80 reads it (`std/x/crypto/passwd`'s
+header). The unit vector `src/spass_test.lu` checks, and the equal-work
+string in `src/spass`, were made by Ubuntu 24.04's crypt (libxcrypt
+4.4.36, through python3's `crypt` module in the pinned image) run as a
+black box.
+
+Organisation code: wolf-std at `2411d868` (the std pin since px112):
+`std/x/crypto/passwd` (`parse`, `verify_capped`, `hash`, `gen_salt`,
+`cost`) and `std/x/crypto/scrypt` (`memory`). PAX at its trunk: its
+`user/auth` (the `$7$` cost it ships, the cap, `/etc/shadow`'s rules) and
+the px106 note, for the strings burrowd is given there.
+
+The pinned `sshd` as a black box, beside burrowd in every password row: the
+lines the pinned `ssh` prints for a wrong password, root, a locked or
+expired account, an empty or unset one, the tries and the grace; its
+answer to a scripted change request; and that it checks `$y$` and a `$7$`
+string past PAX's cost where burrowd refuses both by name. No `.c` or `.h`
+file was opened, of OpenSSH or any other server.
