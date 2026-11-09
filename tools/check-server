@@ -589,7 +589,7 @@ def password_locked():
     p, (rb, rs), (kb, ks) = locked_pair("password-locked", lambda h: "!" + h)
     note = same(p, rb, rs, "a locked account (!), its right password")
     check(rb[0] == 255 and lines(rb[2]) == denied_lines(3), show(rb))
-    logged(p, ["outcome auth_account_locked "])
+    logged(p, ["key password ", "outcome auth_account_locked "])
     return note
 
 
@@ -598,6 +598,7 @@ def password_locked_key():
     p, (rb, rs), (kb, ks) = locked_pair("password-locked-key", lambda h: "!" + h)
     note = same(p, kb, ks, "a locked account (!), its listed key (sshd(8): every method)")
     check(kb[0] == 255 and lines(kb[2]) == [FINAL], show(kb))
+    logged(p, ["key SHA256:", "outcome auth_account_locked "])
     return note
 
 
@@ -607,7 +608,8 @@ def password_expired_account():
     note = same(p, rb, rs, "an account expired (field 8: day 1), its right password")
     same(p, kb, ks, "an account expired, its listed key")
     check(rb[0] == 255 and kb[0] == 255, f"password {show(rb)}; key {show(kb)}")
-    logged(p, ["outcome auth_account_expired "])
+    logged(p, ["key password ", "outcome auth_account_expired "])
+    logged(p, ["key SHA256:", "outcome auth_account_expired "])
     return note
 
 
