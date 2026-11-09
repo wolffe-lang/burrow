@@ -1,0 +1,80 @@
+//! member: false
+
+// px112: burrowd's passwords (src/spass). An /etc/shadow line read as
+// shadow(5) has it; the account's state for every method (`!` locks it,
+// sshd(8); an expiry or an inactive period past ends it); the password's
+// state (unset, empty, another method, over the cap, expired); the check,
+// against `$7$` strings Ubuntu 24.04's crypt (libxcrypt 4.4.36) made for
+// the test password `unit-password` at tiny costs; the dummy and the cap
+// at the shipped cost, parsed and never hashed here.
+use spass
+
+// Ubuntu 24.04's crypt("unit-password", "$7$20..../....unitsalt2$"):
+// N = 2^4, r = 2, p = 1 (libxcrypt 4.4.36, python3's crypt module, run as a
+// black box; it refuses N = 2^1).
+fn v4() -> str {
+    "$7$20..../....unitsalt2$00tMgZm7Eq39dxhC0qtJ2lKHiS2dthLuehb7k9duRCC"
+}
+
+fn line(field: str, rest: str) -> str {
+    "burrowtest:{field}:{rest}"
+}
+
+fn e(text: str) -> spass.Entry {
+    spass.entry(text, "burrowtest")
+}
+
+fn main() {
+    let today = 20400
+    let ages = "20300:0:99999:7:::"
+    // The line: found by name, nine fields or none.
+    let text = "root:*:20300:0:99999:7:::\n" + line(v4(), ages) + "\nother:!:1:0:99999:7:::\n"
+    let got = e(text)
+    assert(got.found && got.field == v4() && got.last == "20300" && got.max == "99999")
+    assert(!e("burrowtest:x:1\n").found && !e("").found && !spass.entry(text, "nobody").found)
+    // The account, every method.
+    assert(spass.account_state(got, today) == "")
+    assert(spass.account_state(e(line("!" + v4(), ages)), today) == "auth_account_locked")
+    assert(spass.account_state(e(line("!", ages)), today) == "auth_account_locked")
+    assert(spass.account_state(e(line("*", ages)), today) == "")
+    assert(spass.account_state(e(line("", ages)), today) == "")
+    assert(spass.account_state(e(""), today) == "")
+    assert(spass.account_state(e(line(v4(), "20300:0:99999:7::20399:")), today) == "auth_account_expired")
+    assert(spass.account_state(e(line(v4(), "20300:0:99999:7::20401:")), today) == "")
+    assert(spass.account_state(e(line(v4(), "20300:0:99999:7::0:")), today) == "")
+    assert(spass.account_state(e(line(v4(), "20000:0:100:7:50::")), today) == "auth_account_expired")
+    assert(spass.account_state(e(line(v4(), "20000:0:100:7:::")), today) == "")
+    // The password, the `password` method alone.
+    assert(spass.password_state(got, today, spass.cap()) == "")
+    assert(spass.password_state(e(""), today, spass.cap()) == "auth_password_unset")
+    assert(spass.password_state(e(line("*", ages)), today, spass.cap()) == "auth_password_unset")
+    assert(spass.password_state(e(line("", ages)), today, spass.cap()) == "auth_password_empty")
+    assert(
+        spass.password_state(e(line("$6$salt$abc", ages)), today, spass.cap()) ==
+            "auth_password_unsupported",
+    )
+    assert(
+        spass.password_state(e(line("$y$j9T$salt$abc", ages)), today, spass.cap()) ==
+            "auth_password_unsupported",
+    )
+    assert(spass.password_state(e(line("garbage", ages)), today, spass.cap()) == "auth_password_unsupported")
+    assert(spass.password_state(e(line(v4(), "0:0:99999:7:::")), today, spass.cap()) == "auth_password_expired")
+    assert(spass.password_state(e(line(v4(), "20000:0:100:7:::")), today, spass.cap()) == "auth_password_expired")
+    assert(spass.password_state(e(line(v4(), "20000:0::7:::")), today, spass.cap()) == "")
+    assert(spass.password_state(e(line(v4(), ":0:99999:7:::")), today, spass.cap()) == "")
+    // The cap: the shipped cost is under it, one step dearer over it; a
+    // smaller cap refuses the tiny vectors' dearer one.
+    let d = spass.dummy()
+    assert(d.starts_with("$7$F6..../....") && spass.password_state(e(line(d, ages)), today, spass.cap()) == "")
+    let over = "$7$G" + d[4..d.len]
+    assert(spass.password_state(e(line(over, ages)), today, spass.cap()) == "auth_password_over_cap")
+    assert(spass.cap() == 134238240)
+    // The check: the right password opens its string, a wrong one and an
+    // over-cap string nothing.
+    let pw = "unit-password".bytes()
+    assert(spass.check(pw, v4(), spass.cap()))
+    assert(!spass.check("unit-passwore".bytes(), v4(), spass.cap()))
+    assert(!spass.check(pw, "!" + v4(), spass.cap()) && !spass.check(pw, "", spass.cap()))
+    assert(!spass.check(pw, v4(), 1024))
+    assert(spass.max_password() == 1024)
+}
