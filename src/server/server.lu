@@ -26,6 +26,7 @@ use sauth
 use schannel
 use sconfig
 use slog
+use spass
 use ssession
 use transport
 use wire
@@ -201,7 +202,7 @@ fn worker_main(take sock: net.Socket, s: sconfig.Settings, to: fs.File, from: fs
     transport.serve(mut c) else |e| {
         why = "{e}"
     }
-    var st = sauth.start(s.max_tries)
+    var st = sauth.start_with(s.max_tries, s.password_auth)
     var who = worker.Authed { user: "", blob: List[byte](), command: "", forced: false }
     var asker = worker.monitor_asker(copy tw, copy fr)
     if why == "" {
@@ -348,6 +349,77 @@ fn holder_main(
     process.exit(0)
 }
 
+// ---- passwords (px112): one check at a time across the server.
+
+// The token pipe: the listener puts one byte in it at start; a monitor takes
+// the byte before it forks a checker and puts it back after reaping it, and
+// tells the listener each (`P`, `p` on its status pipe), so a monitor that
+// ends holding the byte has it put back. `on` is false when passwords are off.
+struct Token {
+    on: bool,
+    read: fs.File,
+    write: fs.File,
+}
+
+fn no_token() -> Token {
+    Token { on: false, read: fs.File { fd: -1 }, write: fs.File { fd: -1 } }
+}
+
+fn status_byte(mut st: fs.File, b: int) {
+    var one = List[byte]()
+    (mut one).push(b as byte)
+    fs.write_chunk(mut st, one) else {}
+}
+
+// Whether `password` opens `field`: the token taken (waiting at most
+// `left_ms`, then false), the hash run in a child of its own, which exits 0
+// on a match, the token put back.
+fn checked(tk: Token, mut st: fs.File, field: str, password: List[byte], left_ms: int) -> bool {
+    if !tk.on {
+        return false
+    }
+    let until = time.monotonic_ns() / 1000000 + left_ms
+    var have = false
+    while !have {
+        let left = until - time.monotonic_ns() / 1000000
+        if left <= 0 {
+            return false
+        }
+        var files = List[fs.File]()
+        (mut files).push(copy tk.read)
+        let w = signal.wait_fds(files, signal.child(), if left > 1000 then 1000 else left) else {
+            continue
+        }
+        if w.ready == 0 {
+            var r = copy tk.read
+            let got = fs.read_chunk(mut r, 1) else List[byte]()
+            have = got.len == 1
+        }
+    }
+    status_byte(mut st, 80)
+    var ok = false
+    let f = process.fork() else {
+        var w = copy tk.write
+        status_byte(mut w, 1)
+        status_byte(mut st, 112)
+        return false
+    }
+    if process.is_child(f) {
+        process.exit(if spass.check(password, field, spass.cap()) then 0 else 1)
+        return false
+    }
+    var ch = process.Child { slot: f.child.slot }
+    ok = (process.wait_status(take ch) else 1) == 0
+    var w = copy tk.write
+    status_byte(mut w, 1)
+    status_byte(mut st, 112)
+    ok
+}
+
+fn today() -> int {
+    time.unix_ms() / 86400000
+}
+
 // ---- the monitor: one per connection.
 
 fn close_file(f: fs.File) {
@@ -380,6 +452,7 @@ fn monitor_main(
     pre: Pre,
     status: fs.File,
     lg: Log,
+    tk: Token,
 ) {
     var st = status
     let ends = peer.of_connection(lport)
@@ -417,6 +490,10 @@ fn monitor_main(
         close_file(m2h.write)
         close_file(h2m.read)
         close_file(st)
+        if tk.on {
+            close_file(tk.read)
+            close_file(tk.write)
+        }
         if !s.debug {
             close_file(fs.stderr())
         }
@@ -435,6 +512,10 @@ fn monitor_main(
         close_file(h2m.read)
         close_file(h2m.write)
         close_file(st)
+        if tk.on {
+            close_file(tk.read)
+            close_file(tk.write)
+        }
         if pre.root {
             process.set_ids(pre.uid, pre.gid, List[int]()) else {
                 process.exit(1)
@@ -462,6 +543,10 @@ fn monitor_main(
     pipe.send(mut to_w, pipe.k_key(), kf) else {}
     let passwd = read_or("/etc/passwd")
     let group = read_or("/etc/group")
+    // px112: /etc/shadow, as root only (never in the worker or the holder,
+    // both forked before it is read): the account's state for every method
+    // and its password for the `password` one.
+    let shadow = if pre.root then read_or("/etc/shadow") else ""
     var session_id = List[byte]()
     var authed_user = ""
     var authed_blob = List[byte]()
@@ -515,7 +600,11 @@ fn monitor_main(
             if a.uid < 0 {
                 line.outcome = if a.name == "root" then "auth_root_refused" else "auth_user_unknown"
             }
-            if a.uid >= 0 {
+            let state = if a.uid >= 0 then spass.account_state(spass.entry(shadow, user), today()) else ""
+            if state != "" {
+                line.outcome = state
+            }
+            if a.uid >= 0 && state == "" {
                 let v = mon.check_key(a, s.authorized_files, s.strict_modes, blob)
                 if v.ok {
                     ok = fr.kind == pipe.k_query() ||
@@ -540,6 +629,49 @@ fn monitor_main(
                 }
             }
             answer(mut to_w, ok)
+        } else if fr.kind == pipe.k_password() {
+            // px112: the account's state, then its password's, then the
+            // check: against the account's field, or, for any refusal, the
+            // dummy at the shipped cost, so every FAILURE costs one hash.
+            let user = pipe.text(fr, 0)
+            let kind = pipe.text(fr, 1)
+            line.user = user
+            line.key = "password"
+            var why = ""
+            if kind == "change" {
+                why = "auth_password_change_refused"
+            } else if kind == "long" {
+                why = "auth_password_too_long"
+            } else {
+                let a = mon.account_for(pre.root, passwd, group, user)
+                let e = spass.entry(shadow, user)
+                if a.uid < 0 {
+                    why = if a.name == "root" then "auth_root_refused" else "auth_user_unknown"
+                } else {
+                    why = spass.account_state(e, today())
+                    if why == "" {
+                        why = spass.password_state(e, today(), spass.cap())
+                    }
+                }
+                let left = if s.grace > 0 {
+                    s.grace * 1000 - (time.monotonic_ns() - started) / 1000000
+                } else {
+                    3600000
+                }
+                let ok = checked(tk, mut st, if why == "" then e.field else spass.dummy(), pipe.bytes_at(fr, 2), left)
+                if why == "" && !ok {
+                    why = "auth_password_bad"
+                }
+            }
+            if why == "" {
+                authed_user = user
+                authed_blob = List[byte]()
+                verdict_cmd = ""
+                verdict_forced = false
+            } else {
+                line.outcome = why
+            }
+            answer(mut to_w, why == "")
         } else if fr.kind == pipe.k_authed() {
             if authed_user != "" &&
                 pipe.text(fr, 0) == authed_user &&
@@ -579,7 +711,7 @@ fn monitor_main(
         pipe.send(mut to_h, pipe.k_go(), f) else {}
         line.outcome = "ok"
         line.user = authed_user
-        line.key = fingerprint(authed_blob)
+        line.key = if authed_blob.len == 0 then "password" else fingerprint(authed_blob)
         loop {
             let fr = pipe.receive(mut from_h) else { break }
             if fr.kind == pipe.k_sign() {
@@ -708,6 +840,8 @@ struct Live {
     child: process.Child,
     status: fs.File,
     authed: bool,
+    // px112: password-check tokens this monitor took and has not put back.
+    tokens: int,
 }
 
 fn drop_it(s: sconfig.Settings, unauth: int, mut pool: entropy.Source) -> bool {
@@ -772,6 +906,14 @@ pub fn run(args: List[str], one_process: bool) -> int {
         pre.uid = u.uid
         pre.gid = u.gid
     }
+    // px112: only root reads /etc/shadow, so a password needs burrowd run as
+    // root (which burrowd never is on macOS).
+    if s.password_auth && !root {
+        return fail(
+            "config_unsupported",
+            "PasswordAuthentication yes: burrowd checks a password against /etc/shadow, which only root reads; run it as root, or say no",
+        )
+    }
     if s.print_config {
         for l in sconfig.effective(s) {
             print(l)
@@ -822,6 +964,20 @@ pub fn run(args: List[str], one_process: bool) -> int {
     }
     signal.listen(signal.child()) else {}
     signal.ignore(signal.broken_pipe()) else {}
+    // px112: the password checks' one token.
+    var tk = no_token()
+    if s.password_auth {
+        let tp = process.pipe() else {
+            return fail("io", "a pipe for the password checks")
+        }
+        tk = Token { on: true, read: copy tp.read, write: copy tp.write }
+        var tr = copy tk.read
+        fs.set_nonblock(mut tr, true) else {
+            return fail("io", "the password checks' pipe cannot be made non-blocking")
+        }
+        var tw = copy tk.write
+        status_byte(mut tw, 1)
+    }
     var pool = entropy.system()
     var conns = List[Live]()
     var unauth = 0
@@ -874,7 +1030,7 @@ pub fn run(args: List[str], one_process: bool) -> int {
                         if one_process {
                             oneproc_main(take sock, s, ports[li], pre, sp.write, lg)
                         } else {
-                            monitor_main(take sock, s, ports[li], pre, sp.write, lg)
+                            monitor_main(take sock, s, ports[li], pre, sp.write, lg, tk)
                         }
                         process.exit(0)
                         return 0
@@ -886,6 +1042,7 @@ pub fn run(args: List[str], one_process: bool) -> int {
                         child: copy f.child,
                         status: copy sp.read,
                         authed: false,
+                        tokens: 0,
                     })
                     unauth += 1
                 }
@@ -912,6 +1069,13 @@ pub fn run(args: List[str], one_process: bool) -> int {
                     if !conns[ci].authed {
                         unauth -= 1
                     }
+                    // A monitor that ended holding the password token: put it back.
+                    var back = conns[ci].tokens
+                    while back > 0 {
+                        var tw = copy tk.write
+                        status_byte(mut tw, 1)
+                        back -= 1
+                    }
                     fs.close(take sf) else {}
                     conns[ci].status = fs.File { fd: -1 }
                     var gone = process.Child { slot: conns[ci].child.slot }
@@ -927,7 +1091,12 @@ pub fn run(args: List[str], one_process: bool) -> int {
                     conns = kept
                     continue
                 }
-                if !conns[ci].authed {
+                let b = got[0] as int
+                if b == 80 {
+                    conns[ci].tokens += 1
+                } else if b == 112 {
+                    conns[ci].tokens -= 1
+                } else if !conns[ci].authed {
                     conns[ci].authed = true
                     unauth -= 1
                 }
