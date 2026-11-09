@@ -39,10 +39,15 @@ fn main() {
     assert(spass.account_state(e(line("*", ages)), today) == "")
     assert(spass.account_state(e(line("", ages)), today) == "")
     assert(spass.account_state(e(""), today) == "")
-    assert(spass.account_state(e(line(v4(), "20300:0:99999:7::20399:")), today) == "auth_account_expired")
+    assert(
+        spass.account_state(e(line(v4(), "20300:0:99999:7::20399:")), today) ==
+            "auth_account_expired",
+    )
     assert(spass.account_state(e(line(v4(), "20300:0:99999:7::20401:")), today) == "")
     assert(spass.account_state(e(line(v4(), "20300:0:99999:7::0:")), today) == "")
-    assert(spass.account_state(e(line(v4(), "20000:0:100:7:50::")), today) == "auth_account_expired")
+    assert(
+        spass.account_state(e(line(v4(), "20000:0:100:7:50::")), today) == "auth_account_expired",
+    )
     assert(spass.account_state(e(line(v4(), "20000:0:100:7:::")), today) == "")
     // The password, the `password` method alone.
     assert(spass.password_state(got, today, spass.cap()) == "")
@@ -57,17 +62,31 @@ fn main() {
         spass.password_state(e(line("$y$j9T$salt$abc", ages)), today, spass.cap()) ==
             "auth_password_unsupported",
     )
-    assert(spass.password_state(e(line("garbage", ages)), today, spass.cap()) == "auth_password_unsupported")
-    assert(spass.password_state(e(line(v4(), "0:0:99999:7:::")), today, spass.cap()) == "auth_password_expired")
-    assert(spass.password_state(e(line(v4(), "20000:0:100:7:::")), today, spass.cap()) == "auth_password_expired")
+    assert(
+        spass.password_state(e(line("garbage", ages)), today, spass.cap()) ==
+            "auth_password_unsupported",
+    )
+    assert(
+        spass.password_state(e(line(v4(), "0:0:99999:7:::")), today, spass.cap()) ==
+            "auth_password_expired",
+    )
+    assert(
+        spass.password_state(e(line(v4(), "20000:0:100:7:::")), today, spass.cap()) ==
+            "auth_password_expired",
+    )
     assert(spass.password_state(e(line(v4(), "20000:0::7:::")), today, spass.cap()) == "")
     assert(spass.password_state(e(line(v4(), ":0:99999:7:::")), today, spass.cap()) == "")
     // The cap: the shipped cost is under it, one step dearer over it; a
     // smaller cap refuses the tiny vectors' dearer one.
     let d = spass.dummy()
-    assert(d.starts_with("$7$F6..../....") && spass.password_state(e(line(d, ages)), today, spass.cap()) == "")
+    assert(
+        d.starts_with("$7$F6..../....") &&
+            spass.password_state(e(line(d, ages)), today, spass.cap()) == "",
+    )
     let over = "$7$G" + d[4..d.len]
-    assert(spass.password_state(e(line(over, ages)), today, spass.cap()) == "auth_password_over_cap")
+    assert(
+        spass.password_state(e(line(over, ages)), today, spass.cap()) == "auth_password_over_cap",
+    )
     assert(spass.cap() == 134238240)
     // The check: the right password opens its string, a wrong one and an
     // over-cap string nothing.

@@ -87,7 +87,11 @@ fn main() {
     // -T says which.
     assert(!d.password_auth && has(t, "passwordauthentication no"))
     let pw = file("PasswordAuthentication yes\n")
-    assert(refused(pw) == "ok" && pw.password_auth && has(sconfig.effective(pw), "passwordauthentication yes"))
+    assert(
+        refused(pw) == "ok" &&
+            pw.password_auth &&
+            has(sconfig.effective(pw), "passwordauthentication yes"),
+    )
     assert(refused(file("PasswordAuthentication maybe\n")) == "config_unsupported")
     assert(!file("PasswordAuthentication no\nPasswordAuthentication yes\n").password_auth)
     assert(refused(file("PermitRootLogin prohibit-password\n")) == "config_unsupported")
