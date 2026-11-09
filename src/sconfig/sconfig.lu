@@ -24,9 +24,11 @@
 //! `HostKey` (one; `/etc/burrowd/ssh_host_ed25519_key`), `ListenAddress`
 //! (loopback, `127.0.0.1` and `::1`, unless named, R-bw04-6),
 //! `LoginGraceTime` (120), `LogLevel`, `MaxAuthTries` (6), `MaxStartups`
-//! (10:30:100), `PermitRootLogin` (`no` only, R-bw04-3), `PidFile`, `Port`
+//! (10:30:100), `PasswordAuthentication` (`no` unless a line says `yes`,
+//! R-px112-2: burrowd's default is key-only, `sshd`'s is `yes`),
+//! `PermitRootLogin` (`no` only, R-bw04-3), `PidFile`, `Port`
 //! (22), `RekeyLimit`, `StrictModes` (yes); and the keywords whose one value
-//! is burrowd's: `PasswordAuthentication no`, `KbdInteractiveAuthentication
+//! is burrowd's: `KbdInteractiveAuthentication
 //! no` (and its alias `ChallengeResponseAuthentication`),
 //! `PubkeyAuthentication yes`, `AuthenticationMethods publickey` or `any`,
 //! `PermitTTY no`, `X11Forwarding no`, `AllowTcpForwarding no`,
@@ -59,6 +61,7 @@ pub struct Settings {
     startups_full: int,
     authorized_files: str,
     strict_modes: bool,
+    password_auth: bool,
     accept_env: List[str],
     rekey_bytes: int,
     rekey_seconds: int,
@@ -89,6 +92,7 @@ pub fn defaults() -> Settings {
         startups_full: 100,
         authorized_files: ".ssh/authorized_keys .ssh/authorized_keys2",
         strict_modes: true,
+        password_auth: false,
         accept_env: List[str](),
         rekey_bytes: 0,
         rekey_seconds: 0,
@@ -122,7 +126,6 @@ pub fn known(k: str) -> bool {
 // The one value burrowd takes for each keyword whose feature it lacks.
 fn fixed(k: str) -> str {
     match k {
-        "passwordauthentication" => "no",
         "kbdinteractiveauthentication" => "no",
         "challengeresponseauthentication" => "no",
         "pubkeyauthentication" => "yes",
@@ -458,6 +461,14 @@ pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
         s.strict_modes = value == "yes"
         return
     }
+    if k == "passwordauthentication" {
+        let v = value.lower()
+        if v != "yes" && v != "no" {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}: yes or no")
+        }
+        s.password_auth = v == "yes"
+        return
+    }
     refuse(mut s, "config_unsupported", "{origin}: {keyword}, which burrowd does not have")
 }
 
@@ -634,7 +645,7 @@ pub fn effective(s: Settings) -> List[str] {
         "authorizedkeysfile {if s.authorized_files == "" then "none" else s.authorized_files}",
     )
     (mut out).push("pubkeyauthentication yes")
-    (mut out).push("passwordauthentication no")
+    (mut out).push("passwordauthentication {if s.password_auth then "yes" else "no"}")
     (mut out).push("kbdinteractiveauthentication no")
     (mut out).push("permittty no")
     (mut out).push("x11forwarding no")
