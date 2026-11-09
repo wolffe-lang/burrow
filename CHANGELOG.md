@@ -1,5 +1,12 @@
 ## Unreleased
 
+- burrowd checks passwords from `/etc/shadow` where its configuration
+  says `PasswordAuthentication yes` (its default stays `no`): crypt(5)'s
+  `$7$` (wolf-std's scrypt, the form PAX writes), capped at PAX's shipped
+  cost, one check at a time in a process of its own, the same work for
+  every refusal; locked and expired accounts refused by every method, as
+  `sshd(8)` describes; change requests refused; the log's `key password`.
+  The std pin moves to wolf-std `2411d868` for `std.x.crypto.passwd`.
 - The repository scaffold: licence, README and its clean-room list.
 - Pin wolf 0.2.37, lupin 0.1.59 and the bundled std, and OpenSSH 10.0p2 as
   the black-box oracle, built from its signed tarball in a pinned image.
