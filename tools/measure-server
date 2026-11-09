@@ -11,11 +11,15 @@ note's (B)), all with one host key and one account:
   its first stdout byte, the mean of 20 logins a round, the minimum of the
   rounds; and the server's CPU per login, from the listener's reaped
   children (`/proc/PID/stat`'s cutime and cstime) over those 20 logins;
-- 64 MiB through `cat`: wall, and the server's CPU the same way.
+- 64 MiB through `cat`: wall, and the server's CPU the same way;
+- (px112) a password login to the first byte of `echo`, burrowd and sshd
+  each with `PasswordAuthentication yes` and the account's `$7$` password
+  at PAX's shipped cost (N = 2^17, r = 8, p = 1), the minimum of interleaved
+  rounds of a few logins: both spend the hash, burrowd one fork more.
 
 The ratios are held to the prediction's margins (login wall 6x, login CPU
-25x, cat wall 12x, cat CPU 50x, burrowd over sshd); burrowd over (B) is
-reported. A perf step: run it with nothing beside it (the timed-rows rule).
+25x, cat wall 12x, cat CPU 50x, password login wall 3x, burrowd over sshd);
+burrowd over (B) is reported. A perf step: run it with nothing beside it (the timed-rows rule).
 """
 import argparse
 import os
@@ -32,7 +36,7 @@ from serverlib import USER  # noqa: E402
 ROOT = oraclelib.ROOT
 WORK = ROOT / "target" / "measure-server"
 TICK = os.sysconf("SC_CLK_TCK")
-MARGINS = {"login wall": 6.0, "login cpu": 25.0, "cat wall": 12.0, "cat cpu": 50.0}
+MARGINS = {"login wall": 6.0, "login cpu": 25.0, "cat wall": 12.0, "cat cpu": 50.0, "password login wall": 3.0}
 
 
 def children_cpu(pid):
@@ -120,12 +124,30 @@ def main():
                     cat_cpu[name].append(after - before)
                     print(f"measure-server: cat round {r + 1} {name:8} wall {wall:.2f} s, server cpu {after - before:.2f} s",
                           flush=True)
+    # px112: password logins at the shipped cost, interleaved.
+    pwl = {k: [] for k in ("burrowd", "sshd")}
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, serverlib.Pair(bin_, WORK / "password", sshd=["PasswordAuthentication yes", "LogLevel VERBOSE"],
+                                                  burrowd=["PasswordAuthentication yes"]) as pp:
+        sh.set(USER, serverlib.make_hash(bin_.parent / "rows" / "mkpw", pw, (17, 8, 1)))
+        for r in range(a.rounds):
+            for name, port in (("burrowd", pp.burrowd.port), ("sshd", pp.sshd.port)):
+                times = []
+                for k in range(3):
+                    pargv = [serverlib.SSH, "-F", "none", "-o", "BatchMode=no", "-o", f"UserKnownHostsFile={pp.kh}",
+                             "-o", "PreferredAuthentications=password", "-o", "PubkeyAuthentication=no", "-p", str(port),
+                             "-l", USER, "127.0.0.1", "echo", "x"]
+                    penv = pp.env(serverlib.askpass_env(pp.dir, pp.dir / f"count-{name}-{r}-{k}", [pw]))
+                    times.append(first_byte(pargv, penv))
+                pwl[name].append(min(times))
+                print(f"measure-server: password round {r + 1} {name:8} first byte {pwl[name][-1] * 1000:.1f} ms", flush=True)
     m = lambda xs: min(xs)
     ratios = {
         "login wall": m(login["burrowd"]) / m(login["sshd"]),
         "login cpu": m(login_cpu["burrowd"]) / max(m(login_cpu["sshd"]), 1e-6),
         "cat wall": m(cat["burrowd"]) / m(cat["sshd"]),
         "cat cpu": m(cat_cpu["burrowd"]) / max(m(cat_cpu["sshd"]), 1e-6),
+        "password login wall": m(pwl["burrowd"]) / m(pwl["sshd"]),
     }
     print(f"measure-server: first byte: burrowd {m(login['burrowd']) * 1000:.1f} ms, sshd {m(login['sshd']) * 1000:.1f} ms, "
           f"one process {m(login['oneproc']) * 1000:.1f} ms")
@@ -133,6 +155,8 @@ def main():
           f"{m(login_cpu['sshd']) * 1000:.1f} ms, one process {m(login_cpu['oneproc']) * 1000:.1f} ms")
     print(f"measure-server: 64 MiB cat: burrowd {m(cat['burrowd']):.2f} s (cpu {m(cat_cpu['burrowd']):.2f} s), sshd "
           f"{m(cat['sshd']):.2f} s (cpu {m(cat_cpu['sshd']):.2f} s)")
+    print(f"measure-server: password login, first byte: burrowd {m(pwl['burrowd']) * 1000:.1f} ms, sshd "
+          f"{m(pwl['sshd']) * 1000:.1f} ms")
     print("measure-server: burrowd / sshd: " + ", ".join(f"{k} {v:.2f}x (margin {MARGINS[k]:.0f}x)" for k, v in ratios.items()))
     ab = m(login["burrowd"]) / m(login["oneproc"])
     abc = m(login_cpu["burrowd"]) / max(m(login_cpu["oneproc"]), 1e-6)
