@@ -213,3 +213,92 @@ code.
 - **R-px112-6, the log line.** (A) `key password` in the key field; (B) a
   new `method` field on every line. Recommended: (A): the line's shape and
   every consumer of it are unchanged.
+
+**Answered at the prediction (2026-11-09):** R-px112-1 to R-px112-6, all
+as recommended. R-px112-1 makes this change `cross-cutting` (the std pin).
+R-px112-3: on PAX, an account an install left locked (`!`) cannot log in
+with a key until it has a password; PAX's own note and PR say so.
+
+## Evidence: the prediction's hits and misses
+
+**The red-first take** (the pinned container, a six-CPU block of the Linux
+desktop): at the rows tip `5a8ee4a`, `unit` exit 1 (no `spass`, no
+`sauth.start_with` or `failure_for`, no `Settings.password_auth`), sixteen
+password rows `FAIL` by name (fifteen because burrowd refused
+`PasswordAuthentication yes` at start, `password-start-refused` because the
+refusal named no root), `password-off` passing as the guard it is, and the
+three hostile password rows `FAIL` by name. At the first code head
+`99d499e`, on the same block in the same job: `unit` exit 0, the seventeen
+password rows and the three hostile ones exit 0.
+
+**Hits.** Every client-visible line predicted equal through both servers
+was equal: three prompts' `Permission denied, please try again.` twice and
+the final `Permission denied (publickey,password).`, wrong then right,
+MaxAuthTries's five retries and `Too many authentication failures`,
+`Connection closed by 127.0.0.1 port PORT` at the grace, root, a locked
+account by password and by key, an expired account, an empty and an unset
+password, and `PasswordAuthentication no`'s `Permission denied
+(publickey).`. The pinned `sshd` admits a `$y$` and an over-cap `$7$`
+string where burrowd refuses both by name, as predicted. A change request
+draws USERAUTH_FAILURE `publickey,password` without partial success from
+both.
+
+**The guess, scored.** An expired password (field 3 `0`): the pinned
+`sshd`, without PAM, admits it and then ends the session with exit 1 and
+`WARNING: Your password has expired.` and `Password change required but no
+TTY available.`; burrowd refuses the login (`auth_password_expired`) and a
+key still logs in. A named difference, as predicted in kind.
+
+**One at a time.** Twenty wrong passwords sent at once on twenty
+connections, at the shipped cost on the native tier: twenty FAILUREs in
+20.5 s, never more than one checker alive at any sample (20 ms).
+
+**Added after the first take:** `hostile-password-equal-work` (a wrong
+password for a real account, root, an unknown account and a locked one,
+each FAILURE's time within 0.5x to 2x of the real account's, the minimum
+of three interleaved rounds), and the password login in
+`tools/measure-server`. Both are timed by the final gauntlet; their numbers
+are in the PR.
+
+**Red against a mutant.** The two properties no tip could show red (the
+one-at-a-time token and the equal work) are shown red against burrowd with
+each removed, in the lane's own take, never committed: the PR names the
+rows and the numbers.
+
+## Forbidden
+
+No ssh implementation's code or tests were read: no `.c` or `.h` file of
+any OpenSSH release, nothing of dropbear or any other server, and no
+shadow-utils, PAM or libxcrypt source. From the signed
+`openssh-10.0p2.tar.gz` only the man pages `sshd.8`, `sshd_config.5`,
+`ssh.1` and `ssh_config.5` and `PROTOCOL` were extracted, by name; shadow(5)
+from Ubuntu's `passwd` package, the page alone. The pinned `ssh`, `sshd`,
+Ubuntu's `chpasswd` and its crypt (through python3's `crypt`) ran as black
+boxes. No password made by a row was written to a file, an argument
+vector, a log or a record; each row checked every log and record for its
+passwords in memory. Every server bound loopback.
+
+## Inputs verified
+
+- The tarball's sha256 `021a2e70…` before the pages were extracted; the
+  pages' digests in [SOURCES](../docs/SOURCES.md), three unchanged and
+  `ssh_config.5` new. shadow(5)'s package and page by sha256 (SOURCES).
+- wolf 0.2.37 and lupin 0.1.59 unchanged, by digest; wolf-std at
+  `2411d868`, staged by `tools/fetch-toolchain` from its commit (the wolf
+  archive bundles `5b3a5994`). The OpenSSH oracle's three binaries by the
+  digests in `burrow-oracle.toml`, unchanged.
+
+## Done-when
+
+- [x] The prediction, committed first (`56cb674`); the rulings answered.
+- [x] The std pin (`4a11847`) and every earlier row holding across it (the
+  final gauntlet).
+- [x] Password authentication against `/etc/shadow` with wolf-std's `$7$`,
+  capped, one check at a time, equal work for every refusal.
+- [x] sshd's defaults for the tries and the grace with passwords; locked
+  and expired accounts refused by every method, by name; root refused.
+- [x] The rows red first at the rows tip (`5a8ee4a`), green at the head,
+  held to the pinned `sshd`; the named differences recorded.
+- [x] README, MAP, SOURCES and CHANGELOG.
+- [x] The final-head gauntlet record, the plant record and the audit: in
+  the PR body.
