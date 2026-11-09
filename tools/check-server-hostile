@@ -284,6 +284,105 @@ def hostile_requests_refused():
         return "seven CHANNEL_FAILUREs, the command still runs, the log names each"
 
 
+# ---- passwords (px112) -----------------------------------------------------------------
+def failure_of(p):
+    """(methods, partial success) of a USERAUTH_FAILURE payload."""
+    n = int.from_bytes(p[1:5], "big")
+    return p[5:5 + n].decode(), p[5 + n] != 0
+
+
+@row
+def hostile_password_change():
+    """RFC 4252 §8's change request (TRUE, old, new): burrowd changes no
+    password: USERAUTH_FAILURE, no partial success, the pinned sshd's answer
+    beside it."""
+    old, new = serverlib.new_password(), serverlib.new_password()
+    req = FakeClient.head(USER, b"password") + b"\x01" + string(old.encode()) + string(new.encode())
+    answers = {}
+    sd = WORK / "hostile-password-change-sshd"
+    with serverlib.Shadow() as sh, Server("hostile-password-change", ["PasswordAuthentication yes"]) as s, \
+            oraclelib.Sshd(sd, ["PasswordAuthentication yes", "LogLevel VERBOSE", "PermitRootLogin no"],
+                           host_keys=("ed25519",)) as o:
+        sh.set(USER, serverlib.make_hash(BIN.parent / "rows" / "mkpw", old))
+        for who, port in (("burrowd", s.port), ("sshd", o.port)):
+            c = FakeClient(port)
+            c.kex()
+            c.service()
+            c.w.send(req)
+            p = c.recv()
+            c.close()
+            check(p[0] == 51, f"{who}: message {p[0]} instead of USERAUTH_FAILURE")
+            answers[who] = failure_of(p)
+        hits = serverlib.leaks([old, new], [("burrowd's log", s.b.log_text()), ("sshd's log", o.log_text())])
+        check(not hits, f"a password reached: {', '.join(hits)}")
+    check(answers["burrowd"] == answers["sshd"], f"burrowd {answers['burrowd']}, sshd {answers['sshd']}")
+    check(not answers["burrowd"][1], "partial success set")
+    s.outcome("auth_password_change_refused")
+    return f"USERAUTH_FAILURE {answers['burrowd'][0]!r}, no partial success, as sshd"
+
+
+@row
+def hostile_password_long():
+    """A 2000-byte password: refused before any hash, by name."""
+    with Server("hostile-password-long", ["PasswordAuthentication yes"]) as s:
+        c = FakeClient(s.port)
+        c.kex()
+        c.service()
+        t0 = time.monotonic()
+        c.w.send(FakeClient.head(USER, b"password") + b"\x00" + string(b"x" * 2000))
+        p = c.recv()
+        dt = time.monotonic() - t0
+        c.close()
+        check(p[0] == 51, f"message {p[0]} instead of USERAUTH_FAILURE")
+    s.outcome("auth_password_too_long")
+    return f"USERAUTH_FAILURE after {dt * 1000:.0f} ms"
+
+
+@row
+def hostile_password_flood():
+    """Twenty connections each sending a wrong password at once: every one
+    answered USERAUTH_FAILURE within the grace, and never more than one
+    password check (a monitor's second root child) alive at any moment."""
+    import threading
+    pw = serverlib.new_password()
+    with serverlib.Shadow() as sh, Server("hostile-password-flood", ["PasswordAuthentication yes", "LoginGraceTime 600",
+                                                                     "MaxStartups 30"]) as s:
+        sh.set(USER, serverlib.make_hash(BIN.parent / "rows" / "mkpw", pw, (17, 8, 1)))
+        master = s.b.proc.pid
+        clients = []
+        for _ in range(20):
+            c = FakeClient(s.port, timeout=600)
+            c.kex()
+            c.service()
+            clients.append(c)
+        got, peak, stop = [], [0], threading.Event()
+
+        def sample():
+            while not stop.is_set():
+                peak[0] = max(peak[0], checkers(master))
+                time.sleep(0.02)
+
+        t = threading.Thread(target=sample, daemon=True)
+        t.start()
+        t0 = time.monotonic()
+        wrong = serverlib.new_password().encode()
+        for c in clients:
+            c.w.send(FakeClient.head(USER, b"password") + b"\x00" + string(wrong))
+        for c in clients:
+            try:
+                got.append(c.recv()[0])
+            except Exception as e:  # a connection the server ended
+                got.append(type(e).__name__)
+        dt = time.monotonic() - t0
+        stop.set()
+        t.join(timeout=5)
+        for c in clients:
+            c.close()
+    check(got == [51] * 20, f"answers {got}")
+    check(peak[0] <= 1, f"{peak[0]} password checks at once")
+    return f"20 FAILUREs in {dt:.1f} s, at most {peak[0]} check at once"
+
+
 @row
 def hostile_thousand():
     with Server("hostile-thousand", ["LoginGraceTime 5"]) as s:
@@ -323,6 +422,19 @@ def hostile_thousand():
 def monitors(master):
     out = subprocess.run(["ps", "-e", "-o", "ppid="], capture_output=True, text=True).stdout
     return sum(1 for l in out.split() if l == str(master))
+
+
+def checkers(master):
+    """Password checks alive: a monitor's root children beyond its holder
+    (a monitor's children are the worker, the holder, and a checker while
+    one runs)."""
+    out = subprocess.run(["ps", "-e", "-o", "pid=,ppid=,user="], capture_output=True, text=True).stdout
+    rows = [l.split() for l in out.splitlines() if len(l.split()) == 3]
+    mons = {r[0] for r in rows if r[1] == str(master)}
+    n = 0
+    for m in mons:
+        n += max(0, sum(1 for r in rows if r[1] == m and r[2] == "root") - 1)
+    return n
 
 
 def main():
