@@ -600,7 +600,11 @@ fn monitor_main(
             if a.uid < 0 {
                 line.outcome = if a.name == "root" then "auth_root_refused" else "auth_user_unknown"
             }
-            let state = if a.uid >= 0 then spass.account_state(spass.entry(shadow, user), today()) else ""
+            let state = if a.uid >= 0 {
+                spass.account_state(spass.entry(shadow, user), today())
+            } else {
+                ""
+            }
             if state != "" {
                 line.outcome = state
             }
@@ -658,7 +662,13 @@ fn monitor_main(
                 } else {
                     3600000
                 }
-                let ok = checked(tk, mut st, if why == "" then e.field else spass.dummy(), pipe.bytes_at(fr, 2), left)
+                let ok = checked(
+                    tk,
+                    mut st,
+                    if why == "" then e.field else spass.dummy(),
+                    pipe.bytes_at(fr, 2),
+                    left,
+                )
                 if why == "" && !ok {
                     why = "auth_password_bad"
                 }
