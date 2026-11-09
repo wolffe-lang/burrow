@@ -8,7 +8,7 @@ macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below). **B4, den over burrow:** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX. **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
@@ -65,10 +65,11 @@ prints the effective settings in `sshd -T`'s shape. The configuration
 (default `/etc/burrowd/burrowd_config`; when it is absent the defaults
 stand) takes `AcceptEnv`, `AuthorizedKeysFile` (`%h`, `%u`, `%%`),
 `HostKey`, `ListenAddress`, `LoginGraceTime`, `MaxAuthTries`,
-`MaxStartups`, `PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`,
+`MaxStartups`, `PasswordAuthentication` (`no` unless a line says `yes`),
+`PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`,
 `StrictModes`, and the one value burrowd has of the keywords for what it
-does not do (`PasswordAuthentication no`, `PermitTTY no`,
-`DisableForwarding yes` and the rest). Any other value, or any other
+does not do (`KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`,
+`PermitTTY no`, `DisableForwarding yes` and the rest). Any other value, or any other
 `sshd_config(5)` keyword, is `config_unsupported`; a keyword that page does
 not list is `config_unknown`; either stops burrowd at start, exit 1.
 
@@ -91,6 +92,24 @@ What it does, and what it refuses:
   rest) admits nothing. **Root is refused, always**, alike to every other
   refusal (`Permission denied (publickey).`): root logs in as a user and
   runs `sudo`.
+- **Passwords, only where the configuration says `PasswordAuthentication
+  yes`:** the account's password from `/etc/shadow`, as crypt(5)'s `$7$`
+  (scrypt, wolf-std's), the form PAX's `passwd` writes; another method
+  (a stock Ubuntu account's `$y$`, `$6$` and the rest) is refused by name,
+  as are an empty, unset (`*`) or expired password, and a `$7$` string
+  dearer than N = 2^17, r = 8, p = 1. Every failure counts toward
+  `MaxAuthTries` and costs the same one hash, whether or not the account
+  exists, so the time to an answer says nothing about which accounts do.
+  One password is checked at a time across the server, in a process of its
+  own, so a hundred connections cost one hash's memory. burrowd changes no
+  password: a client's change request is refused, and an expired password
+  is changed at the console with `passwd`. It needs burrowd run as root
+  (only root reads `/etc/shadow`); otherwise the line stops it at start.
+- **Locked and expired accounts:** as `sshd(8)` describes it, an account
+  whose `/etc/shadow` password starts with `!` (`passwd -l`), or whose
+  expiry date has passed, is refused by every method, a key included. An
+  account whose field is `*`, or that has no line, may still log in with a
+  key.
 - **The session:** one session channel, one `exec`, its stdin, stdout and
   stderr as raw bytes, and its exit status or signal. `env` accepts
   `GIT_PROTOCOL` only. A shell, a pty, a subsystem, X11, the agent and every
@@ -99,19 +118,21 @@ What it does, and what it refuses:
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
 - **The log:** one line per connection: the time (UTC), the client's
-  address and port, the user, the key's fingerprint, the outcome by name
-  and the exit status. Never a private key, the command, an environment
-  value or a byte of the session.
+  address and port, the user, the key's fingerprint (`key password` for a
+  password login), the outcome by name and the exit status. Never a private
+  key, a password, the command, an environment value or a byte of the
+  session.
 
 **Privilege separation.** On Linux (and on PAX, as B6 brings it there),
 burrowd running as root never parses a byte from the network as root:
 
 ```text
 burrowd (root, the listener)       never holds the host key's private half
- └─ per connection: monitor (root) reads authorized_keys; checks modes and the signature; logs
+ └─ per connection: monitor (root) reads authorized_keys and /etc/shadow; checks modes and the signature; logs
      ├─ worker (account burrowd)   every byte before authentication; asks the monitor
-     └─ holder (root, holds nothing) then the session, with the user's uid, gid and groups
-         └─ the command             the user's shell, with -c
+     ├─ holder (root, holds nothing) then the session, with the user's uid, gid and groups
+     │   └─ the command             the user's shell, with -c
+     └─ checker (root, one at a time across the server) one password's hash, then exits
 ```
 
 The worker and the holder are forked before the monitor reads the host
