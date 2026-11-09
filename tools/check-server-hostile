@@ -384,6 +384,39 @@ def hostile_password_flood():
 
 
 @row
+def hostile_password_equal_work():
+    """A wrong password for an account with one, for root, for an account
+    that does not exist and for a locked one: each FAILURE costs the same
+    one hash (the refused ones the dummy's, at the shipped cost), so the
+    time does not say which accounts exist. Interleaved rounds, the
+    minimum of each; each within 0.5x to 2x of the real account's."""
+    pw = serverlib.new_password()
+    wrong = serverlib.new_password().encode()
+    with serverlib.Shadow() as sh, Server("hostile-password-equal-work", ["PasswordAuthentication yes"]) as s:
+        mk = BIN.parent / "rows" / "mkpw"
+        sh.set(USER, serverlib.make_hash(mk, pw, (17, 8, 1)))
+        sh.set("nobody", "!" + serverlib.make_hash(mk, pw, (17, 8, 1)))
+        best = {}
+        for _ in range(3):
+            for who in (USER, "root", "no-such-account", "nobody"):
+                c = FakeClient(s.port, timeout=120)
+                c.kex()
+                c.service()
+                t0 = time.monotonic()
+                c.w.send(FakeClient.head(who, b"password") + b"\x00" + string(wrong))
+                p = c.recv()
+                dt = time.monotonic() - t0
+                c.close()
+                check(p[0] == 51, f"{who}: message {p[0]} instead of USERAUTH_FAILURE")
+                best[who] = min(best.get(who, dt), dt)
+    base = best[USER]
+    ratios = {w: best[w] / base for w in best}
+    note = ", ".join(f"{w} {best[w] * 1000:.0f} ms ({ratios[w]:.2f}x)" for w in best)
+    check(all(0.5 <= r <= 2.0 for r in ratios.values()), f"not alike: {note}")
+    return note
+
+
+@row
 def hostile_thousand():
     with Server("hostile-thousand", ["LoginGraceTime 5"]) as s:
         master = s.b.proc.pid
