@@ -275,12 +275,22 @@ unlisted key, root, an unknown user, MaxAuthTries, LoginGraceTime, a
 forced command, an option burrowd cannot honour), 64 MiB through `cat`,
 interleaved streams, exit codes and signals, the session's environment and
 `id`, every refused request, MaxStartups, `-T`'s limits, the log line and
-the processes' users. `tools/check-server-hostile` runs burrowd against a
+the processes' users; and (px112) passwords, each run's own, given to the
+pinned `ssh` by its askpass program's environment: the right one, a wrong
+one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
+root's, a locked or expired account (by password and by key), an expired,
+empty or unset password, a `$y$` or over-cap string (refused where `sshd`
+admits them), the shipped cost, `PasswordAuthentication no`, and the start
+refused without root; no password in any log, output or record.
+`tools/check-server-hostile` runs burrowd against a
 scripted client that never finishes the exchange, leaves out strict kex,
 sends an oversize packet, signs over another session or with another key,
 sends `exec` before authentication, changes the user mid-authentication,
 sends data before the channel or the command, overruns the window, asks
-every refused request at once, and opens a thousand connections that never
+every refused request at once, asks to change a password, sends an
+overlong one, sends twenty wrong ones at once (one check at a time), times
+a wrong password for a real, root, unknown and locked account (the same
+one hash each), and opens a thousand connections that never
 send a version line. `tools/check-server-git` clones, fetches and pushes
 (and has a push refused) through burrowd and through `sshd`, and compares
 the repositories. `tools/measure-server` times connect to first byte and
