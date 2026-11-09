@@ -260,6 +260,12 @@ of three interleaved rounds), and the password login in
 `tools/measure-server`. Both are timed by the final gauntlet; their numbers
 are in the PR.
 
+**The plant's first record** (the password path's account check removed, at `4ed28a4`): `password-expired-account`
+went red by name (the right password let in), but `password-locked` held, for two reasons. wolf-std's `passwd.parse`
+refuses a `!` hash itself, so the password was still refused, as `auth_password_unset`. And the row's log check matched
+the same account's key attempt (`auth_account_locked`), not the password's own line. The lock rows now read each
+attempt's own line (`key password`, `key SHA256:`), so the lock's name is held for the password too.
+
 **Red against a mutant.** The two properties no tip could show red (the
 one-at-a-time token and the equal work) are shown red against burrowd with
 each removed, in the lane's own take, never committed: the PR names the
