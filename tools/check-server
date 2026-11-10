@@ -1134,6 +1134,264 @@ def session_shell_pty_slow():
         return note
 
 
+# ---- a terminal (bw06) ------------------------------------------------------------------
+# RFC 4254 §6.2's pty-req granted: both servers given PermitTTY yes, and
+# sshd PrintMotd no and PrintLastLog no (burrowd's only values); the base
+# keeps PermitTTY no on both for every other row. Each row holds burrowd's
+# exit status, stdout and stderr to sshd's, the pty's number written N.
+TTY_SSHD = ["PermitTTY yes", "PrintMotd no", "PrintLastLog no"]
+TTY_BURROWD = ["PermitTTY yes"]
+
+
+def pts(r):
+    return (r[0], re.sub(rb"/dev/pts/\d+", b"/dev/pts/N", r[1]), r[2])
+
+
+def tty_pair(name, **kw):
+    return Pair(BIN, rundir(name), sshd=TTY_SSHD, burrowd=TTY_BURROWD, **kw)
+
+
+def set_winsize(fd, rows, cols):
+    import fcntl
+    import struct
+    import termios
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def odd_modes(fd):
+    """The row's own terminal set as a client's might be: intr ^G, erase ^H, no IXON."""
+    import termios
+    a = termios.tcgetattr(fd)
+    a[6][termios.VINTR] = b"\x07"
+    a[6][termios.VERASE] = b"\x08"
+    a[0] &= ~termios.IXON
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+
+
+def on_tty(p, port, args, steps, rows=40, cols=132, modes=None, env=None, timeout=30):
+    """The pinned ssh with its stdin a pseudo-terminal of the row's own,
+    sized and set before ssh starts (stdout and stderr pipes); `steps` are
+    (marker, action): once `marker` shows on stdout, `action(master,
+    proc)` runs. (exit, stdout, stderr), the port written PORT."""
+    master, slave = pty.openpty()
+    set_winsize(slave, rows, cols)
+    if modes:
+        modes(slave)
+    try:
+        proc = subprocess.Popen(p.argv(port, list(args)), stdin=slave, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=p.env(env))
+    finally:
+        os.close(slave)
+    out, err = proc.stdout.fileno(), proc.stderr.fileno()
+    got = {out: b"", err: b""}
+    live = {out, err}
+    i = 0
+    deadline = time.monotonic() + timeout
+    try:
+        while live and time.monotonic() < deadline:
+            for fd in select.select(sorted(live), [], [], 0.1)[0]:
+                d = os.read(fd, 65536)
+                if d:
+                    got[fd] += d
+                else:
+                    live.discard(fd)
+            if i < len(steps) and steps[i][0] in got[out]:
+                steps[i][1](master, proc)
+                i += 1
+        if live:
+            proc.kill()
+            got[err] += b"\n[row: timed out]"
+        rc = proc.wait(timeout=10)
+    finally:
+        os.close(master)
+        proc.stdout.close()
+        proc.stderr.close()
+    return serverlib.norm((rc, got[out], got[err]), port)
+
+
+def typed(data, pause=0.0):
+    def act(master, proc):
+        if pause:
+            time.sleep(pause)
+        os.write(master, data)
+    return act
+
+
+def tty_both(p, args, steps, **kw):
+    rb = pts(on_tty(p, p.burrowd.port, args, steps, **kw))
+    rs = pts(on_tty(p, p.sshd.port, args, steps, **kw))
+    return rb, rs
+
+
+@row
+def session_tty_command():
+    """`ssh -tt host CMD`, stdin not a terminal: the pty's name, TERM,
+    SSH_TTY, the size (0 0: the client sends none), stdout and stderr both
+    on the pty, CR LF; with no TERM in the client's environment and with
+    TERM=vt100."""
+    script = 'tty; echo "TERM=${TERM-unset}"; echo "SSH_TTY=${SSH_TTY-unset}"; stty size; echo out; echo err >&2; exit 3'
+    notes = []
+    with tty_pair("session-tty-command") as p:
+        for env in (None, {"TERM": "vt100"}):
+            rb, rs = p.both(["-tt", script], env=env)
+            notes.append(same(p, pts(rb), pts(rs), f"ssh -tt host, TERM {env}"))
+        got = p.burrowd.conn_lines()
+        check(all(" refused " not in x for x in got), f"burrowd's log names a refusal: {got[-2:]}")
+        return "; ".join(notes)
+
+
+@row
+def session_tty_size():
+    """At a terminal of the row's own (40x132, intr ^G, erase ^H, -ixon):
+    `stty size` and the whole `stty -a` on the far side; then the row's
+    terminal resized to 50x100 and ssh told (SIGWINCH): `stty size` again."""
+    def resize(master, proc):
+        set_winsize(master, 50, 100)
+        proc.send_signal(signal_mod.SIGWINCH)
+    with tty_pair("session-tty-size") as p:
+        rb, rs = tty_both(p, ["-tt", "stty size; stty -a; echo ready; read x; stty size"],
+                          [(b"ready", resize), (b"ready", typed(b"go\r", 0.5))], modes=odd_modes)
+        note = same(p, rb, rs, "stty size, stty -a, a window change")
+        check(rs[1].startswith(b"40 132\r\n") and rs[1].endswith(b"50 100\r\n"), f"sshd's: {rs[1][-80:]!r}")
+        return note
+
+
+@row
+def session_tty_full_screen():
+    """A full-screen program's shape: it reads its size, sets raw mode,
+    reads one key and puts the mode back; the row types q."""
+    script = "stty size; stty raw -echo; k=$(dd bs=1 count=1 2>/dev/null); stty sane; printf 'key=%s\\n' \"$k\""
+    with tty_pair("session-tty-full-screen") as p:
+        rb, rs = tty_both(p, ["-tt", script], [(b"132", typed(b"q", 0.3))])
+        note = same(p, rb, rs, "size, raw mode, one key")
+        check(rb[1] == b"40 132\r\nkey=q\r\n", show(rb))
+        return note
+
+
+@row
+def session_tty_interrupt():
+    """Ctrl-C reaches the foreground program: 0x03 typed reaches a trap
+    (its status 7), and ends `exec sleep 30` (exit-signal INT: 255)."""
+    notes = []
+    with tty_pair("session-tty-interrupt") as p:
+        for script, want in (("trap 'echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done", 7),
+                             ("echo ready; exec sleep 30", 255)):
+            rb, rs = tty_both(p, ["-tt", script], [(b"ready", typed(b"\x03", 0.3))])
+            notes.append(same(p, rb, rs, f"Ctrl-C to {script[:30]}"))
+            check(rb[0] == want, show(rb))
+        got = p.burrowd.conn_lines()
+        check(any(" signal INT" in x for x in got), f"burrowd's log has no signal INT: {got[-2:]}")
+        return "; ".join(notes)
+
+
+@row
+def session_tty_shell():
+    """`ssh host` at a terminal: the login shell on the pty, its prompt,
+    the typed line echoed, `tty`, `$0`, `exit 4`."""
+    with tty_pair("session-tty-shell") as p:
+        rb, rs = tty_both(p, [], [(b"$ ", typed(b"tty; echo $0; exit 4\r", 0.3))])
+        note = same(p, rb, rs, "ssh host at a terminal")
+        check(rb[0] == 4 and b"/dev/pts/N\r\n-sh\r\n" in rb[1], show(rb))
+        got = p.burrowd.conn_lines()
+        check(any(" status 4" in x and " refused " not in x for x in got), f"burrowd's log: {got[-2:]}")
+        return note
+
+
+def account_sleeps():
+    """(pid, tty, stat) of each `sleep` the rows' account runs."""
+    out = subprocess.run(["ps", "-u", USER, "-o", "pid=,tty=,stat=,comm="], capture_output=True, text=True).stdout
+    return [tuple(l.split()[:3]) for l in out.splitlines() if l.split()[-1:] == ["sleep"]]
+
+
+@row
+def session_tty_gone():
+    """The session ends with its program, not with the last holder of the
+    slave: a child that ignores SIGHUP and holds the slave lives on with no
+    terminal; a child that does not is gone (the hangup); the slave's name
+    is gone either way."""
+    notes = []
+    with tty_pair("session-tty-gone") as p:
+        for script, lives in (("tty; (trap '' HUP; exec sleep 6) & sleep 0.3; echo started", True),
+                              ("tty; sleep 6 & sleep 0.3; echo started", False)):
+            results = {}
+            for who, port in (("burrowd", p.burrowd.port), ("sshd", p.sshd.port)):
+                t0 = time.monotonic()
+                r = p.ssh(port, ["-tt", script], timeout=20)
+                took = time.monotonic() - t0
+                time.sleep(0.5)
+                left = account_sleeps()
+                name = re.search(rb"/dev/pts/\d+", r[1])
+                gone = name is None or not os.path.exists(name.group().decode())
+                for pid, _, _ in left:
+                    try:
+                        os.kill(int(pid), signal_mod.SIGKILL)
+                    except OSError:
+                        pass
+                results[who] = (pts(serverlib.norm(r, port)), took, [(x[1], x[2]) for x in left], gone)
+            rb, rs = results["burrowd"][0], results["sshd"][0]
+            notes.append(same(p, rb, rs, script))
+            for who, (_, took, left, gone) in results.items():
+                check(took < 3, f"{who}: the session took {took:.1f} s; the program ended at once")
+                check(gone, f"{who}: the slave's name is still there after the session")
+                if lives:
+                    check(len(left) == 1 and left[0][0] == "?", f"{who}: the child holding the slave: {left}")
+                else:
+                    check(left == [], f"{who}: the child that did not ignore SIGHUP: {left}")
+        return "; ".join(notes)
+
+
+@row
+def session_tty_burst():
+    """20000 lines printed just before the program ends all arrive."""
+    with tty_pair("session-tty-burst") as p:
+        rb, rs = p.both(["-tt", "seq 1 20000; exit 0"], timeout=120)
+        note = same(p, rb, rs, "seq 1 20000 on the pty")
+        check(rb[1] == b"".join(b"%d\r\n" % i for i in range(1, 20001)), f"burrowd's lines: {rb[1][-40:]!r}")
+        return note
+
+
+@row
+def session_tty_eof():
+    """The client's stdin a pipe that ends: nothing reaches the pty, so
+    `cat` never ends (both clients killed at 10 s); a 0x04 byte before the
+    end is the terminal's end of file."""
+    notes = []
+    with tty_pair("session-tty-eof") as p:
+        for inp, timeout in ((b"one\n", 10), (b"one\n\x04", 20)):
+            rb, rs = p.both(["-tt", "cat; echo cat-ended"], inp=inp, timeout=timeout)
+            notes.append(same(p, rb, rs, f"cat on the pty, input {inp!r}"))
+        return "; ".join(notes)
+
+
+@row
+def auth_no_pty():
+    """Who may have a pty (sshd(8) AUTHORIZED_KEYS FILE FORMAT): no-pty and
+    restrict refuse it (under -tt the client gives up: 255), restrict,pty
+    grants it, and pty,restrict as sshd reads it."""
+    notes = []
+    for opts in ("no-pty", "restrict", "restrict,pty", "pty,restrict"):
+        with tty_pair(f"auth-no-pty-{opts.replace(',', '-')}", install=False) as p:
+            serverlib.install_keys([f"{opts} " + pathlib.Path(str(p.key) + ".pub").read_text()])
+            rb, rs = p.both(["-tt", "tty; exit 0"])
+            notes.append(f"{opts}: " + same(p, pts(rb), pts(rs), f"a key with {opts}, ssh -tt host tty"))
+    return "; ".join(notes)
+
+
+@row
+def session_own_session():
+    """Each program leads a session of its own (px112's left half): the
+    shell is its session's leader; with no pty it has no terminal and
+    /dev/tty does not open; on a pty the pty is its terminal."""
+    script = ('set -- $(cat /proc/self/stat); echo "sid_is_shell=$([ "$6" = "$$" ] && echo yes || echo no) '
+              'tty=$([ "$7" = 0 ] && echo none || echo some)"; (exec 3</dev/tty) 2>/dev/null && echo tty-opens || echo no-tty')
+    notes = []
+    with tty_pair("session-own-session") as p:
+        for args in (["-T"], ["-tt"]):
+            rb, rs = p.both(args + [script])
+            notes.append(same(p, rb, rs, f"ssh {args[0]} host: the program's session"))
+        return "; ".join(notes)
+
+
 @row
 def session_subsystem_refused():
     with Pair(BIN, rundir("session-subsystem-refused")) as p:
