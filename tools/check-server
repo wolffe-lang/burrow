@@ -951,6 +951,24 @@ def session_shell_pty():
 
 
 @row
+def session_shell_pty_slow():
+    """As session-shell-pty, the typed line making the shell wait a second
+    before it answers (px112): the pinned ssh, having asked for a pty,
+    obscures keystroke timing with a PING every 20 ms meanwhile
+    (ssh_config(5), ObscureKeystrokeTiming), and the answer still comes."""
+    with Pair(BIN, rundir("session-shell-pty-slow")) as p:
+        typed = b"sleep 1; echo slow; exit 4\n"
+        after = b"PTY allocation request failed"
+        rb = serverlib.norm(at_terminal(p, p.burrowd.port, typed, after, timeout=30), p.burrowd.port)
+        rs = serverlib.norm(at_terminal(p, p.sshd.port, typed, after, timeout=30), p.sshd.port)
+        record(p, f"sshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+        check(rb[2].count(NO_PTY) == 1, f"burrowd's stderr does not hold its no-pty line once: exit {rb[0]}, {tail(rb[2])!r}")
+        note = same(p, (rb[0], rb[1], rb[2].replace(NO_PTY, b"", 1)), rs, "ssh host at a terminal, a slow answer, less burrowd's no-pty line")
+        check(rb[:2] == (4, b"slow\n"), show(rb))
+        return note
+
+
+@row
 def session_subsystem_refused():
     with Pair(BIN, rundir("session-subsystem-refused")) as p:
         rb, rs = p.both(["-s", "sftp"])
