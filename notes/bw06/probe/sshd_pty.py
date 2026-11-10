@@ -203,8 +203,10 @@ def main():
              f"took {took:.1f} s; the account's processes after: {account_procs()}")
 
         rc, out, err = run(rig, ["-tt", "seq 1 20000; exit 0"], timeout=60)
+        crlf = out.count(b"\r\n")
+        nums = [int(x) for x in out.split(b"\r\n") if x.strip().isdigit()]
         show("tt-burst-before-exit", rc, out[-40:], err,
-             f"{out.count(b'\\r\\n')} CRLF lines, last {out.rstrip().split(b'\\r\\n')[-1]!r}")
+             f"{crlf} CRLF lines; the numbers 1 to 20000 in order: {nums == list(range(1, 20001))}")
 
         t0 = time.monotonic()
         rc, out, err = run(rig, ["-tt", "cat; echo cat-ended"], inp=b"one\n", timeout=10)
