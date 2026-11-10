@@ -1,5 +1,11 @@
 ## Unreleased
 
+- A session reads at most one packet a turn, on both sides. burrowd's
+  session stalled when the client sent PINGs (OpenSSH obscures keystroke
+  timing that way in a session that asked for a pty) or one IGNORE and then
+  nothing while the command's answer waited, so `ssh host` typed into could
+  hang; burrow's session likewise stopped reading its standard input after
+  a server's IGNORE or PING.
 - burrowd serves a shell (RFC 4254 §6.5 `shell`) with no pty: with no
   command, the account's login shell (`-sh`), its stdin, stdout and stderr
   the channel's. A forced command runs in its place; a second program on
