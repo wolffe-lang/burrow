@@ -104,6 +104,12 @@ fn main() {
     )
     assert(refused(file("PasswordAuthentication maybe\n")) == "config_unsupported")
     assert(!file("PasswordAuthentication no\nPasswordAuthentication yes\n").password_auth)
+    // bw06: PermitTTY takes yes or no, yes by default (as sshd), and -T says which.
+    assert(d.permit_tty && has(t, "permittty yes"))
+    let tty_no = file("PermitTTY no\n")
+    assert(refused(tty_no) == "ok" && !tty_no.permit_tty && has(sconfig.effective(tty_no), "permittty no"))
+    assert(file("PermitTTY yes\n").permit_tty && !file("PermitTTY no\nPermitTTY yes\n").permit_tty)
+    assert(refused(file("PermitTTY maybe\n")) == "config_unsupported")
     assert(refused(file("PermitRootLogin prohibit-password\n")) == "config_unsupported")
     assert(refused(file("AcceptEnv LANG LC_*\n")) == "config_unsupported")
     assert(refused(file("Subsystem sftp /usr/lib/sftp-server\n")) == "config_unsupported")
