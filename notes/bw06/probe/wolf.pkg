@@ -4,5 +4,5 @@ pkg {
     name: "ptyprobe",
     version: "0.0.0",
     edition: "1",
-    capabilities: [env, fs, exec, ffi],
+    capabilities: [env, fs, net, exec, ffi],
 }

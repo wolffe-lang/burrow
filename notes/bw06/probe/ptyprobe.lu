@@ -8,7 +8,7 @@
 //! answers on it, and (linux) tries the slave its number names.
 //! Part F declares the C library's pty calls (`extern "c"`, the `ffi`
 //! capability) and runs the whole chain an interactive session needs: a
-//! master and its slave's name, the window size set, a forked child that
+//! master and its slave's name, a forked child that
 //! leads a new session, opens the slave (its controlling terminal), and
 //! reports; then a shell on the slave that a Ctrl-C byte on the master
 //! interrupts; then the master's reads after the slave's last close.
@@ -22,8 +22,6 @@ use std.signal
 use std.term
 use std.time
 
-import c "stdlib.h"
-
 extern "c" fn posix_openpt(flags: i32) -> i32
 
 extern "c" fn grantpt(fd: i32) -> i32
@@ -34,18 +32,12 @@ extern "c" fn ptsname(fd: i32) -> *u8
 
 extern "c" fn setsid() -> i32
 
-extern "c" fn ioctl(fd: i32, req: u64, ...) -> i32
-
 fn linux() -> bool {
     os.name() == "linux" || os.name() == "pax"
 }
 
 fn o_rdwr_noctty() -> int {
     if linux() then 2 + 256 else 2 + 131072
-}
-
-fn tiocswinsz() -> int {
-    if linux() then 21524 else 2148037735
 }
 
 fn push_text(mut out: List[byte], s: str) {
@@ -101,7 +93,7 @@ fn c_text(p: *u8) -> str {
     unsafe {
         var i = 0
         while i < 128 && p[i] as int != 0 {
-            (mut out).push(p[i] as byte)
+            (mut out).push(p[i] as int as byte)
             i += 1
         }
     }
@@ -212,20 +204,6 @@ fn open_pty() -> (int, str) {
     (fd, name)
 }
 
-fn set_size(fd: int, rows: int, cols: int) -> int {
-    var r = -1
-    // # Safety: an 8-byte zeroed buffer as `struct winsize` (four
-    // unsigned shorts: rows, columns, x pixels, y pixels), freed once.
-    unsafe {
-        let ws = c.calloc(1, 8) as *u16
-        ws[0] = rows as u16
-        ws[1] = cols as u16
-        r = ioctl(fd as i32, tiocswinsz() as u64, ws) as int
-        c.free(ws as *u8)
-    }
-    r
-}
-
 fn part_f() {
     signal.listen(signal.child()) else {}
     let (fd, name) = open_pty()
@@ -241,9 +219,11 @@ fn part_f() {
     var early = List[byte]()
     let before = read_until(mut m, mut early, "", 100)
     print("F2 a read of the master before any slave open: {before}, {early.len} bytes")
-    let r = set_size(fd, 40, 132)
+    // The size needs ioctl(2), a variadic C function: wolf 0.2.37 refuses
+    // the declaration on aarch64-apple-darwin (E0826), so this probe sets
+    // none; ptyprobe_ioctl.lu sets it on linux.
     let sz = term.size(m) else term.Size { rows: -1, columns: -1 }
-    print("F3 TIOCSWINSZ 40x132 on the master: {r}; term.size(master) {sz.rows} {sz.columns}")
+    print("F3 term.size(master), never set: {sz.rows} {sz.columns}")
     // The child: a session of its own, the slave its controlling terminal.
     let f = process.fork() else |e| {
         print("F4 fork: {e}")
