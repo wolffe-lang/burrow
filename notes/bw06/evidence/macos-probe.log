@@ -1,0 +1,18 @@
+# bw06 phase 1, macOS: an Apple M-series laptop, macOS 26.4.1 arm64; the probe built at efd731b with the pinned wolf 0.2.37 and wolf-std 2411d868.
+S0 host macos aarch64
+S1 open /dev/ptmx (mode 3): ok
+S2 is_terminal(master): true
+S3 term.size(master): io os_error 0
+S4 term.mode(master): io os_error 0
+S4 term.mode(master): pack 0
+S5 fdinfo tty-index: no /proc on this host; std names no slave
+F1 posix_openpt, grantpt, unlockpt, ptsname: fd ok, slave /dev/ttysN
+F2 a read of the master before any slave open: deadline, 0 bytes
+F3 term.size(master), never set: -1 -1
+F4 the child's line and the shell's ready: seen
+F4 bytes: child: setsid pid; /dev/tty ok; foreground its group; size N N; mode pack N\r\nready\r\n
+F5 0x03 written (1); the shell: seen; bytes ^C\r\ncaught INT\r\n
+F5 the shell's status: 7
+F6 the master after the slave's last close: eof os_error 0, 0 more bytes
+F7 the slave's name after the master's close: gone
+END
