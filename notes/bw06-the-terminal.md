@@ -252,4 +252,107 @@ master reaches its INT trap (`caught INT`, status 7). After the slave's last clo
 
 ## Evidence
 
-(Phase 1's probes, scored here once run.)
+Phase 1's probes, after the prediction (`3e098c4`):
+
+- **linux:** the pinned container (Ubuntu 24.04 by digest) on two CPUs, linux 7.2.4 x86_64, the pinned
+  toolchain staged by `tools/fetch-toolchain` and the oracle by `tools/fetch-oracle`. Take 1 at `54bb2ef`:
+  `ptyprobe` as root and as the rows' account, `ptyprobe_ioctl`, and `sshd_pty.py`; take 2 at `94b9cb3`:
+  `sshd_pty.py` again (its line count fixed) and `sshd_pty_hold.py`. Raw logs sha256 `5ff246a5…` (take 1)
+  and `2795c959…` (take 2); the probes' output is `notes/bw06/evidence/linux-probes.log`.
+- **macOS:** an Apple M-series laptop, macOS 26.4.1 arm64, `ptyprobe` built at `efd731b`:
+  `notes/bw06/evidence/macos-probe.log`.
+
+**One change to a probe after the prediction:** wolf 0.2.37 refuses to build `extern "c" fn ioctl(fd: i32,
+req: u64, ...)` for aarch64-apple-darwin (E0826: "does not support C's unnamed arguments … declare a C
+wrapper with a fixed parameter list"). `ptyprobe.lu` therefore sets no size, and `ptyprobe_ioctl.lu` (linux
+only) does. That is itself a finding (below).
+
+### Scored
+
+**Part S, wolf-std alone:**
+
+- Hit: `/dev/ptmx` opens with mode 3 and is a terminal, on both hosts.
+- Hit on linux, miss on macOS: the master's size reads `0 0` and its mode `287` (canonical, echo, signals,
+  flow, extended, min 1) on linux; on macOS both `term.size` and `term.mode` on the master answer `io`.
+- Miss, worse than predicted: linux 7.2.4's `/proc/self/fdinfo` for the master holds no `tty-index`, so std
+  cannot even name the slave there, let alone unlock it. macOS: no slave name, as predicted. **No route to a
+  usable pty exists in wolf-std at the pin, measured on both hosts.**
+
+**Part F, the C library through `extern "c"`:**
+
+- Hit, both hosts: the master opens, is granted and unlocked, and names its slave (`/dev/pts/N`,
+  `/dev/ttysN`); as the rows' account exactly as as root.
+- Hit (linux) and answered (macOS): a read of the master before any slave open finds nothing to read; no end
+  of file on either host, so the holder may wait on the master from the start.
+- linux, `ptyprobe_ioctl`: `TIOCSWINSZ` 40×132 on the master reads back 40 132 there and in the child; a
+  second size on the master reaches the child as SIGWINCH, and the child reads 50 100. macOS: not
+  measurable, E0826.
+- Hit, both hosts: the forked child's `setsid` makes it a session leader (its id its pid), the slave's open
+  makes `/dev/tty` open and the foreground its group, a shell on the slave answers, and 0x03 on the master
+  reaches its INT trap (`^C`, `caught INT`, status 7).
+- Hit (linux) and answered (macOS): after the slave's last close the master reads end: `io` (EIO 5) on
+  linux, a zero-byte read (end of file) on macOS. The slave's name is gone after the master's close on both.
+
+**The pinned `sshd`:**
+
+- Hit: `ssh -tt host CMD` with stdin not a terminal: status 3; `/dev/pts/N`, `TERM=unset` (an empty client
+  TERM is not set), `SSH_TTY=/dev/pts/N`, `0 0`, `out` and `err` both on stdout, CR LF line ends;
+  `TERM=vt100` passes through.
+- **Miss:** stderr is `Connection to 127.0.0.1 closed.` whenever the pty was granted, stdin a terminal or
+  not. It is the client's line, so it is alike through both servers by construction.
+- Hit: `-T`: `not a tty`, TERM and `SSH_TTY` unset, `stty`'s complaint on stderr, LF ends.
+- Hit: at the probe's pty, `40 132`; `stty -a` shows `intr = ^G`, `erase = ^H`, `-ixon` (and speed 38400,
+  the rest as the probe's pty had them); after the resize and SIGWINCH, `50 100`. With stdin not a
+  terminal, `stty -a` reads linux's pty defaults (rows 0, columns 0, intr ^C, erase ^?, `ixon`).
+- Hit: Ctrl-C to a trap: `^Ccaught INT`, status 7; to `exec sleep 30`: `ready`, `^C`, status 255.
+- Hit: the full-screen probe: `40 132`, `key=q`, status 0. `ssh host` at the pty: `$ `, the typed line
+  echoed, `/dev/pts/N`, `-sh`, status 4.
+- Hit, after a second round: a child that ignores SIGHUP and holds the slave does not hold the session:
+  the session ends with the shell (0.5 s, the child's sleep 6 s), the child lives on with no terminal
+  (`?`). The first round's child had not yet set its trap when its shell ended, and went with the hangup.
+  A child without the trap is gone; one in a session of its own (`setsid sleep`) stays. Inside the session
+  the shell leads its session and group on `pts/0` in the foreground (`Ss+`), its child in that group
+  (`S+`).
+- Hit: 20000 lines printed just before the exit all arrive, in order.
+- Hit (low confidence): the client's EOF writes nothing to the pty; `cat` echoes and repeats `one` and never
+  ends (the 10 s deadline). With a 0x04 byte first: `one` twice, `cat-ended`, status 0.
+- **Miss:** keys with `no-pty` and with `restrict`, and `PermitTTY no`: `PTY allocation request failed on
+  channel 0`, status **255** and nothing on stdout: under `-tt` the client gives up when its forced pty is
+  refused, and the command never runs. `restrict,pty`: a pty, as predicted.
+- `sshd`'s own debug log, seen beside it: it allocates the pty in its privileged process and sets the
+  controlling terminal with `TIOCSCTTY`. burrowd's chain takes it by the open instead; the measured shape
+  (the program leads its session, the slave its terminal, its group the foreground) is the same.
+
+### What the probes change in the design
+
+- **The pty calls (choice 1):** (A) stands, stronger. wolf-std at the pin cannot name a slave on linux or
+  macOS. And (B) is incomplete: through `ffi` burrowd could open the pty, `setsid` and take the terminal on
+  both hosts, but on macOS it cannot set a window size or call any `ioctl` without a C object of its own
+  (E0826), so `window-change` and the initial size would be linux-only.
+- **Which end takes the size and the modes:** linux takes `TIOCSWINSZ` on the master (measured) and reads
+  the slave's modes through it; macOS refused `TIOCGWINSZ` and `tcgetattr` on the master (std's `io`). The
+  design: the child sets the modes on the slave before its exec; the holder sets sizes on the master on
+  linux and PAX, and the wolf change measures which end macOS takes. If only the slave, the holder keeps a
+  slave descriptor of its own (opened after the child's, so the child's open takes the terminal).
+- **No start-up sync:** the master reads nothing (no end) before the slave's first open, on both hosts, so
+  the holder waits on the master from the fork on.
+- **The end (choice 5) held to `sshd`:** the program's end, then the master drained until it ends (linux EIO,
+  macOS end of file) or a short quiet wait (a child left holding the slave), then CLOSE and the master
+  closed. A child that ignores SIGHUP outlives the session without a terminal, as through `sshd`.
+- **The client's EOF and `eow@openssh.com` on a pty:** taken and ignored, as `sshd` (the pty cannot be
+  half-closed; a 0x04 byte is the client's way to end a program's input).
+- **Environment:** TERM only when the client's is non-empty; `SSH_TTY` the slave's name. Speeds are not set:
+  `sshd`'s pty reads 38400 either way.
+- **Rows:** `auth-no-pty` and `session-tty-refused` expect status 255 and the client's PTY line with no
+  output (green at the rows tip, as burrowd refuses every pty; `restrict,pty` red); `session-tty-eof`
+  holds the deadline shape (both servers leave `cat` running) and the 0x04 shape; `session-tty-gone`
+  settles 0.3 s inside the session before the shell ends (the trap's race), and checks the child lives on
+  with no terminal; `session-own-session` holds the `ps` shape (`Ss+` leader, `S+` child) on the pty.
+
+### Done-when (phase 1)
+
+- [x] The prediction, committed first (`3e098c4`), with the probes after it.
+- [x] What the toolchain can and cannot do, per step and host, measured where a probe was cheap.
+- [x] Options and recommendations (§7), revised by the probes above.
+- [ ] Rulings on §7; then phase 2 per the plan: the rows red on this branch, the protocol half, and the
+  pty half once a wolf release carries the calls.
