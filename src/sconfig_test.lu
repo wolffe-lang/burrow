@@ -32,6 +32,16 @@ fn has(lines: List[str], want: str) -> bool {
     false
 }
 
+fn prefixed(lines: List[str], p: str) -> int {
+    var n = 0
+    for l in lines {
+        if l.starts_with(p) {
+            n += 1
+        }
+    }
+    n
+}
+
 fn main() {
     // sshd_config(5)'s defaults, and loopback alone.
     let d = sconfig.parse_args(List[str]())
@@ -112,6 +122,33 @@ fn main() {
     assert(refused(sconfig.parse_args(args("-Z"))) == "option_unknown")
     assert(refused(sconfig.parse_args(args("-p"))) == "usage")
     assert(refused(sconfig.parse_args(args("extra"))) == "usage")
+    // px116: SetEnv (sshd_config(5)), held to the pinned sshd's -T and -t:
+    // the first line wins, and in it the first value of a name; quotes
+    // around a whole argument or part of one; `#` ends the list.
+    let se = file("SetEnv A=1 \"B=x y\" C=\"p q\" A=2 E= # c\nSetEnv D=3\n")
+    assert(refused(se) == "ok")
+    let st = sconfig.effective(se)
+    assert(
+        has(st, "setenv A=1") &&
+            has(st, "setenv B=x y") &&
+            has(st, "setenv C=p q") &&
+            has(st, "setenv E="),
+    )
+    assert(prefixed(st, "setenv ") == 4)
+    assert(has(sconfig.effective(file("SetEnv \"A=x y\"\n")), "setenv A=x y"))
+    assert(has(sconfig.effective(file("setenv=A=b=c\n")), "setenv A=b=c"))
+    assert(prefixed(t, "setenv") == 0)
+    assert(refused(file("SetEnv FOO\n")) == "config_unsupported")
+    assert(
+        file("SetEnv A=1 FOO\n").detail ==
+            "/etc/burrowd/burrowd_config line 1: SetEnv FOO: not NAME=VALUE",
+    )
+    assert(
+        file("SetEnv =x\n").detail == "/etc/burrowd/burrowd_config line 1: SetEnv =x: not NAME=VALUE",
+    )
+    assert(
+        file("SetEnv A=\"x\n").detail == "/etc/burrowd/burrowd_config line 1: SetEnv: invalid quotes",
+    )
     // TIME FORMATS.
     assert(
         sconfig.seconds("600") == 600 &&
