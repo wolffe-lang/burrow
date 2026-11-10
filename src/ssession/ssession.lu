@@ -9,8 +9,11 @@
 //! login shell with `-c` and the command, leading a process group of its own
 //! (px112; not yet a session of its own), in the user's home directory, with
 //! the environment the caller built (HOME, USER, LOGNAME, SHELL, PATH,
-//! MAIL, SSH_CONNECTION, SSH_ORIGINAL_COMMAND under a forced command) and
-//! the `env` names the channel accepted. It is a `fork` of this process
+//! MAIL, SSH_CONNECTION, SSH_ORIGINAL_COMMAND under a forced command), the
+//! `env` names the channel accepted and (px116) the configuration's
+//! `SetEnv` variables, which replace the defaults and the accepted names
+//! but never SSH_CONNECTION or SSH_ORIGINAL_COMMAND
+//! (`sconfig.environment`, one entry per name). It is a `fork` of this process
 //! followed by `exec`, so it holds nothing of burrowd's. Its stdin, stdout
 //! and stderr are three pipes; the stdin end is non-blocking, so a command
 //! that does not read never stalls the connection, and burrowd's window
@@ -48,6 +51,7 @@ use std.signal
 use pipe
 use refuse
 use schannel
+use sconfig
 use transport
 
 /// What the session runs, and as whom.
@@ -58,6 +62,8 @@ pub struct Plan {
     command: str,
     forced: bool,
     env: List[str],
+    /// px116: the configuration's `SetEnv` entries, `NAME=VALUE`.
+    set_env: List[str],
     verbose: int,
     /// Only the one-process row program: the command's process takes the
     /// account's ids (`set_ids`) before its exec, the session staying root.
@@ -116,14 +122,23 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
     let pin = process.pipe() else { return io }
     let pout = process.pipe() else { return io }
     let perr = process.pipe() else { return io }
-    var envs = copy plan.env
-    for e in schannel.environment(ch) {
-        (mut envs).push(e)
-    }
     let asked = str_from_utf8(ch.command) else ""
-    if plan.forced && !ch.shell {
-        (mut envs).push("SSH_ORIGINAL_COMMAND={asked}")
+    // px116: burrowd's defaults, the accepted names, then SetEnv's; the
+    // pinned sshd sets SSH_CONNECTION and a forced command's
+    // SSH_ORIGINAL_COMMAND after SetEnv (measured), so they come last.
+    var base = List[str]()
+    var late = List[str]()
+    for e in plan.env {
+        if e.starts_with("SSH_CONNECTION=") {
+            (mut late).push(e)
+        } else {
+            (mut base).push(e)
+        }
     }
+    if plan.forced && !ch.shell {
+        (mut late).push("SSH_ORIGINAL_COMMAND={asked}")
+    }
+    let envs = sconfig.environment(base, schannel.environment(ch), plan.set_env, late)
     // The login shell only with no forced command: a forced command runs
     // for a shell request too, never the shell.
     let login = ch.shell && !plan.forced
