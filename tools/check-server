@@ -831,6 +831,143 @@ def session_env():
         return f"equal but {sorted(diff)} and sshd's own bin directory on PATH" if diff else "equal"
 
 
+# ---- SetEnv (px116) -----------------------------------------------------------------
+# sshd_config(5)'s SetEnv, held to the pinned sshd's -T, -t and session
+# environment (measured black box first: notes/px116-setenv.md). The first
+# SetEnv line wins; in it the first value of a name; quotes around a whole
+# argument or part of one; an argument starting with # ends the line.
+SETENV_TAKEN = (
+    ("one", ["SetEnv A=1 B=2"]),
+    ("two-lines", ["SetEnv A=1", "SetEnv B=2"]),
+    ("quoted-value", ['SetEnv A="x y" B=2']),
+    ("quoted-whole", ['SetEnv "A=x y" B=2']),
+    ("quoted-alone", ['SetEnv "A=x y"']),
+    ("empty-value", ["SetEnv A="]),
+    ("repeated", ["SetEnv A=1 A=2"]),
+    ("comment", ["SetEnv A=1 # c"]),
+    ("lower-case", ["setenv A=1"]),
+    ("equals", ["SetEnv=A=1"]),
+    ("odd-names", ["SetEnv A-B=1 C=d=e F=x#y"]),
+)
+# (name, lines, the words burrowd's detail holds after `FILE line N: `)
+SETENV_REFUSED = (
+    ("no-equals", ["SetEnv FOO"], "SetEnv FOO: not NAME=VALUE"),
+    ("no-name", ["SetEnv =x"], "SetEnv =x: not NAME=VALUE"),
+    ("none", ["SetEnv none"], "SetEnv none: not NAME=VALUE"),
+    ("second-bad", ["SetEnv A=1 FOO"], "SetEnv FOO: not NAME=VALUE"),
+    ("quotes", ['SetEnv A="x'], "SetEnv: invalid quotes"),
+)
+# The session rows' line: PAX's three variables, a value with a space, the
+# default environment's PATH and HOME, an accepted name, an empty value, a
+# repeated name, and SSH_CONNECTION, which sshd sets after SetEnv.
+SETENV_LINE = ('SetEnv WOLF_STD=/usr/share/wolf/compiler-std LUPIN_STD=/usr/share/wolf/std '
+               'DEN_TLS_ROOTS=/etc/ssl/certs/ca-roots.der "SPACED=a b" PATH=/opt/px116/bin:/usr/bin:/bin '
+               'HOME=/nonexistent-px116 GIT_PROTOCOL=from-setenv EMPTY= TWICE=first TWICE=second '
+               'SSH_CONNECTION=from-setenv')
+SETENV_WANT = {"WOLF_STD": "/usr/share/wolf/compiler-std", "LUPIN_STD": "/usr/share/wolf/std",
+               "DEN_TLS_ROOTS": "/etc/ssl/certs/ca-roots.der", "SPACED": "a b",
+               "PATH": "/opt/px116/bin:/usr/bin:/bin", "HOME": "/nonexistent-px116",
+               "GIT_PROTOCOL": "from-setenv", "EMPTY": "", "TWICE": "first"}
+
+
+def env_of(out, port):
+    """`env`'s lines as a dict, numbers between spaces (ports) written N
+    and the server's port PORT, so two servers' compare."""
+    got = {}
+    for l in out.decode().splitlines():
+        k, _, v = l.partition("=")
+        got[k] = re.sub(r" \d+ ", " N ", v).replace(str(port), "PORT")
+    return got
+
+
+def setenv_configs(d, name, lines, key):
+    cfg = d / f"{name}.burrowd_config"
+    cfg.write_text("\n".join(lines + [f"HostKey {key}"]) + "\n")
+    scfg = d / f"{name}.sshd_config"
+    scfg.write_text("\n".join(lines + [f"HostKey {key}", f"PidFile {d / 'sshd.pid'}"]) + "\n")
+    return cfg, scfg
+
+
+@row
+def config_setenv():
+    """burrowd -T's setenv lines are sshd -T's for every form sshd takes,
+    and every form sshd refuses at start burrowd refuses at start, by name,
+    with the file, the line and the argument."""
+    d = rundir("config-setenv")
+    d.mkdir(parents=True)
+    key = d / "host_ed25519"
+    serverlib.keygen(key, "host")
+    log = []
+    for name, lines in SETENV_TAKEN:
+        cfg, scfg = setenv_configs(d, name, lines, key)
+        rb = serverlib.run([str(BIN), "-T", "-f", str(cfg)], timeout=30)
+        rs = serverlib.run([serverlib.SSHD, "-T", "-f", str(scfg)], timeout=30)
+        pick = lambda out: [l for l in out.decode().splitlines() if l.startswith("setenv ")]
+        b, s = pick(rb[1]), pick(rs[1])
+        log.append(f"{name} {lines!r}\n  sshd -T: {rs[0]} {s}\n  burrowd -T: {rb[0]} {b} {tail(rb[2], 200)!r}")
+        (d / "compare.txt").write_text("\n".join(log) + "\n")
+        check(rs[0] == 0, f"{name}: sshd -T {show(rs)}")
+        check(rb[0] == 0, f"{name}: burrowd -T {show(rb)}")
+        check(b == s, f"{name}: burrowd -T {b}, sshd -T {s}")
+    for name, lines, words in SETENV_REFUSED:
+        cfg, scfg = setenv_configs(d, name, lines, key)
+        rb = serverlib.run([str(BIN), "-t", "-f", str(cfg)], timeout=30)
+        rs = serverlib.run([serverlib.SSHD, "-t", "-f", str(scfg)], timeout=30)
+        log.append(f"{name} {lines!r}\n  sshd -t: {rs[0]} {tail(rs[2], 200)!r}\n  burrowd -t: {rb[0]} {tail(rb[2], 200)!r}")
+        (d / "compare.txt").write_text("\n".join(log) + "\n")
+        check(rs[0] == 255, f"{name}: sshd -t took it: {show(rs)}")
+        want = f"burrowd: config_unsupported: {cfg} line 1: {words}"
+        check(rb[0] == 1 and want in rb[2].decode(errors="replace"),
+              f"{name}: burrowd -t {show(rb)}, wanted exit 1 and {want!r}")
+    return f"{len(SETENV_TAKEN)} forms taken as sshd -T prints them, {len(SETENV_REFUSED)} refused at start by both"
+
+
+@row
+def session_setenv():
+    """A session's environment with SetEnv, for a command and for the login
+    shell (ssh -T, env on its standard input), held to sshd's: the variables
+    set, the defaults and the client's GIT_PROTOCOL replaced, the first
+    value of a repeated name, SSH_CONNECTION kept; the only difference
+    SSH_CLIENT, as session-env's."""
+    notes = []
+    with Pair(BIN, rundir("session-setenv"), sshd=[SETENV_LINE], burrowd=[SETENV_LINE]) as p:
+        kw = dict(opts=["-o", "SendEnv=GIT_PROTOCOL"], env={"GIT_PROTOCOL": "version=2"})
+        log = []
+        for form, args, inp in (("command", ["env | LC_ALL=C sort"], None),
+                                ("shell", ["-T"], b"env | LC_ALL=C sort\n")):
+            rb, rs = p.both(args, inp=inp, **kw)
+            log.append(f"{form}\nsshd: {show(rs)}\n{rs[1].decode()}\nburrowd: {show(rb)}\n{rb[1].decode()}")
+            record(p, "\n".join(log))
+            check(rs[0] == 0 and rb[0] == 0, f"{form}: sshd {show(rs)}; burrowd {show(rb)}")
+            b, s = env_of(rb[1], p.burrowd.port), env_of(rs[1], p.sshd.port)
+            for k, v in SETENV_WANT.items():
+                check(s.get(k) == v, f"{form}: through sshd {k}={s.get(k)!r}, the measurement says {v!r}")
+                check(b.get(k) == v, f"{form}: through burrowd {k}={b.get(k)!r}, wanted {v!r} (sshd's)")
+            check(b.get("SSH_CONNECTION", "").startswith("127.0.0.1 N 127.0.0.1 PORT"),
+                  f"{form}: SSH_CONNECTION through burrowd {b.get('SSH_CONNECTION')!r}: SetEnv replaced it")
+            diff = sorted(k for k in set(b) | set(s) if b.get(k) != s.get(k))
+            check(set(diff) <= {"SSH_CLIENT"},
+                  f"{form}: the environments differ beyond the named SSH_CLIENT: {[(k, b.get(k), s.get(k)) for k in diff]}")
+            check([l.split("=", 1)[0] for l in rb[1].decode().splitlines()].count("TWICE") == 1,
+                  f"{form}: TWICE more or less than once through burrowd")
+            notes.append(f"{form}: equal but {diff}")
+        return "; ".join(notes)
+
+
+@row
+def session_setenv_forced():
+    """SetEnv cannot replace SSH_ORIGINAL_COMMAND under a forced command:
+    the client's command, as through sshd."""
+    line = "SetEnv SSH_ORIGINAL_COMMAND=from-setenv A=1"
+    with Pair(BIN, rundir("session-setenv-forced"), sshd=[line], burrowd=[line], install=False) as p:
+        key = 'command="echo forced: $A $SSH_ORIGINAL_COMMAND" ' + pathlib.Path(str(p.key) + ".pub").read_text()
+        serverlib.install_keys([key])
+        rb, rs = p.both(["echo", "asked"])
+        note = same(p, rb, rs, "authorized_keys command=, SetEnv SSH_ORIGINAL_COMMAND")
+        check(rb[1] == b"forced: 1 echo asked\n", f"stdout {rb[1]!r}")
+        return note + f", stdout {rb[1]!r}"
+
+
 @row
 def session_id():
     with Pair(BIN, rundir("session-id")) as p:
