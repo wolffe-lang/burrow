@@ -8,7 +8,7 @@ macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX. **B4, den over burrow:** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` and a shell with no pty for B6, the server on PAX. **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
@@ -110,11 +110,16 @@ What it does, and what it refuses:
   expiry date has passed, is refused by every method, a key included. An
   account whose field is `*`, or that has no line, may still log in with a
   key.
-- **The session:** one session channel, one `exec`, its stdin, stdout and
-  stderr as raw bytes, and its exit status or signal. `env` accepts
-  `GIT_PROTOCOL` only. A shell, a pty, a subsystem, X11, the agent and every
-  forwarding are refused by name, and the command still runs where `sshd`
-  runs it.
+- **The session:** one session channel and one program on it: the
+  client's command (`exec`), or with no command the account's login shell
+  (`shell`; `-sh` for `/bin/sh`), with no pty. Its stdin, stdout and stderr
+  are raw bytes, and its exit status or signal goes back. A forced command
+  runs in the shell's place too. `env` accepts `GIT_PROTOCOL` only. A pty,
+  a subsystem, X11, the agent and every forwarding are refused by name, and
+  the program still runs where `sshd` runs it. When a client at a terminal
+  asked for a pty, the shell's first line on stderr says it has none: no
+  line editing, no job control, and ^C is a byte on the shell's stdin, not
+  a signal.
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
 - **The log:** one line per connection: the time (UTC), the client's
@@ -131,7 +136,7 @@ burrowd (root, the listener)       never holds the host key's private half
  └─ per connection: monitor (root) reads authorized_keys and /etc/shadow; checks modes and the signature; logs
      ├─ worker (account burrowd)   every byte before authentication; asks the monitor
      ├─ holder (root, holds nothing) then the session, with the user's uid, gid and groups
-     │   └─ the command             the user's shell, with -c
+     │   └─ the program             the user's shell: -c and the command, or a login shell
      └─ checker (root, one at a time across the server) one password's hash, then exits
 ```
 
@@ -274,7 +279,9 @@ accepted and refused (StrictModes on the home, `~/.ssh` and the file, an
 unlisted key, root, an unknown user, MaxAuthTries, LoginGraceTime, a
 forced command, an option burrowd cannot honour), 64 MiB through `cat`,
 interleaved streams, exit codes and signals, the session's environment and
-`id`, every refused request, MaxStartups, `-T`'s limits, the log line and
+`id`, every refused request, the login shell with no pty (a script on
+stdin, its `$0`, a forced command in its place, `ssh host` at a terminal
+with the pty refused), MaxStartups, `-T`'s limits, the log line and
 the processes' users; and (px112) passwords, each run's own, given to the
 pinned `ssh` by its askpass program's environment: the right one, a wrong
 one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
@@ -287,7 +294,7 @@ scripted client that never finishes the exchange, leaves out strict kex,
 sends an oversize packet, signs over another session or with another key,
 sends `exec` before authentication, changes the user mid-authentication,
 sends data before the channel or the command, overruns the window, asks
-every refused request at once, asks to change a password, sends an
+every refused request at once, asks for a second program after a shell, asks to change a password, sends an
 overlong one, sends twenty wrong ones at once (one check at a time), times
 a wrong password for a real, root, unknown and locked account (the same
 one hash each), and opens a thousand connections that never
