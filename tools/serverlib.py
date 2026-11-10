@@ -93,6 +93,28 @@ def free_port():
     return oraclelib.free_port()
 
 
+def children(pid):
+    """The processes whose parent is `pid` (ps), an ended one its parent has
+    not waited for included; never ps itself."""
+    ps = subprocess.Popen(["ps", "-A", "-o", "pid=,ppid="], stdout=subprocess.PIPE, text=True)
+    out = ps.communicate()[0]
+    return [int(f[0]) for f in (l.split() for l in out.splitlines())
+            if len(f) == 2 and f[1] == str(pid) and f[0] != str(ps.pid)]
+
+
+def childless(pid, seconds=5.0):
+    """Waits until `pid` has no child processes; False if some remain after
+    `seconds`. A server's listener after the harness's readiness probe:
+    burrowd counts a connection as started until it has seen its monitor
+    end, and the monitor writes its log line before that."""
+    deadline = time.monotonic() + seconds
+    while children(pid):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
 class Burrowd:
     """One `burrowd -D -e` on 127.0.0.1:<port>, its config under `run_dir`."""
 

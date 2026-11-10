@@ -1028,7 +1028,12 @@ def limits_startups():
     import socket as so
     with Pair(BIN, rundir("limits-startups"), sshd=["MaxStartups 3"], burrowd=["MaxStartups 3"]) as p:
         out = []
-        for name, port in (("burrowd", p.burrowd.port), ("sshd", p.sshd.port)):
+        for name, port, pid in (("burrowd", p.burrowd.port, p.burrowd.proc.pid),
+                                ("sshd", p.sshd.port, p.sshd.proc.pid)):
+            # The readiness probe is a started connection until its process
+            # is gone, after the line the harness waits for: on a loaded
+            # host the third held one was refused in its place.
+            check(serverlib.childless(pid), f"{name}'s readiness probe still running after 5 s: {serverlib.children(pid)}")
             held = []
             for i in range(3):
                 c = so.create_connection(("127.0.0.1", port))
