@@ -1,5 +1,11 @@
 ## Unreleased
 
+- burrowd serves a shell (RFC 4254 §6.5 `shell`) with no pty: with no
+  command, the account's login shell (`-sh`), its stdin, stdout and stderr
+  the channel's. A forced command runs in its place; a second program on
+  the channel is `exec_twice`; `pty-req` stays `pty_refused`, and a shell
+  after it starts with one line on stderr saying it has no terminal.
+  `shell_refused` leaves the server's names (burrow, the client, keeps it).
 - burrowd checks passwords from `/etc/shadow` where its configuration
   says `PasswordAuthentication yes` (its default stays `no`): crypt(5)'s
   `$7$` (wolf-std's scrypt, the form PAX writes), capped at PAX's shipped
