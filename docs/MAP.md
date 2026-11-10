@@ -129,7 +129,7 @@ burrowd is not root (px112: only root reads `/etc/shadow`).
 | `auth_changed` | the user or service changed between requests | (a scripted client: DISCONNECT 2) |
 | `channel_type_refused`, `session_limit` | a channel other than one session | `-W`: `channel 0: open failed: administratively prohibited: open failed` |
 | `forward_refused`, `request_refused` | `tcpip-forward` and the like; any other global request | `-R`: `Error: remote port forwarding failed for listen port 0` |
-| `pty_refused`, `shell_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the command still runs where `sshd` runs it) | `PTY allocation request failed on channel 0`, `shell request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
+| `pty_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the program still runs where `sshd` runs it); `exec_twice` is a second program, `exec` or `shell` after either (px112: a shell is served, with no pty) | `PTY allocation request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
 | `channel_unknown`, `channel_closed`, `window_exceeded`, `channel_packet_too_large`, `window_overflow` | the client's channel misbehaves | (a scripted client: DISCONNECT 2) |
 | `nologin`, `exec_failed` | `/etc/nologin` exists (its text on stderr); the shell cannot start | |
 | `disconnected`, `closed`, `timeout`, `io` | the client's DISCONNECT, the socket's end, a deadline, a failure | |
@@ -468,8 +468,10 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   burrowd process is a fork of the listener, never a fresh image.
 - On macOS burrowd serves only the user who runs it (wolf-std cannot change
   a process's user there), and refuses to start as root.
-- burrowd runs commands only: no shell, pty, subsystem, X11, agent or
-  forwarding, each refused by name.
+- burrowd runs one command, or (px112) the login shell with no pty: no
+  pty, subsystem, X11, agent or forwarding, each refused by name. A shell
+  at a terminal has no line editing or job control, ^C reaches it as a
+  byte, not a signal, and a shell reading a pipe prints no prompt.
 - burrowd checks crypt(5)'s `$7$` alone (wolf-std's scrypt): a stock Linux
   account's `$y$` (yescrypt) or `$6$` password is refused by name where
   `sshd` checks it. burrowd changes no password (no
