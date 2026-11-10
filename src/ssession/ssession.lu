@@ -215,6 +215,11 @@ fn reap(mut pr: Running) -> () ! refuse.Refusal {
     // An end by a signal is -N, or -(256 + N) with a core (`poll_core`).
     let cc = process.poll_core() else { return io }
     if cc.change.changed {
+        // A stop is not an end (px112): `poll` reports a stopped program as
+        // `256 + N`, and it stays the session's until it ends.
+        if process.is_stopped(cc.change.status) {
+            return
+        }
         let v = cc.change.status.value
         pr.status = if v < 0 && cc.core then v - 256 else v
         pr.running = false
