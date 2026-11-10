@@ -262,7 +262,7 @@ def hostile_requests_refused():
         asks = [(b"pty-req", string(b"xterm") + u32(80) + u32(24) + u32(0) + u32(0) + string(b"")),
                 (b"x11-req", b"\x00" + string(b"MIT-MAGIC-COOKIE-1") + string(b"00") + u32(0)),
                 (b"auth-agent-req@openssh.com", b""), (b"subsystem", string(b"sftp")),
-                (b"signal", string(b"TERM")), (b"shell", b"")]
+                (b"signal", string(b"TERM"))]
         answers = []
         for kind, fields in asks:
             c.request(peer, kind, True, fields)
@@ -271,17 +271,56 @@ def hostile_requests_refused():
         answers.append(c.recv()[0])
         c.request(peer, b"exec", True, string(b"echo still"))
         ok = c.recv()
-        check(answers == [100] * 7, f"answers {answers}, wanted seven CHANNEL_FAILUREs")
+        check(answers == [100] * 6, f"answers {answers}, wanted six CHANNEL_FAILUREs")
         check(ok[0] == 99, f"message {ok[0]} instead of CHANNEL_SUCCESS for exec after the refusals")
         got = c.until_end(seconds=10)
         c.close()
         data = b"".join(p[9:] for t, p in got if t == 94)
         check(b"still" in data, f"the command's output did not arrive: {[t for t, _ in got]}")
         lines = s.b.conn_lines(settle=5)
-        names = ["pty_refused", "x11_refused", "agent_refused", "subsystem_refused", "signal_refused", "shell_refused",
-                 "env_refused"]
+        names = ["pty_refused", "x11_refused", "agent_refused", "subsystem_refused", "signal_refused", "env_refused"]
         check(lines and all(n in lines[-1] for n in names), f"the log line does not name them all: {lines[-1:]}")
-        return "seven CHANNEL_FAILUREs, the command still runs, the log names each"
+        return "six CHANNEL_FAILUREs, the command still runs, the log names each"
+
+
+def answer(c, seen):
+    """The next CHANNEL_SUCCESS (99) or CHANNEL_FAILURE (100), the messages
+    before it kept in `seen`."""
+    while True:
+        p = c.recv()
+        if p[0] in (99, 100):
+            return p[0]
+        seen.append((p[0], p))
+
+
+@row
+def hostile_program_twice():
+    """RFC 4254 §6.5, one program per channel (px112): a `shell`, then an
+    `exec` and a second `shell` on the same channel. CHANNEL_SUCCESS, then
+    two CHANNEL_FAILUREs named exec_twice; the shell still reads its input."""
+    with Server("hostile-program-twice") as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        seen = []
+        c.request(0, b"shell", True)
+        first = answer(c, seen)
+        check(first == 99, f"message {first} instead of CHANNEL_SUCCESS for the shell")
+        c.request(0, b"exec", True, string(b"echo exec ran"))
+        c.request(0, b"shell", True)
+        later = [answer(c, seen), answer(c, seen)]
+        check(later == [100, 100], f"answers {later} to exec and shell after the shell, wanted two CHANNEL_FAILUREs")
+        c.data(0, b"echo still; exit 5\n")
+        c.w.send(bytes([96]) + u32(0))
+        got = seen + c.until_end(seconds=10)
+        c.close()
+        data = b"".join(p[9:] for t, p in got if t == 94)
+        check(data == b"still\n", f"the shell's output {data!r}, wanted b'still\\n' alone")
+        lines = s.b.conn_lines(settle=5)
+        check(lines and " refused exec_twice,exec_twice " in lines[-1] + " " and " status 5" in lines[-1],
+              f"the log line: {lines[-1:]}")
+        return "the shell served, exec and shell after it refused (exec_twice), the shell's status 5"
 
 
 # ---- passwords (px112) -----------------------------------------------------------------
