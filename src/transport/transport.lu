@@ -13,8 +13,11 @@
 //! server's EXT_INFO (RFC 8308; unknown extensions ignored, §2.5), the
 //! server's KEXINIT (a re-exchange it started, §9), OpenSSH's PING
 //! (answered with PONG) and DISCONNECT (the `disconnected` refusal).
-//! The session loop (`src/session`) uses `write`, which sends without
-//! first reading what has arrived, `buffered` and `try_next`.
+//! The session loops (`src/session`, `src/ssession`) use `write`, which
+//! sends without first reading what has arrived, `buffered`, `try_next`
+//! and `step` (px112): at most one packet, a transport message handled
+//! and nothing given back, so a peer's IGNORE, PING or re-exchange never
+//! holds a session's turn while the peer waits for that session's bytes.
 //!
 //! **Strict kex** (OpenSSH `PROTOCOL` §1.10). burrow always offers
 //! `kex-strict-c-v00@openssh.com` and refuses a server that does not
@@ -824,6 +827,23 @@ pub fn next(mut c: Conn) -> List[byte] ! refuse.Refusal {
             return q
         }
     }
+}
+
+/// At most one packet (px112): a message a re-exchange kept, else one
+/// packet read (the socket being readable) and handled. A transport
+/// message gives back the empty list; anything else is the message for
+/// the layer above.
+pub fn step(mut c: Conn) -> List[byte] ! refuse.Refusal {
+    if c.pending_pos < c.pending.len {
+        return pop_pending(mut c)
+    }
+    rekey_if_due(mut c)?
+    if c.pending_pos < c.pending.len {
+        return pop_pending(mut c)
+    }
+    let p = read_packet(mut c)?
+    let q = on_packet(mut c, p)?
+    q
 }
 
 /// The next message for the layer above if one is already whole in the
