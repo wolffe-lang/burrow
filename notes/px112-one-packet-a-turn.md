@@ -49,11 +49,37 @@ Written 2026-11-10 before any change, at trunk `7ea08ba`.
 
 ## Evidence
 
-(The takes, scored.)
+Development takes on the Linux build host's light slot (two CPUs, the pinned container), the rows tip `74db8f8` and then
+the code's head `9b20646`, one log (sha256 `e2a4e8cf…`): toolchain, oracle, the native build, every unit test, the
+client's hostile rows, and the new and neighbouring rows of `tools/check-server` and `tools/check-server-hostile`.
+
+**Red at the rows tip, by name** (each row stops at its first case, one IGNORE):
+
+```text
+FAIL transport-mid-session one IGNORE: burrow's input did not reach the server within 2 s ({'input-at': None, 'pongs': 0}); server None
+FAIL hostile-transport-mid-session one IGNORE: the command's output did not arrive within 2 s (got [93]…, 0 PONGs)
+FAIL session-shell-pty-slow exit -9 through burrowd, 4 through sshd; burrowd stderr 'PTY allocation request failed on channel 0 |  | [row: timed out]', sshd's 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.'
+```
+
+**Green at `9b20646`:** every unit test, every client hostile row, and
+
+```text
+PASS transport-mid-session (one IGNORE: input at 0.00 s; a PING every 20 ms: input at 0.00 s, 135 PONGs)
+PASS hostile-transport-mid-session (one IGNORE: output at 1.01 s; a PING every 20 ms: output at 1.00 s, 138 PONGs)
+PASS session-shell-pty-slow (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.')
+```
+
+with `session-cat-64m`, `server-rekey`, `session-shell`, `session-shell-pty`, `session-pty-refused` and the
+hostile session rows beside them.
+
+**The prediction, scored:** each of the three rows red at the rows tip by name and green at the head, as predicted;
+nothing else moved. The PING stream's half of each hostile row was not reached at the rows tip (each row stops at its
+first case); at the head both halves pass, a PONG for each PING.
 
 ## Done-when
 
-- [ ] The prediction, committed first.
-- [ ] The three rows red at the rows tip by name, green at the head.
-- [ ] README, MAP, CHANGELOG; the shell note's stale macOS line.
-- [ ] The gauntlet green at the final head; the plant (burrowd's session back on `transport.next`) red by name.
+- [x] The prediction, committed first (`4a10a88`).
+- [x] The three rows red at the rows tip by name, green at the head.
+- [x] README, MAP, SOURCES, CHANGELOG; the shell note's stale macOS line.
+- [ ] The gauntlet green at the final head; the plant (burrowd's session back on `transport.next`) red by name: the
+  PR's records.
