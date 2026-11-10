@@ -83,4 +83,47 @@ Every other row: `session-env` (no `SetEnv`: the environment as before), the cli
 
 ## Evidence
 
-(The takes.)
+Development takes on the Linux build host, block B (six CPUs), the pinned container: the oracle probe at trunk
+`9c647a2` (log sha256 `f1109e5c…`, and a second for a malformed later line), the rows tip `18f7de7` (log
+`a368c770…`) and the code's head `e09e563` (log `fa2528e8…`), each with toolchain, oracle and the build. The
+final gauntlet and the plant are the PR's records.
+
+**Red at the rows tip, by name:**
+
+```text
+check-test: src/sconfig_test.lu [checked] fail (trap(assert))
+FAIL config-setenv one: burrowd -T exit 1, stdout b'', stderr 'burrowd: config_unsupported: …/one.burrowd_config line 1: SetEnv, which burrowd does not have'
+FAIL session-setenv harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: …/burrowd_config line 1: SetEnv, which burrowd does not have
+FAIL session-setenv-forced harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: …/burrowd_config line 1: SetEnv, which burrowd does not have
+```
+
+`session-env` held. **A later malformed line** was measured after the first rows (the second probe): `sshd -t`
+refuses `SetEnv FOO` after a `SetEnv A=1` that already won (`line 2: Invalid environment.`), and `SetEnv B="x`
+likewise (`invalid quotes`). The row gained those two cases, red first (`1c48ad7`), and burrowd checks every
+`SetEnv` line it reads, keeping only the first.
+
+**At the code's head `e09e563`:** the build (native and release, warnings denied) and `wolf fmt --check` green;
+`session-setenv` and `session-setenv-forced` green on both tiers, with `session-env`, `auth-forced-command`,
+`auth-forced-shell` and `session-shell` beside them and every other server row (70 rows a tier, the hostile
+client's 18):
+
+```text
+PASS session-setenv (command: equal but ['SSH_CLIENT']; shell: equal but ['SSH_CLIENT'])
+PASS session-setenv-forced (exit 0, stdout b'forced: 1 echo asked\n')
+```
+
+One case stayed red, the row's and the unit's, not the server's: `SetEnv =x`. The row wanted the argument `=x`
+refused as itself; burrowd read the line in `sshd_config(5)`'s `keyword=value` form, the keyword, its `=` and the
+argument `x`, and refused `x` (`SetEnv x: not NAME=VALUE`). `sshd` refuses both readings alike (`Invalid
+environment.`), so its answer cannot tell them apart; the separator rule decides it. The case became `SetEnv =x`
+refused as `x`, and an empty name became `SetEnv A=1 =x` (`3e7da5d`, `6bf04f7`).
+
+**The prediction, scored:** every behaviour in the table as predicted, through burrowd and through `sshd` alike,
+and one the prediction did not have: a malformed `SetEnv` line after the first is refused too (measured, then
+held). The refusal's name and the first-line rule went as recommended.
+
+**Seen beside it, not this change's:** burrowd skips a later line of any other keyword unread, so
+`LoginGraceTime 5` then `LoginGraceTime soon`, or `Port 2222` then `Port x`, start burrowd, where the pinned
+`sshd -t` refuses both (`line 2: invalid time value.`, `line 2: Badly formatted port number.`), and likewise for
+`MaxAuthTries`, `StrictModes` and `PasswordAuthentication` (measured at `e09e563`, burrowd and `sshd` on the same
+files). Filed as burrow#22, not fixed here.
