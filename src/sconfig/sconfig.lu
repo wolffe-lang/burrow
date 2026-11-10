@@ -26,12 +26,13 @@
 //! `LoginGraceTime` (120), `LogLevel`, `MaxAuthTries` (6), `MaxStartups`
 //! (10:30:100), `PasswordAuthentication` (`no` unless a line says `yes`,
 //! R-px112-2: burrowd's default is key-only, `sshd`'s is `yes`),
+//! `PermitTTY` (yes or no, `yes` by default as `sshd`'s; bw06),
 //! `PermitRootLogin` (`no` only, R-bw04-3), `PidFile`, `Port`
 //! (22), `RekeyLimit`, `StrictModes` (yes); and the keywords whose one value
 //! is burrowd's: `KbdInteractiveAuthentication
 //! no` (and its alias `ChallengeResponseAuthentication`),
 //! `PubkeyAuthentication yes`, `AuthenticationMethods publickey` or `any`,
-//! `PermitTTY no`, `X11Forwarding no`, `AllowTcpForwarding no`,
+//! `X11Forwarding no`, `AllowTcpForwarding no`,
 //! `AllowAgentForwarding no`, `AllowStreamLocalForwarding no`,
 //! `DisableForwarding yes`, `GatewayPorts no`, `PermitTunnel no`,
 //! `PermitUserEnvironment no`, `PermitUserRC no`, `PermitEmptyPasswords
@@ -62,6 +63,8 @@ pub struct Settings {
     authorized_files: str,
     strict_modes: bool,
     password_auth: bool,
+    /// bw06: `PermitTTY` (yes by default, as `sshd`).
+    permit_tty: bool,
     accept_env: List[str],
     rekey_bytes: int,
     rekey_seconds: int,
@@ -93,6 +96,7 @@ pub fn defaults() -> Settings {
         authorized_files: ".ssh/authorized_keys .ssh/authorized_keys2",
         strict_modes: true,
         password_auth: false,
+        permit_tty: true,
         accept_env: List[str](),
         rekey_bytes: 0,
         rekey_seconds: 0,
@@ -129,7 +133,6 @@ fn fixed(k: str) -> str {
         "kbdinteractiveauthentication" => "no",
         "challengeresponseauthentication" => "no",
         "pubkeyauthentication" => "yes",
-        "permittty" => "no",
         "x11forwarding" => "no",
         "allowtcpforwarding" => "no",
         "allowagentforwarding" => "no",
@@ -461,6 +464,14 @@ pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
         s.strict_modes = value == "yes"
         return
     }
+    if k == "permittty" {
+        let v = value.lower()
+        if v != "yes" && v != "no" {
+            refuse(mut s, "config_unsupported", "{origin}: {keyword} {value}: yes or no")
+        }
+        s.permit_tty = v != "no"
+        return
+    }
     if k == "passwordauthentication" {
         let v = value.lower()
         if v != "yes" && v != "no" {
@@ -647,7 +658,7 @@ pub fn effective(s: Settings) -> List[str] {
     (mut out).push("pubkeyauthentication yes")
     (mut out).push("passwordauthentication {if s.password_auth then "yes" else "no"}")
     (mut out).push("kbdinteractiveauthentication no")
-    (mut out).push("permittty no")
+    (mut out).push("permittty {if s.permit_tty then "yes" else "no"}")
     (mut out).push("x11forwarding no")
     (mut out).push("allowtcpforwarding no")
     (mut out).push("allowagentforwarding no")
