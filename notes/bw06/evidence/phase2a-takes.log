@@ -259,3 +259,10 @@ FAIL hostile-pty-granted message 100 instead of CHANNEL_SUCCESS for the pty
   PASS hostile-transport-mid-session (one IGNORE: output at 1.01 s; a PING every 20 ms: output at 1.01 s, 146 PONGs)
   check-server-hostile: 5 rows, 1 failed, 0 SKIP
 END rows:check-server-hostile:hostile-pty-malformed,hostile-pty-granted,hostile-requests-refused,hostile-program-twice,hostile-transport-mid-session exit=1 secs=38
+# the head 490763d, auth-no-pty alone (each case's comparison from its compare.txt)
+START build-native
+END build-native exit=0 secs=6
+START rows:check-server:auth-no-pty
+FAIL auth-no-pty restrict,pty: exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+END rows:check-server:auth-no-pty exit=1 secs=3
+  pty,restrict: sshd exit 255, stdout b'', stderr 'PTY allocation request failed on channel 0'; burrowd the same

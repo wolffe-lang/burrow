@@ -433,3 +433,8 @@ rows tip `a596082` (build, every unit test, the terminal rows and their neighbou
   case before it fails (`629c957`), so the next take names each.
 - `local-tty` (`tools/check-server-local`, the Air) is written (`8e16b35`), after the protocol half; it is
   red until the release (the pty refused), and its first take belongs to phase 2b.
+- **`pty,restrict`, measured** (a light take at `490763d`, `auth-no-pty` alone; raw log sha256
+  `1a4de65c…`): `sshd` refuses the pty, as for `no-pty` and `restrict` (255, `PTY allocation request failed on
+  channel 0`), so it reads the options left to right, as burrowd's `akeys` does; burrowd answers the same.
+  The four cases now: `no-pty`, `restrict` and `pty,restrict` alike through both servers; `restrict,pty`
+  red until the release (`sshd` grants, burrowd `pty_failed`).
