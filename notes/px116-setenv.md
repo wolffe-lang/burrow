@@ -80,6 +80,9 @@ Every other row: `session-env` (no `SetEnv`: the environment as before), the cli
    and the argument.
 2. **Two `SetEnv` lines:** (A) the first wins, as `sshd` measured and `sshd_config(5)` says of every keyword not
    noted otherwise; (B) they accumulate, as `AcceptEnv` does (its entry says so). Recommended (A).
+3. **An argument with nothing before its `=`** (`SetEnv A=1 =x`, found by the first final take): `sshd` takes it.
+   (A) burrowd refuses it by line, `config_unsupported`, a named difference: no program can read a variable with
+   no name, and a line that sets one is a typo; (B) take it as `sshd` does. Recommended (A).
 
 ## Evidence
 
@@ -87,6 +90,11 @@ Development takes on the Linux build host, block B (six CPUs), the pinned contai
 `9c647a2` (log sha256 `f1109e5c…`, and a second for a malformed later line), the rows tip `18f7de7` (log
 `a368c770…`) and the code's head `e09e563` (log `fa2528e8…`), each with toolchain, oracle and the build. The
 final gauntlet and the plant are the PR's records.
+
+The takes ran on the branch before its rebase onto trunk `2bc47ba` (CI's fetches through `ci/fetch-retry`, which
+touches no file of this change); that branch is kept as `px116`. The same commits after the rebase: the
+prediction `6ae87e5` is `ed38bfd`, the rows tip `18f7de7` is `256bc21`, `1c48ad7` is `f43adcc`, the code's head
+`e09e563` is `e8e5892`, `3e7da5d` is `7929f43` and `6bf04f7` is `05833fd`.
 
 **Red at the rows tip, by name:**
 
@@ -114,9 +122,16 @@ PASS session-setenv-forced (exit 0, stdout b'forced: 1 echo asked\n')
 
 One case stayed red, the row's and the unit's, not the server's: `SetEnv =x`. The row wanted the argument `=x`
 refused as itself; burrowd read the line in `sshd_config(5)`'s `keyword=value` form, the keyword, its `=` and the
-argument `x`, and refused `x` (`SetEnv x: not NAME=VALUE`). `sshd` refuses both readings alike (`Invalid
-environment.`), so its answer cannot tell them apart; the separator rule decides it. The case became `SetEnv =x`
-refused as `x`, and an empty name became `SetEnv A=1 =x` (`3e7da5d`, `6bf04f7`).
+argument `x`, and refused `x` (`SetEnv x: not NAME=VALUE`). The case became `SetEnv =x` refused as `x`, and an
+empty name was tested as `SetEnv A=1 =x` (`3e7da5d`, `6bf04f7`).
+
+**The first final take** (at `6c68c48`, before the rebase; a development record, superseded) found that last
+case unmeasured: `sshd -t` takes `SetEnv A=1 =x` (exit 0), the argument `=x` with nothing before its `=`. That
+settles `SetEnv =x` too: `sshd` refuses it, so it read the `=` as the separator and `x` as the argument, as
+burrowd does. burrowd keeps refusing an empty name (decision 3), and the row now holds it as a named difference:
+`sshd` takes the line, burrowd refuses it by line (`306fd57`, `7dddf56` after the rebase). Every other row of that
+take was green, and its plant went red on both its rows by name; the organisation's recorder refused the plant's
+diff (two hunks for one break, it takes one), so the plant became one line (below, in the PR's records).
 
 **The prediction, scored:** every behaviour in the table as predicted, through burrowd and through `sshd` alike,
 and one the prediction did not have: a malformed `SetEnv` line after the first is refused too (measured, then
