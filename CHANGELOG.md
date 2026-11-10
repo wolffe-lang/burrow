@@ -1,5 +1,11 @@
 ## Unreleased
 
+- Each session's program leads a process group of its own, and burrowd
+  leads its own at start. A job-control stop a program draws on burrowd's
+  terminal (on PAX, a bare `sudo` over ssh, which asks on the console)
+  stopped burrowd's whole group, its listener included, until the machine
+  restarted; it now stops that program alone. A session of its own for
+  each program, as `sshd` gives, waits for a toolchain call.
 - A session reads at most one packet a turn, on both sides. burrowd's
   session stalled when the client sent PINGs (OpenSSH obscures keystroke
   timing that way in a session that asked for a pty) or one IGNORE and then
