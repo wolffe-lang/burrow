@@ -854,7 +854,9 @@ SETENV_TAKEN = (
 # first line won, as it does any keyword's malformed value (measured).
 SETENV_REFUSED = (
     ("no-equals", ["SetEnv FOO"], 1, "SetEnv FOO: not NAME=VALUE"),
-    ("no-name", ["SetEnv =x"], 1, "SetEnv =x: not NAME=VALUE"),
+    # `SetEnv =x` is the keyword, sshd_config's `=` separator and `x`.
+    ("equals-then-no-equals", ["SetEnv =x"], 1, "SetEnv x: not NAME=VALUE"),
+    ("no-name", ["SetEnv A=1 =x"], 1, "SetEnv =x: not NAME=VALUE"),
     ("none", ["SetEnv none"], 1, "SetEnv none: not NAME=VALUE"),
     ("second-bad", ["SetEnv A=1 FOO"], 1, "SetEnv FOO: not NAME=VALUE"),
     ("quotes", ['SetEnv A="x'], 1, "SetEnv: invalid quotes"),
