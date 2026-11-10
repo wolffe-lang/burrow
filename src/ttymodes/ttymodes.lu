@@ -1,0 +1,152 @@
+//! member: true
+//!
+//! burrow.ttymodes — RFC 4254 §8's encoded terminal modes, as a client's
+//! `pty-req` carries them, with RFC 8160's IUTF8 (bw06). Pure: no I/O.
+//!
+//! **The stream** is opcode and argument pairs: an opcode byte, then for
+//! opcodes 1 to 159 one uint32. `TTY_OP_END` (0) ends it; an opcode from 160
+//! stops the parse ("they should only be used after any other data"), the
+//! rest ignored; a stream that simply runs out ends there. A uint32 cut
+//! short is malformed (`ok` false, `why` saying where). The pairs are kept in
+//! order; for an opcode given twice, the last wins (`value`).
+//!
+//! **What the opcodes mean** is §8's table: 1 to 18 the special characters
+//! (255 for none), 30 to 42 the input flags, 50 to 62 the local flags, 70 to
+//! 75 the output flags, 90 to 93 the control flags, 128 and 129 the speeds.
+//! Applying them to a pty is `src/ptyhost`'s; a mode the host lacks is
+//! skipped there, as §8 allows.
+
+use wire
+
+/// A decoded mode stream.
+pub struct Modes {
+    /// Opcode, value, opcode, value, … in the order sent.
+    pairs: List[int],
+    ok: bool,
+    why: str,
+}
+
+/// The special characters' "none" (§8: "255 if none").
+pub fn none_char() -> int {
+    255
+}
+
+/// Whether `op` is one of §8's special characters (VINTR … VDISCARD).
+pub fn is_char(op: int) -> bool {
+    op >= 1 && op <= 18
+}
+
+/// §8's mnemonic for `op` (RFC 8160's for 42), or "" for one it does not
+/// define.
+pub fn name(op: int) -> str {
+    match op {
+        1 => "VINTR",
+        2 => "VQUIT",
+        3 => "VERASE",
+        4 => "VKILL",
+        5 => "VEOF",
+        6 => "VEOL",
+        7 => "VEOL2",
+        8 => "VSTART",
+        9 => "VSTOP",
+        10 => "VSUSP",
+        11 => "VDSUSP",
+        12 => "VREPRINT",
+        13 => "VWERASE",
+        14 => "VLNEXT",
+        15 => "VFLUSH",
+        16 => "VSWTCH",
+        17 => "VSTATUS",
+        18 => "VDISCARD",
+        30 => "IGNPAR",
+        31 => "PARMRK",
+        32 => "INPCK",
+        33 => "ISTRIP",
+        34 => "INLCR",
+        35 => "IGNCR",
+        36 => "ICRNL",
+        37 => "IUCLC",
+        38 => "IXON",
+        39 => "IXANY",
+        40 => "IXOFF",
+        41 => "IMAXBEL",
+        42 => "IUTF8",
+        50 => "ISIG",
+        51 => "ICANON",
+        52 => "XCASE",
+        53 => "ECHO",
+        54 => "ECHOE",
+        55 => "ECHOK",
+        56 => "ECHONL",
+        57 => "NOFLSH",
+        58 => "TOSTOP",
+        59 => "IEXTEN",
+        60 => "ECHOCTL",
+        61 => "ECHOKE",
+        62 => "PENDIN",
+        70 => "OPOST",
+        71 => "OLCUC",
+        72 => "ONLCR",
+        73 => "OCRNL",
+        74 => "ONOCR",
+        75 => "ONLRET",
+        90 => "CS7",
+        91 => "CS8",
+        92 => "PARENB",
+        93 => "PARODD",
+        128 => "TTY_OP_ISPEED",
+        129 => "TTY_OP_OSPEED",
+        _ => "",
+    }
+}
+
+/// The stream's pairs, or where it is malformed.
+pub fn decode(b: List[byte]) -> Modes {
+    var m = Modes { pairs: List[int](), ok: true, why: "" }
+    var i = 0
+    while i < b.len {
+        let op = b[i] as int
+        if op == 0 || op >= 160 {
+            return m
+        }
+        if i + 5 > b.len {
+            m.ok = false
+            m.why = "the value of opcode {op} at byte {i} is cut short"
+            return m
+        }
+        let v = b[i + 1] as int * 16777216 +
+            b[i + 2] as int * 65536 +
+            b[i + 3] as int * 256 +
+            b[i + 4] as int
+        (mut m.pairs).push(op)
+        (mut m.pairs).push(v)
+        i += 5
+    }
+    m
+}
+
+/// The value last given for `op`, or -1.
+pub fn value(m: Modes, op: int) -> int {
+    var v = -1
+    var i = 0
+    while i + 1 < m.pairs.len {
+        if m.pairs[i] == op {
+            v = m.pairs[i + 1]
+        }
+        i += 2
+    }
+    v
+}
+
+/// `pairs` (opcode, value, …) as a §8 stream ending in `TTY_OP_END`.
+pub fn encode(pairs: List[int]) -> List[byte] {
+    var out = List[byte]()
+    var i = 0
+    while i + 1 < pairs.len {
+        wire.put_u8(mut out, pairs[i])
+        wire.put_u32(mut out, pairs[i + 1])
+        i += 2
+    }
+    wire.put_u8(mut out, 0)
+    out
+}
