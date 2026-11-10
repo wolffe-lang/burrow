@@ -66,7 +66,7 @@ prints the effective settings in `sshd -T`'s shape. The configuration
 stand) takes `AcceptEnv`, `AuthorizedKeysFile` (`%h`, `%u`, `%%`),
 `HostKey`, `ListenAddress`, `LoginGraceTime`, `MaxAuthTries`,
 `MaxStartups`, `PasswordAuthentication` (`no` unless a line says `yes`),
-`PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`,
+`PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`, `SetEnv`,
 `StrictModes`, and the one value burrowd has of the keywords for what it
 does not do (`KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`,
 `PermitTTY no`, `DisableForwarding yes` and the rest). Any other value, or any other
@@ -114,7 +114,14 @@ What it does, and what it refuses:
   client's command (`exec`), or with no command the account's login shell
   (`shell`; `-sh` for `/bin/sh`), with no pty. Its stdin, stdout and stderr
   are raw bytes, and its exit status or signal goes back. A forced command
-  runs in the shell's place too. `env` accepts `GIT_PROTOCOL` only. A pty,
+  runs in the shell's place too. `env` accepts `GIT_PROTOCOL` only.
+  `SetEnv NAME=VALUE …` sets variables in every session, as `sshd_config(5)`
+  describes and the pinned `sshd` does: they replace burrowd's defaults
+  (`HOME`, `USER`, `LOGNAME`, `PATH`, `MAIL`, `SHELL`) and an accepted
+  `GIT_PROTOCOL`, never `SSH_CONNECTION` or a forced command's
+  `SSH_ORIGINAL_COMMAND`. Only the first `SetEnv` line counts, and in it the
+  first value of a name; a malformed line, the first or a later one, stops
+  burrowd at start, `config_unsupported` by file and line. A pty,
   a subsystem, X11, the agent and every forwarding are refused by name, and
   the program still runs where `sshd` runs it. When a client at a terminal
   asked for a pty, the shell's first line on stderr says it has none: no
@@ -292,8 +299,9 @@ mode, owner and fingerprint, a host key made by `burrow-keygen`, keys
 accepted and refused (StrictModes on the home, `~/.ssh` and the file, an
 unlisted key, root, an unknown user, MaxAuthTries, LoginGraceTime, a
 forced command, an option burrowd cannot honour), 64 MiB through `cat`,
-interleaved streams, exit codes and signals, the session's environment and
-`id`, every refused request, the login shell with no pty (a script on
+interleaved streams, exit codes and signals, the session's environment
+(with and without `SetEnv`, whose `-T` lines and refusals are held to
+`sshd`'s too) and `id`, every refused request, the login shell with no pty (a script on
 stdin, its `$0`, a forced command in its place, `ssh host` at a terminal
 with the pty refused, and a slow answer while the client's keystroke-timing
 PINGs arrive), MaxStartups, `-T`'s limits, the log line and
