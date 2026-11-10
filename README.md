@@ -336,6 +336,14 @@ to reproduce). Trunk pushes run
 it when CI, tools or pins change, and the nightly runs it always; a red
 nightly opens an issue.
 
+Every remote fetch of CI and the container (the base image, apt's lists and
+packages, the toolchain archives and the std, OpenSSH's tarball) is tried a
+bounded number of times with growing pauses, each try under a connect and a
+total time limit (`ci/fetch-retry`, and the same policy inline in
+`ci/oracle.Containerfile`). A fetch that still fails ends its step with
+`FAIL fetch of … failed after N tries`, and the Linux job's rows do not run
+after it.
+
 ## Clean room
 
 burrow is written from specifications and from black-box runs of OpenSSH,
