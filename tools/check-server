@@ -26,6 +26,7 @@ import pty
 import re
 import select
 import shutil
+import signal as signal_mod
 import socket
 import subprocess
 import sys
@@ -838,17 +839,125 @@ def session_id():
 
 
 @row
-def session_own_session():
-    """Each session's program leads a session of its own, with no
-    controlling terminal (px112): the shell is the session's leader (its
-    session id its own pid), `tty_nr` 0, and burrowd's own session is not
-    the program's. Held to sshd's shape."""
-    script = "set -- $(cat /proc/self/stat); echo \"sid_is_shell=$([ \"$6\" = \"$$\" ] && echo yes || echo no) tty_nr=$7\""
-    with Pair(BIN, rundir("session-own-session")) as p:
+def session_own_group():
+    """Each session's program leads a process group of its own (px112): the
+    shell is its group's leader (the group id its own pid), and `tty_nr` is
+    0 in the rows' container. Held to sshd's shape (sshd starts a session,
+    which leads a group too). A session of its own waits for a toolchain
+    call burrow's pin does not have."""
+    script = "set -- $(cat /proc/self/stat); echo \"pgrp_is_shell=$([ \"$5\" = \"$$\" ] && echo yes || echo no) tty_nr=$7\""
+    with Pair(BIN, rundir("session-own-group")) as p:
         rb, rs = p.both([script])
-        note = same(p, rb, rs, "the session's program: its session and its terminal")
-        check(rb[1] == b"sid_is_shell=yes tty_nr=0\n", f"burrowd's session: {rb[1]!r}")
+        note = same(p, rb, rs, "the session's program: its process group and its terminal")
+        check(rb[1] == b"pgrp_is_shell=yes tty_nr=0\n", f"burrowd's session: {rb[1]!r}")
         return note + f", {rb[1].decode().strip()}"
+
+
+def stat_of(pid):
+    """/proc/PID/stat's fields after the command name: state, ppid, pgrp, session, tty_nr, ..."""
+    text = pathlib.Path(f"/proc/{pid}/stat").read_text()
+    return text[text.rindex(")") + 2:].split()
+
+
+@row
+def server_own_group():
+    """burrowd's listener leads a process group of its own (px112), away
+    from the group that started it (the row's)."""
+    with Pair(BIN, rundir("server-own-group")) as p:
+        pid = p.burrowd.proc.pid
+        f = stat_of(pid)
+        mine = stat_of(os.getpid())
+        record(p, f"burrowd {pid}: {' '.join(f[:5])}\nthe row {os.getpid()}: {' '.join(mine[:5])}\n")
+        check(int(f[2]) == pid, f"burrowd {pid} is in group {f[2]} (the row's is {mine[2]})")
+        return f"burrowd {pid} leads group {f[2]}; the row's is {mine[2]}"
+
+
+# The console's shape (px112): a session whose controlling terminal one group
+# holds in the foreground (pid 1's on PAX), burrowd started in a background
+# group of it (the boot hook's). The leader takes a pseudo-terminal of the
+# row's own as its controlling terminal and starts burrowd in a new group.
+CONSOLE_LEADER = r"""
+import fcntl, os, subprocess, sys, termios
+slave, log, argv = sys.argv[1], sys.argv[2], sys.argv[3:]
+os.setsid()
+fd = os.open(slave, os.O_RDWR)
+fcntl.ioctl(fd, termios.TIOCSCTTY, 0)
+with open(log, "ab") as lf:
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=lf, stderr=subprocess.STDOUT, process_group=0)
+    print(p.pid, flush=True)
+    p.wait()
+"""
+
+
+@row
+def session_terminal_stop():
+    """A terminal's stop stays with the session that drew it (px112):
+    burrowd started as on PAX, in a background group of a session whose
+    controlling terminal another group holds in the foreground. A program
+    over ssh sets that terminal's modes (`stty -echo </dev/tty`, as sudo
+    does before it reads a password) and is stopped (SIGTTOU); a second
+    connection is answered all the same."""
+    master, slave = pty.openpty()
+    with Pair(BIN, rundir("session-terminal-stop")) as p:
+        d = p.dir / "console"
+        d.mkdir()
+        port = serverlib.free_port()
+        cfg = d / "burrowd_config"
+        cfg.write_text("\n".join(serverlib.BURROWD_BASE + ["ListenAddress 127.0.0.1", f"Port {port}",
+                                                         f"HostKey {p.sshd.dir / 'host_ed25519'}"]) + "\n")
+        with open(p.kh, "a") as kh:
+            kh.write(p.sshd.known_hosts_line().replace(f"[127.0.0.1]:{p.sshd.port} ", f"[127.0.0.1]:{port} "))
+        leader = subprocess.Popen([sys.executable, "-I", "-c", CONSOLE_LEADER, os.ttyname(slave), str(d / "burrowd.log"),
+                                   str(BIN), "-D", "-e", "-f", str(cfg)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+        bpid = int(leader.stdout.readline())
+        stopped = []
+        try:
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.5) as c:
+                        c.settimeout(2)
+                        c.recv(64)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+            r1 = p.ssh(port, ["stty -echo </dev/tty; echo not-stopped"], timeout=8)
+            for q in pathlib.Path("/proc").iterdir():
+                if q.name.isdigit():
+                    try:
+                        if (q / "comm").read_text().strip() == "stty" and stat_of(int(q.name))[0] == "T":
+                            stopped.append(int(q.name))
+                    except OSError:
+                        pass
+            listener = stat_of(bpid)[0]
+            r2 = p.ssh(port, ["echo second"], timeout=15)
+            record(p, f"stty over ssh: {show(r1)}\nstopped stty: {stopped}\nlistener {bpid} state {listener}\n"
+                      f"second connection: {show(r2)}\n")
+        finally:
+            # Whatever the stop left in the leader's session (its id the leader's pid) goes.
+            for q in pathlib.Path("/proc").iterdir():
+                if q.name.isdigit() and int(q.name) != leader.pid:
+                    try:
+                        if int(stat_of(int(q.name))[3]) == leader.pid and stat_of(int(q.name))[0] == "T":
+                            os.kill(int(q.name), signal_mod.SIGKILL)
+                    except (OSError, ValueError, IndexError):
+                        pass
+            for sig in (signal_mod.SIGCONT, signal_mod.SIGTERM):
+                try:
+                    os.killpg(bpid, sig)
+                except OSError:
+                    pass
+            try:
+                leader.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                leader.kill()
+                os.killpg(bpid, signal_mod.SIGKILL)
+            os.close(master)
+            os.close(slave)
+        check(r1[0] == -999 and b"not-stopped" not in r1[1], f"the stty over ssh was not stopped: {show(r1)}")
+        check(stopped, "no stty in state T (stopped)")
+        check(r2[:2] == (0, b"second\n"), f"the second connection after the stop: {show(r2)} (the listener's state {listener})")
+        return f"stty stopped ({len(stopped)}), the listener {listener}, the second connection answered"
 
 
 @row
