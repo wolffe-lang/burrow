@@ -255,3 +255,24 @@ expired account, an empty or unset one, the tries and the grace; its
 answer to a scripted change request; and that it checks `$y$` and a `$7$`
 string past PAX's cost where burrowd refuses both by name. No `.c` or `.h`
 file was opened, of OpenSSH or any other server.
+
+
+## px112: a shell with no pty (for the next PAX stick)
+
+RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`,
+read twice), from the server's side: §6.5's `shell` ("the user's default shell (typically
+defined in /etc/passwd)") and "Only one of these requests can succeed per channel".
+
+The man pages, from the same signed `openssh-10.0p2.tar.gz`, the same digests as above:
+
+| page | read |
+|---|---|
+| `sshd.8` | DESCRIPTION (an interactive shell, or a command "via the user's shell using its -c option"); LOGIN PROCESS step 9; AUTHORIZED_KEYS FILE FORMAT's `command="command"` ("applies to shell, command or subsystem execution", `SSH_ORIGINAL_COMMAND`) |
+| `sshd_config.5` | `PermitTTY`, `ForceCommand` (the user's login shell with `-c`; "applies to shell, command, or subsystem execution") |
+| `ssh.1` | `-T` and `-t` |
+| `ssh_config.5` | `RequestTTY` (`auto`: a TTY "when opening a login session") |
+
+`argv[0]` with a leading `-` for a login shell, `SSH_ORIGINAL_COMMAND` under a forced command for a
+shell request, and what the pinned `ssh` prints at a terminal when the pty is refused were measured
+from the pinned `sshd` and `ssh` (tools/check-server's `session-shell`, `auth-forced-shell` and
+`session-shell-pty`), black-box.
