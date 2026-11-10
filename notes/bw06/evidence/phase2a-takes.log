@@ -1,0 +1,261 @@
+# bw06 phase 2a takes, linux: the pinned container (Ubuntu 24.04 by digest), two CPUs, development takes (not records).
+# the rows tip a596082
+START build-native
+END build-native exit=0 secs=11
+START unit
+    94 |     assert(akeys.find(line("", blob), blob).pty)
+    36 | pub struct Found {
+    95 |     assert(akeys.find(line("command=\"x\"", blob), blob).pty)
+    36 | pub struct Found {
+    96 |     assert(!akeys.find(line("no-pty", blob), blob).pty)
+    36 | pub struct Found {
+    97 |     assert(!akeys.find(line("restrict", blob), blob).pty)
+    36 | pub struct Found {
+    98 |     assert(!akeys.find(line("restrict,No-Pty,command=\"x\"", blob), blob).pty)
+    36 | pub struct Found {
+    100 |     assert(granted.ok && granted.pty)
+    102 |     assert(pty_first.ok && !pty_first.pty)
+    103 |     assert(akeys.find(line("pty", blob), blob).ok && akeys.find(line("pty", blob), blob).pty)
+    8 | use ttymodes
+    260 |     schannel.allow_pty(mut tt)
+    263 |     assert(schannel.term_name(tt) == "xterm-256color" && tt.cols == 132 && tt.rows == 40)
+    265 |     schannel.grant_pty(mut tt)
+    290 |     schannel.allow_pty(mut bad)
+    313 |     assert(e255.pty && schannel.term_name(bad).len == 255)
+    315 |     schannel.refuse_pty(mut bad, "pty_failed")
+    320 |     schannel.allow_pty(mut lame)
+    98 |     assert(d.permit_tty && has(t, "permittty yes"))
+    48 | pub struct Settings {
+    100 |     assert(refused(tty_no) == "ok" && !tty_no.permit_tty && has(sconfig.effective(tty_no), "permitt…
+    101 |     assert(file("PermitTTY yes\n").permit_tty && !file("PermitTTY no\nPermitTTY yes\n").permit_tty)
+    101 |     assert(file("PermitTTY yes\n").permit_tty && !file("PermitTTY no\nPermitTTY yes\n").permit_tty)
+    7 | use ttymodes
+    check-test: src/akeys_test.lu [checked] rejected (does not compile)
+    check-test: src/auth_test.lu [checked] pass (exit(0))
+    check-test: src/channel_test.lu [checked] pass (exit(0))
+    check-test: src/config_test.lu [checked] pass (exit(0))
+    check-test: src/hostkey_test.lu [checked] pass (exit(0))
+    check-test: src/kex_test.lu [checked] pass (exit(0))
+    check-test: src/keyfile_test.lu [checked] pass (exit(0))
+    check-test: src/keyseed_test.lu [checked] pass (exit(0))
+    check-test: src/knownhosts_test.lu [checked] pass (exit(0))
+    check-test: src/messages_test.lu [checked] pass (exit(0))
+    check-test: src/packet_test.lu [checked] pass (exit(0))
+    check-test: src/rekey_test.lu [checked] pass (exit(0))
+    check-test: src/sauth_test.lu [checked] fell back to native (exit(0) [native]): rerun on the checked machine
+    check-test: src/schannel_test.lu [checked] rejected (does not compile)
+    check-test: src/sconfig_test.lu [checked] rejected (does not compile)
+    check-test: src/sha1_test.lu [checked] pass (exit(0))
+    check-test: src/slog_test.lu [checked] pass (exit(0))
+    check-test: src/spass_test.lu [checked] pass (exit(0))
+    check-test: src/srvkex_test.lu [checked] pass (exit(0))
+    check-test: src/ttymodes_test.lu [checked] rejected (does not compile)
+    check-test: src/version_test.lu [checked] pass (exit(0))
+    check-test: src/wire_test.lu [checked] pass (exit(0))
+    check-test: wolf test: 18 passed, 4 not passed (exit 1)
+    check-test: src/sauth_test.lu [conform-run --checked] exit 0: wolf conform-run --checked: unsupported — step budget exhausted
+    208 | }
+    94 |     assert(akeys.find(line("", blob), blob).pty)
+    36 | pub struct Found {
+    95 |     assert(akeys.find(line("command=\"x\"", blob), blob).pty)
+    36 | pub struct Found {
+    96 |     assert(!akeys.find(line("no-pty", blob), blob).pty)
+    36 | pub struct Found {
+    97 |     assert(!akeys.find(line("restrict", blob), blob).pty)
+    36 | pub struct Found {
+    98 |     assert(!akeys.find(line("restrict,No-Pty,command=\"x\"", blob), blob).pty)
+    36 | pub struct Found {
+    100 |     assert(granted.ok && granted.pty)
+    102 |     assert(pty_first.ok && !pty_first.pty)
+    103 |     assert(akeys.find(line("pty", blob), blob).ok && akeys.find(line("pty", blob), blob).pty)
+    check-test: src/akeys_test.lu [native] does not build
+    check-test: src/akeys_test.lu [lupin] FAILED: src/akeys_test.lu: unsupported: `Found` has no field `pty`
+    check-test: src/auth_test.lu [native] ok
+    check-test: src/auth_test.lu [lupin] ok
+    check-test: src/channel_test.lu [native] ok
+    check-test: src/channel_test.lu [lupin] ok
+    check-test: src/config_test.lu [native] ok
+    check-test: src/config_test.lu [lupin] ok
+    check-test: src/hostkey_test.lu [native] ok
+    check-test: src/hostkey_test.lu [lupin] ok
+    check-test: src/kex_test.lu [native] ok
+    check-test: src/kex_test.lu [lupin] ok
+    check-test: src/keyfile_test.lu [native] ok
+    check-test: src/keyfile_test.lu [lupin] ok
+    check-test: src/keyseed_test.lu [native] ok
+    check-test: src/keyseed_test.lu [lupin] ok
+    check-test: src/knownhosts_test.lu [native] ok
+    check-test: src/knownhosts_test.lu [lupin] ok
+    check-test: src/messages_test.lu [native] ok
+    check-test: src/messages_test.lu [lupin] ok
+    check-test: src/packet_test.lu [native] ok
+    check-test: src/packet_test.lu [lupin] ok
+    check-test: src/rekey_test.lu [native] ok
+    check-test: src/rekey_test.lu [lupin] ok
+    check-test: src/sauth_test.lu [native] ok
+    check-test: src/sauth_test.lu [lupin] ok
+    8 | use ttymodes
+    260 |     schannel.allow_pty(mut tt)
+    263 |     assert(schannel.term_name(tt) == "xterm-256color" && tt.cols == 132 && tt.rows == 40)
+    265 |     schannel.grant_pty(mut tt)
+    290 |     schannel.allow_pty(mut bad)
+    313 |     assert(e255.pty && schannel.term_name(bad).len == 255)
+    315 |     schannel.refuse_pty(mut bad, "pty_failed")
+    320 |     schannel.allow_pty(mut lame)
+    check-test: src/schannel_test.lu [native] does not build
+    check-test: src/schannel_test.lu [lupin] FAILED: src/schannel_test.lu: unsupported: `ttymodes.encode` does not resolve
+    98 |     assert(d.permit_tty && has(t, "permittty yes"))
+    48 | pub struct Settings {
+    100 |     assert(refused(tty_no) == "ok" && !tty_no.permit_tty && has(sconfig.effective(tty_no), "permitt…
+    101 |     assert(file("PermitTTY yes\n").permit_tty && !file("PermitTTY no\nPermitTTY yes\n").permit_tty)
+    101 |     assert(file("PermitTTY yes\n").permit_tty && !file("PermitTTY no\nPermitTTY yes\n").permit_tty)
+    check-test: src/sconfig_test.lu [native] does not build
+    check-test: src/sconfig_test.lu [lupin] FAILED: src/sconfig_test.lu: unsupported: `Settings` has no field `permit_tty`
+    check-test: src/sha1_test.lu [native] ok
+    check-test: src/sha1_test.lu [lupin] ok
+    check-test: src/slog_test.lu [native] ok
+    check-test: src/slog_test.lu [lupin] ok
+    check-test: src/spass_test.lu [native] ok
+    check-test: src/spass_test.lu [lupin] ok
+    check-test: src/srvkex_test.lu [native] ok
+    check-test: src/srvkex_test.lu [lupin] ok
+    7 | use ttymodes
+    check-test: src/ttymodes_test.lu [native] does not build
+    check-test: src/ttymodes_test.lu [lupin] FAILED: src/ttymodes_test.lu: unsupported: `ttymodes.encode` does not resolve
+    check-test: src/version_test.lu [native] ok
+    check-test: src/version_test.lu [lupin] ok
+    check-test: src/wire_test.lu [native] ok
+    check-test: src/wire_test.lu [lupin] ok
+END unit exit=1 secs=119
+START rows:check-server:session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-gone,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-pty-refused,session-shell-pty,session-shell,session-own-group
+  PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+  PASS session-pty-refused (exit 255, stderr 'PTY allocation request failed on channel 0')
+  PASS session-shell (a script on stdin: exit 3, stdout b'out\n'; echo $0: exit 0, stdout b'-sh\n'; SSH_ORIGINAL_COMMAND: exit 0, stdout b'unset\n'; stdin not a terminal: exit 5, stdout b'piped\n')
+  PASS session-shell-pty (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.'; burrowd adds 'burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)')
+FAIL session-tty-command harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-command/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-size harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-size/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-full-screen harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-full-screen/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-interrupt harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-interrupt/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-shell harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-shell/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-gone harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-gone/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-burst harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-burst/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-tty-eof harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-tty-eof/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL auth-no-pty harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/auth-no-pty-no-pty/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL session-own-session harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server/session-own-session/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+  check-server: 14 rows, 10 failed, 0 SKIP
+  check-server: 32 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-gone,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-pty-refused,session-shell-pty,session-shell,session-own-group exit=10 secs=4
+START rows:check-server-hostile:hostile-pty-malformed,hostile-pty-granted,hostile-requests-refused
+  PASS hostile-requests-refused (six CHANNEL_FAILUREs, the command still runs, the log names each)
+FAIL hostile-pty-malformed harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server-hostile/hostile-pty-malformed/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+FAIL hostile-pty-granted harness: RuntimeError: burrowd exited 1: burrowd: config_unsupported: /work/burrow/target/server-hostile/hostile-pty-granted/burrowd/burrowd_config line 1: PermitTTY yes: burrowd takes no only
+  check-server-hostile: 3 rows, 2 failed, 0 SKIP
+END rows:check-server-hostile:hostile-pty-malformed,hostile-pty-granted,hostile-requests-refused exit=2 secs=22
+# the head 844b2cb (the protocol half)
+START fmt
+END fmt exit=0 secs=1
+START build-native
+END build-native exit=0 secs=4
+START unit
+    check-test: src/akeys_test.lu [checked] pass (exit(0))
+    check-test: src/auth_test.lu [checked] pass (exit(0))
+    check-test: src/channel_test.lu [checked] pass (exit(0))
+    check-test: src/config_test.lu [checked] pass (exit(0))
+    check-test: src/hostkey_test.lu [checked] pass (exit(0))
+    check-test: src/kex_test.lu [checked] pass (exit(0))
+    check-test: src/keyfile_test.lu [checked] pass (exit(0))
+    check-test: src/keyseed_test.lu [checked] pass (exit(0))
+    check-test: src/knownhosts_test.lu [checked] pass (exit(0))
+    check-test: src/messages_test.lu [checked] pass (exit(0))
+    check-test: src/packet_test.lu [checked] pass (exit(0))
+    check-test: src/rekey_test.lu [checked] pass (exit(0))
+    check-test: src/sauth_test.lu [checked] fell back to native (exit(0) [native]): rerun on the checked machine
+    check-test: src/schannel_test.lu [checked] pass (exit(0))
+    check-test: src/sconfig_test.lu [checked] pass (exit(0))
+    check-test: src/sha1_test.lu [checked] pass (exit(0))
+    check-test: src/slog_test.lu [checked] pass (exit(0))
+    check-test: src/spass_test.lu [checked] pass (exit(0))
+    check-test: src/srvkex_test.lu [checked] pass (exit(0))
+    check-test: src/ttymodes_test.lu [checked] pass (exit(0))
+    check-test: src/version_test.lu [checked] pass (exit(0))
+    check-test: src/wire_test.lu [checked] pass (exit(0))
+    check-test: wolf test: 22 passed, 0 not passed (exit 0)
+    check-test: src/sauth_test.lu [conform-run --checked] exit 0: wolf conform-run --checked: unsupported — step budget exhausted
+    208 | }
+    check-test: src/akeys_test.lu [native] ok
+    check-test: src/akeys_test.lu [lupin] ok
+    check-test: src/auth_test.lu [native] ok
+    check-test: src/auth_test.lu [lupin] ok
+    check-test: src/channel_test.lu [native] ok
+    check-test: src/channel_test.lu [lupin] ok
+    check-test: src/config_test.lu [native] ok
+    check-test: src/config_test.lu [lupin] ok
+    check-test: src/hostkey_test.lu [native] ok
+    check-test: src/hostkey_test.lu [lupin] ok
+    check-test: src/kex_test.lu [native] ok
+    check-test: src/kex_test.lu [lupin] ok
+    check-test: src/keyfile_test.lu [native] ok
+    check-test: src/keyfile_test.lu [lupin] ok
+    check-test: src/keyseed_test.lu [native] ok
+    check-test: src/keyseed_test.lu [lupin] ok
+    check-test: src/knownhosts_test.lu [native] ok
+    check-test: src/knownhosts_test.lu [lupin] ok
+    check-test: src/messages_test.lu [native] ok
+    check-test: src/messages_test.lu [lupin] ok
+    check-test: src/packet_test.lu [native] ok
+    check-test: src/packet_test.lu [lupin] ok
+    check-test: src/rekey_test.lu [native] ok
+    check-test: src/rekey_test.lu [lupin] ok
+    check-test: src/sauth_test.lu [native] ok
+    check-test: src/sauth_test.lu [lupin] ok
+    check-test: src/schannel_test.lu [native] ok
+    check-test: src/schannel_test.lu [lupin] ok
+    check-test: src/sconfig_test.lu [native] ok
+    check-test: src/sconfig_test.lu [lupin] ok
+    check-test: src/sha1_test.lu [native] ok
+    check-test: src/sha1_test.lu [lupin] ok
+    check-test: src/slog_test.lu [native] ok
+    check-test: src/slog_test.lu [lupin] ok
+    check-test: src/spass_test.lu [native] ok
+    check-test: src/spass_test.lu [lupin] ok
+    check-test: src/srvkex_test.lu [native] ok
+    check-test: src/srvkex_test.lu [lupin] ok
+    check-test: src/ttymodes_test.lu [native] ok
+    check-test: src/ttymodes_test.lu [lupin] ok
+    check-test: src/version_test.lu [native] ok
+    check-test: src/version_test.lu [lupin] ok
+    check-test: src/wire_test.lu [native] ok
+    check-test: src/wire_test.lu [lupin] ok
+END unit exit=0 secs=87
+START rows:check-server:session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-gone,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-pty-refused,session-shell-pty,session-shell-pty-slow,session-shell,session-own-group,session-terminal-stop,session-exit-codes,session-sigterm,auth-forced-shell,auth-option-unhonoured
+  PASS auth-forced-shell (exit 0, stdout b'forced: unset\necho shell ran\n')
+  PASS auth-option-unhonoured (a from= line burrowd cannot honour admits nothing, and the plain line after it is not consulted)
+  PASS session-exit-codes (exit 0; exit 1; exit 127, stderr 'sh: 1: nosuchcommand-bw04: not found')
+  PASS session-sigterm (exit 255)
+  PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+  PASS session-terminal-stop (stty stopped (1), the listener S, the second connection answered, the first's end signal KILL)
+  PASS session-pty-refused (exit 255, stderr 'PTY allocation request failed on channel 0')
+  PASS session-shell (a script on stdin: exit 3, stdout b'out\n'; echo $0: exit 0, stdout b'-sh\n'; SSH_ORIGINAL_COMMAND: exit 0, stdout b'unset\n'; stdin not a terminal: exit 5, stdout b'piped\n')
+  PASS session-shell-pty (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.'; burrowd adds 'burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)')
+  PASS session-shell-pty-slow (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.')
+FAIL session-tty-command exit 255 through burrowd, 3 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-size exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-full-screen exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-interrupt exit 255 through burrowd, 7 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-shell exit -9 through burrowd, 4 through sshd; burrowd stderr 'PTY allocation request failed on channel 0 | burrowd: no pty here: this shell runs without a terminal (no line editing, no job control) |  | [row: timed out]', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-gone exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-burst exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-eof exit 255 through burrowd, -999 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's '[row: timed out]'
+FAIL auth-no-pty exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-own-session stdout differs: burrowd b'sid_is_shell=no tty=none\nno-tty\n', sshd b'sid_is_shell=yes tty=none\nno-tty\n'
+  check-server: 20 rows, 10 failed, 0 SKIP
+  check-server: 67 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-gone,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-pty-refused,session-shell-pty,session-shell-pty-slow,session-shell,session-own-group,session-terminal-stop,session-exit-codes,session-sigterm,auth-forced-shell,auth-option-unhonoured exi
+START rows:check-server-hostile:hostile-pty-malformed,hostile-pty-granted,hostile-requests-refused,hostile-program-twice,hostile-transport-mid-session
+  PASS hostile-requests-refused (six CHANNEL_FAILUREs, the command still runs, the log names each)
+  PASS hostile-pty-malformed (four pty_malformed, a window-change with no pty ignored, pty_late, the command's output)
+FAIL hostile-pty-granted message 100 instead of CHANNEL_SUCCESS for the pty
+  PASS hostile-program-twice (the shell served, exec and shell after it refused (exec_twice), the shell's status 5)
+  PASS hostile-transport-mid-session (one IGNORE: output at 1.01 s; a PING every 20 ms: output at 1.01 s, 146 PONGs)
+  check-server-hostile: 5 rows, 1 failed, 0 SKIP
+END rows:check-server-hostile:hostile-pty-malformed,hostile-pty-granted,hostile-requests-refused,hostile-program-twice,hostile-transport-mid-session exit=1 secs=38
