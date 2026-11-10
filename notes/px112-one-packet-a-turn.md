@@ -76,6 +76,34 @@ hostile session rows beside them.
 nothing else moved. The PING stream's half of each hostile row was not reached at the rows tip (each row stops at its
 first case); at the head both halves pass, a PONG for each PING.
 
+## The hosted red: `limits-startups`, the row's own races
+
+The hosted run at `ba2edcc` went red on one row, the release tier on Linux: `exit 0 through burrowd, 255 through sshd`
+for a fourth connection past `MaxStartups 3`. The cause is the row, not this change: `src/server` has no diff against
+trunk, and the transport's diff only adds `step`, which nothing before the session calls, so the listener's count, the
+monitor and the version exchange run the same code at trunk and here.
+
+- **The run's burrowd log:** the harness's readiness probe's line (`outcome closed`), then the third of the three held
+  connections refused (`startups_exceeded`), then the fourth let in (`outcome ok status 0`). burrowd counts a
+  connection as started until the listener has seen its monitor end, and a monitor writes its line before it ends.
+  The harness waited for the probe's line only, so when the probe's monitor outlived two more connections' starts, the
+  third held connection was refused in the fourth's place, and the row never checked that it held three.
+- **Measured** on the build host's light slot under load (two CPUs, one busy loop per CPU in the pinned container, the
+  release burrowd, 40 runs of the row at each commit): trunk `7ea08ba` 26 of 40 red, `ba2edcc` 24 of 40. One red at
+  `ba2edcc` was the hosted one, line for line (the third held connection refused, the fourth let in); every other red
+  at either commit was a second race in the same row, `stderr differs`. The client's words for a connection the
+  server ends before the identifications are `kex_exchange_identification: read: Connection reset by peer` when its
+  own identification reached the server first, and `Connection closed by …` when the end came first; `sshd` and
+  burrowd each drew both. Without ssh, 150 fresh burrowd at each commit, started as the rows start them: the probe's
+  monitor was still burrowd's child when the harness went on in 150 of 150 at both, and a held connection was refused
+  in 0 of 150 at both.
+- **The row now waits for the state it asserts:** each server's readiness probe gone (no child of its listener) before
+  it holds three; each held connection has read the server's identification, or the row says which it lost; the held
+  ones gone before the fifth connection, in place of a second's sleep; and either of the client's words for an end
+  before the identifications, from either server, is the same refusal. At `9400a2c` (the same burrowd, digest for
+  digest), under the same load: 0 of 40 red. The check that names a lost held connection has not been seen red itself;
+  the race it names was seen as the old row's `exit 0 through burrowd`.
+
 ## Done-when
 
 - [x] The prediction, committed first (`4a10a88`).
@@ -83,3 +111,4 @@ first case); at the head both halves pass, a PONG for each PING.
 - [x] README, MAP, SOURCES, CHANGELOG; the shell note's stale macOS line.
 - [ ] The gauntlet green at the final head; the plant (burrowd's session back on `transport.next`) red by name: the
   PR's records.
+- [x] The hosted red's cause: `limits-startups` raced its own harness; the row waits for its state (0 of 40 under load).
