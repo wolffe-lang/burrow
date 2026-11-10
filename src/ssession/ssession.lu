@@ -230,6 +230,72 @@ struct Flow {
     close_in: bool,
 }
 
+// A message for the session (px112: `transport.step` gave one): the
+// channel's answer, a command or the shell started, input kept for it.
+fn on_message(
+    mut c: transport.Conn,
+    mut ch: schannel.Chan,
+    mut pr: Running,
+    mut pending: List[byte],
+    mut flow: Flow,
+    plan: Plan,
+    nologin: str,
+    p: List[byte],
+) -> () ! refuse.Refusal {
+    let s = schannel.on(mut ch, p)?
+    say(plan, s.info)
+    for r in s.replies {
+        transport.write(mut c, r)?
+    }
+    if s.start && nologin != "" {
+        if s.want_reply {
+            transport.write(mut c, schannel.success_msg(ch))?
+        }
+        transport.write(mut c, schannel.start_msg(mut ch))?
+        let text = wire_bytes(nologin)
+        if text.len <= schannel.room(ch) {
+            transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
+        }
+        flow.started = true
+        pr.status = 254
+    } else if s.start {
+        var ok = true
+        let got = start_command(plan, ch) else |e| {
+            ok = false
+            say(plan, "exec_failed: {e}")
+            none_running()
+        }
+        if s.want_reply {
+            let answer = if ok then schannel.success_msg(ch) else schannel.failure_msg(ch)
+            transport.write(mut c, answer)?
+        }
+        if ok {
+            pr.child = copy got.child
+            pr.running = true
+            pr.stdin = copy got.stdin
+            pr.stdout = copy got.stdout
+            pr.stderr = copy got.stderr
+            pr.in_open = true
+            pr.out_eof = false
+            pr.err_eof = false
+            flow.started = true
+            transport.write(mut c, schannel.start_msg(mut ch))?
+            if ch.shell && ch.pty_asked {
+                let text = wire_bytes(no_pty_text())
+                if text.len <= schannel.room(ch) {
+                    transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
+                }
+            }
+        }
+    }
+    for b in s.input {
+        (mut pending).push(b)
+    }
+    if s.close_input {
+        flow.close_in = true
+    }
+}
+
 // One turn: a message from the client if one is there, the command's
 // input as far as its pipe takes it, its output within the client's
 // window, its end; `moved` says whether any byte moved.
@@ -244,58 +310,12 @@ fn turn_once(
 ) -> bool ! refuse.Refusal {
     var moved = false
     if sock_ready(c, 0)? {
-        let p = transport.next(mut c)?
-        let s = schannel.on(mut ch, p)?
-        say(plan, s.info)
-        for r in s.replies {
-            transport.write(mut c, r)?
-        }
-        if s.start && nologin != "" {
-            if s.want_reply {
-                transport.write(mut c, schannel.success_msg(ch))?
-            }
-            transport.write(mut c, schannel.start_msg(mut ch))?
-            let text = wire_bytes(nologin)
-            if text.len <= schannel.room(ch) {
-                transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
-            }
-            flow.started = true
-            pr.status = 254
-        } else if s.start {
-            var ok = true
-            let got = start_command(plan, ch) else |e| {
-                ok = false
-                say(plan, "exec_failed: {e}")
-                none_running()
-            }
-            if s.want_reply {
-                let answer = if ok then schannel.success_msg(ch) else schannel.failure_msg(ch)
-                transport.write(mut c, answer)?
-            }
-            if ok {
-                pr.child = copy got.child
-                pr.running = true
-                pr.stdin = copy got.stdin
-                pr.stdout = copy got.stdout
-                pr.stderr = copy got.stderr
-                pr.in_open = true
-                pr.out_eof = false
-                pr.err_eof = false
-                flow.started = true
-                transport.write(mut c, schannel.start_msg(mut ch))?
-                if ch.shell && ch.pty_asked {
-                    let text = wire_bytes(no_pty_text())
-                    if text.len <= schannel.room(ch) {
-                        transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
-                    }
-                }
-            }
-        }
-        for b in s.input {
-            (mut pending).push(b)
-        }
-        if s.close_input {
-            flow.close_in = true
+        // At most one packet a turn (px112): a transport message (a PING,
+        // an IGNORE, a re-exchange) is handled by `step`, which gives back
+        // nothing, and the turn goes on to the command's side.
+        let p = transport.step(mut c)?
+        if p.len > 0 {
+            on_message(mut c, mut ch, mut pr, mut pending, mut flow, plan, nologin, p)?
         }
         moved = true
     }
