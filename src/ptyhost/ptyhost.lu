@@ -1,0 +1,96 @@
+//! member: true
+//!
+//! burrow.ptyhost — the one place burrowd reaches the host's pseudo-terminals
+//! and new sessions (bw06). Everything here binds to wolf-std, and the
+//! names the toolchain finally gives these calls change this file alone.
+//!
+//! **At burrow's pin** (wolf 0.2.37, wolf-std `2411d868`) wolf-std can neither
+//! open a usable pty (measured: `/dev/ptmx` opens, but its slave can be neither
+//! unlocked nor named) nor set a size, the special characters or most modes,
+//! nor start a session (`os_setsid` is wolf-lang#1089's, in no release). So
+//! `available` is false, `open` and `set_size` answer `unsupported`, and
+//! `lead_session` is `process.lead_group` (px112's group of its own) until a
+//! release carries the calls: what burrow needs from it is
+//! `notes/bw06-wolf-needs.md`. burrowd then refuses every `pty-req` by name
+//! (`pty_failed`) after parsing it.
+//!
+//! **After the release** each function binds to its wolf-std call: `open` to
+//! the pty open (the master, close-on-exec, and the slave's name, granted and
+//! unlocked), `set_size` to the window-size set, `set_modes` to the mode and
+//! special-character sets (every RFC 4254 §8 mode the host has; the others
+//! skipped, as §8 allows), `lead_session` to `process.lead_session`.
+
+use std.fs
+use std.process
+use std.term
+use ttymodes
+
+/// A pty: its master, which the session keeps, and its slave's name, which
+/// the program's child opens (taking it as its controlling terminal).
+pub struct Pty {
+    master: fs.File,
+    slave: str,
+}
+
+/// What a pty call answers when the host or the toolchain gives none.
+pub error Unready = {io, unsupported}
+
+/// What the move into a session of its own answers (`process.lead_group`'s
+/// row until the release, `process.lead_session`'s after).
+pub error Unled = {denied, invalid, io, unsupported}
+
+/// Whether this build can open a pty and start a session.
+pub fn available() -> bool {
+    false
+}
+
+/// A new pty, its slave granted and unlocked.
+pub fn open() -> Pty ! Unready {
+    if !available() {
+        return unsupported
+    }
+    Pty { master: fs.File { fd: -1 }, slave: "" }
+}
+
+/// The pty's size: `rows` lines of `cols` cells, and the pixel sizes (0 for
+/// none), on `tty` (the master on linux and PAX). The host sends SIGWINCH to
+/// the foreground group when it changes.
+pub fn set_size(tty: fs.File, rows: int, cols: int, xpixels: int, ypixels: int) -> () ! Unready {
+    if !available() || tty.fd < 0 || rows < 0 || cols < 0 || xpixels < 0 || ypixels < 0 {
+        return unsupported
+    }
+}
+
+// A §8 flag's value applied to one of `term.Mode`'s booleans.
+fn flag(m: ttymodes.Modes, op: int, was: bool) -> bool {
+    let v = ttymodes.value(m, op)
+    if v < 0 then was else v != 0
+}
+
+/// The client's modes (RFC 4254 §8, as `pty-req` carried them) on the slave.
+/// At the pin `term.set_mode` reaches eight of them, set here; the special
+/// characters and the other flags wait for the release's calls.
+pub fn set_modes(slave: fs.File, modes: List[byte]) -> () ! Unready {
+    let m = ttymodes.decode(modes)
+    if m.pairs.len == 0 {
+        return
+    }
+    var cur = term.mode(slave)?
+    cur.canonical = flag(m, 51, cur.canonical)
+    cur.echo = flag(m, 53, cur.echo)
+    cur.signals = flag(m, 50, cur.signals)
+    cur.flow = flag(m, 38, cur.flow)
+    cur.extended = flag(m, 59, cur.extended)
+    cur.raw_cr = !flag(m, 36, !cur.raw_cr)
+    cur.raw_output = !flag(m, 70, !cur.raw_output)
+    cur.strip8 = flag(m, 33, cur.strip8)
+    term.set_mode(slave, cur) else {
+        return io
+    }
+}
+
+/// This process (a fork that leads no group) into a session of its own,
+/// with no controlling terminal. At the pin: a process group of its own.
+pub fn lead_session() -> () ! Unled {
+    process.lead_group()?
+}
