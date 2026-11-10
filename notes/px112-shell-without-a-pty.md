@@ -81,14 +81,14 @@ Red at the rows tip (burrowd refuses every shell), committed before the code:
 3. **It amends B5's rule** ("commands only") ahead of B7. ptys (px111, then B7) build on it: a `pty-req`
    granted then makes the same shell interactive.
 
-### Rulings to recommend
+### Choices to recommend
 
-- **R-px112b-1, `argv[0]`:** (A) `-sh`, the login form, as `sshd` (predicted, held by `session-shell`); (B) `sh`.
+- **`argv[0]`:** (A) `-sh`, the login form, as `sshd` (predicted, held by `session-shell`); (B) `sh`.
   Recommended: (A).
-- **R-px112b-2, the plain words:** (A) one line on standard error only when a shell starts after a refused
-  pty; (B) also for a command after a refused pty (`ssh -t host CMD`), which would differ from `sshd` byte for
-  byte; (C) none. Recommended: (A).
-- **R-px112b-3, a second program:** (A) `exec_twice` for `shell` or `exec` after either; (B) a new name.
+- **The plain words:** (A) one line on standard error only when a shell starts after a refused pty; (B) also
+  for a command after a refused pty (`ssh -t host CMD`), which would differ from `sshd` byte for byte; (C)
+  none. Recommended: (A).
+- **A second program:** (A) `exec_twice` for `shell` or `exec` after either; (B) a new name.
   Recommended: (A).
 
 ## Evidence
@@ -136,8 +136,9 @@ PASS hostile-program-twice (the shell served, exec and shell after it refused (e
 - Unpredicted, measured: `ssh host` with stdin a pipe (no `-T`) asks for no pty, and runs the same
   shell through both servers (`piped`, status 5).
 
-**The rulings recommended** were built as recommended, each open to change: `-sh`; the line only for
-a shell after a refused pty; `exec_twice` for a second program.
+**The choices** were ruled as recommended, and the code has them: `argv[0]` `-sh`, as `sshd`; the
+plain line only for a shell after a refused pty, so a command after one stays byte for byte `sshd`'s;
+`exec_twice` for a second program; the line's wording as written.
 
 ## Done-when
 
