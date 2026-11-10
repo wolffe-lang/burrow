@@ -380,7 +380,7 @@ change is [bw06-wolf-needs.md](bw06-wolf-needs.md).
   (`src/ptyhost`) that at the pin opens no pty (`pty_failed` after the parse) and leads a group, not a
   session.
 
-### Predicted, before the takes (written 2026-11-10 at 16:00Z)
+### Predicted, before the takes (written 2026-11-10 at 15:56Z)
 
 At the rows tip `a596082` (the code as trunk's):
 
