@@ -850,18 +850,21 @@ SETENV_TAKEN = (
     ("odd-names", ["SetEnv A-B=1 C=d=e F=x#y"]),
 )
 # (name, lines, the line refused, the words burrowd's detail holds after
-# `FILE line N: `). sshd refuses a malformed SetEnv line even after the
-# first line won, as it does any keyword's malformed value (measured).
+# `FILE line N: `, whether sshd takes the line). sshd refuses a malformed
+# SetEnv line even after the first line won, as it does any keyword's
+# malformed value (measured). One form sshd takes and burrowd refuses, a
+# named difference: an argument with nothing before its `=` (`A=1 =x`;
+# measured, `sshd -t` exits 0), which no program can read by a name.
 SETENV_REFUSED = (
-    ("no-equals", ["SetEnv FOO"], 1, "SetEnv FOO: not NAME=VALUE"),
+    ("no-equals", ["SetEnv FOO"], 1, "SetEnv FOO: not NAME=VALUE", False),
     # `SetEnv =x` is the keyword, sshd_config's `=` separator and `x`.
-    ("equals-then-no-equals", ["SetEnv =x"], 1, "SetEnv x: not NAME=VALUE"),
-    ("no-name", ["SetEnv A=1 =x"], 1, "SetEnv =x: not NAME=VALUE"),
-    ("none", ["SetEnv none"], 1, "SetEnv none: not NAME=VALUE"),
-    ("second-bad", ["SetEnv A=1 FOO"], 1, "SetEnv FOO: not NAME=VALUE"),
-    ("quotes", ['SetEnv A="x'], 1, "SetEnv: invalid quotes"),
-    ("second-line-bad", ["SetEnv A=1", "SetEnv FOO"], 2, "SetEnv FOO: not NAME=VALUE"),
-    ("second-line-quotes", ["SetEnv A=1", 'SetEnv B="x'], 2, "SetEnv: invalid quotes"),
+    ("equals-then-no-equals", ["SetEnv =x"], 1, "SetEnv x: not NAME=VALUE", False),
+    ("none", ["SetEnv none"], 1, "SetEnv none: not NAME=VALUE", False),
+    ("second-bad", ["SetEnv A=1 FOO"], 1, "SetEnv FOO: not NAME=VALUE", False),
+    ("quotes", ['SetEnv A="x'], 1, "SetEnv: invalid quotes", False),
+    ("second-line-bad", ["SetEnv A=1", "SetEnv FOO"], 2, "SetEnv FOO: not NAME=VALUE", False),
+    ("second-line-quotes", ["SetEnv A=1", 'SetEnv B="x'], 2, "SetEnv: invalid quotes", False),
+    ("no-name", ["SetEnv A=1 =x"], 1, "SetEnv =x: not NAME=VALUE", True),
 )
 # The session rows' line: PAX's three variables, a value with a space, the
 # default environment's PATH and HOME, an accepted name, an empty value, a
@@ -915,17 +918,22 @@ def config_setenv():
         check(rs[0] == 0, f"{name}: sshd -T {show(rs)}")
         check(rb[0] == 0, f"{name}: burrowd -T {show(rb)}")
         check(b == s, f"{name}: burrowd -T {b}, sshd -T {s}")
-    for name, lines, n, words in SETENV_REFUSED:
+    for name, lines, n, words, sshd_takes in SETENV_REFUSED:
         cfg, scfg = setenv_configs(d, name, lines, key)
         rb = serverlib.run([str(BIN), "-t", "-f", str(cfg)], timeout=30)
         rs = serverlib.run([serverlib.SSHD, "-t", "-f", str(scfg)], timeout=30)
         log.append(f"{name} {lines!r}\n  sshd -t: {rs[0]} {tail(rs[2], 200)!r}\n  burrowd -t: {rb[0]} {tail(rb[2], 200)!r}")
         (d / "compare.txt").write_text("\n".join(log) + "\n")
-        check(rs[0] == 255, f"{name}: sshd -t took it: {show(rs)}")
+        if sshd_takes:
+            check(rs[0] == 0, f"{name}: sshd -t, measured to take it, refused it: {show(rs)}")
+        else:
+            check(rs[0] == 255, f"{name}: sshd -t took it: {show(rs)}")
         want = f"burrowd: config_unsupported: {cfg} line {n}: {words}"
         check(rb[0] == 1 and want in rb[2].decode(errors="replace"),
               f"{name}: burrowd -t {show(rb)}, wanted exit 1 and {want!r}")
-    return f"{len(SETENV_TAKEN)} forms taken as sshd -T prints them, {len(SETENV_REFUSED)} refused at start by both"
+    both = sum(1 for r in SETENV_REFUSED if not r[4])
+    return (f"{len(SETENV_TAKEN)} forms taken as sshd -T prints them, {both} refused at start by both, "
+            f"{len(SETENV_REFUSED) - both} by burrowd alone (an empty name, which sshd takes)")
 
 
 @row
