@@ -1,0 +1,139 @@
+//! member: false
+//!
+//! bw06 phase 1's linux-only probe: the window size through the C library's
+//! ioctl(2) (`TIOCSWINSZ`), which wolf 0.2.37 can declare on linux x86-64
+//! but refuses on aarch64-apple-darwin (E0826, a variadic prototype). The
+//! size set on the master before the child starts; the child, in a session
+//! of its own with the slave as its controlling terminal, reads it and
+//! waits for SIGWINCH; the master's size changed; the child reads the new
+//! one. Not burrow: never built by tools/build, never installed.
+
+use std.env
+use std.fs
+use std.process
+use std.signal
+use std.term
+use std.time
+
+import c "stdlib.h"
+
+extern "c" fn posix_openpt(flags: i32) -> i32
+
+extern "c" fn grantpt(fd: i32) -> i32
+
+extern "c" fn unlockpt(fd: i32) -> i32
+
+extern "c" fn ptsname(fd: i32) -> *u8
+
+extern "c" fn setsid() -> i32
+
+extern "c" fn ioctl(fd: i32, req: u64, ...) -> i32
+
+fn c_text(p: *u8) -> str {
+    var out = List[byte]()
+    // # Safety: ptsname's answer is a NUL-terminated name in a static
+    // buffer, read before any other pty call.
+    unsafe {
+        var i = 0
+        while i < 128 && p[i] as int != 0 {
+            (mut out).push(p[i] as int as byte)
+            i += 1
+        }
+    }
+    str_from_utf8(out) else ""
+}
+
+fn set_size(fd: int, rows: int, cols: int) -> int {
+    var r = -1
+    // # Safety: an 8-byte zeroed buffer as `struct winsize` (four
+    // unsigned shorts: rows, columns, x pixels, y pixels), freed once;
+    // 0x5414 is linux's TIOCSWINSZ.
+    unsafe {
+        let ws = c.calloc(1, 8) as *u16
+        ws[0] = rows as u16
+        ws[1] = cols as u16
+        r = ioctl(fd as i32, 21524 as u64, ws) as int
+        c.free(ws as *u8)
+    }
+    r
+}
+
+fn main() -> int {
+    signal.listen(signal.child()) else {}
+    var fd = -1
+    var name = ""
+    // # Safety: the C library's own pty calls on a descriptor they made.
+    unsafe {
+        fd = posix_openpt((2 + 256) as i32) as int
+        if fd >= 0 && grantpt(fd as i32) as int == 0 && unlockpt(fd as i32) as int == 0 {
+            name = c_text(ptsname(fd as i32))
+        }
+    }
+    if fd < 0 || name == "" {
+        print("I0 no pty")
+        return 1
+    }
+    var m = fs.adopt(fd) else {
+        return 1
+    }
+    let r = set_size(fd, 40, 132)
+    let sz = term.size(m) else term.Size { rows: -1, columns: -1 }
+    print("I1 TIOCSWINSZ 40x132 on the master: {r}; term.size(master) {sz.rows} {sz.columns}")
+    let f = process.fork() else {
+        return 1
+    }
+    if process.is_child(f) {
+        var mc = copy m
+        fs.close(take mc) else {}
+        signal.listen(signal.resize()) else {}
+        // # Safety: setsid takes no arguments; this child leads no group.
+        unsafe {
+            let _ = setsid()
+        }
+        var s = fs.open_mode(name, 3) else {
+            process.exit(3)
+            fs.File { fd: -1 }
+        }
+        let a = term.size(s) else term.Size { rows: -1, columns: -1 }
+        fs.write(mut s, "child: size {a.rows} {a.columns}\n") else {}
+        let w = signal.wait_fds(List[fs.File](), signal.resize(), 5000) else signal.Wake {
+            meaning: 0,
+            ready: -1,
+        }
+        let b = term.size(s) else term.Size { rows: -1, columns: -1 }
+        fs.write(
+            mut s,
+            "child: {if w.meaning == signal.resize() then "SIGWINCH" else "no SIGWINCH"}; size {b.rows} {b.columns}\n",
+        ) else {}
+        fs.close(take s) else {}
+        process.exit(0)
+    }
+    time.sleep(time.millis(300))
+    let r2 = set_size(fd, 50, 100)
+    print("I2 TIOCSWINSZ 50x100 on the master: {r2}")
+    var ch = process.Child { slot: f.child.slot }
+    let st = process.wait_status(take ch) else -999
+    fs.set_nonblock(mut m, true) else {}
+    var got = List[byte]()
+    loop {
+        var end = false
+        let b = fs.read_chunk(mut m, 4096) else {
+            end = true
+            List[byte]()
+        }
+        if end || b.len == 0 {
+            break
+        }
+        for x in b {
+            (mut got).push(x)
+        }
+    }
+    let text = str_from_utf8(got) else ""
+    for l in text.lines() {
+        print("I3 {l.trim()}")
+    }
+    print("I4 the child's status: {st}; pid {env.pid() > 0}")
+    fs.close(take m) else {}
+    print("END")
+    0
+}
