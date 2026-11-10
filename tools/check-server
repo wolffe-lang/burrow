@@ -1047,7 +1047,7 @@ def limits_startups():
             r = serverlib.norm(p.ssh(port, ["true"], timeout=30), port)
             for c in held:
                 c.close()
-            time.sleep(1.0)
+            check(serverlib.childless(pid, 10), f"{name}'s held connections still running 10 s after they closed")
             r2 = p.ssh(port, ["true"], timeout=30)
             out.append((r, r2))
         (rb, rb2), (rs, rs2) = out
