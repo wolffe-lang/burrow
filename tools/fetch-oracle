@@ -4,13 +4,13 @@
     tools/in-container tools/fetch-oracle [--rebuild]
 
 The tarball, its detached signature and the release key are each fetched
-(or taken from $BURROW_ORACLE_DIR), held to burrow-oracle.toml's digests
-twice, and the signature must be a VALIDSIG by the pinned fingerprint. The
-tarball is then built by its own `configure` (only --prefix is set) and
-`make install-nokeys`. This script never opens a source file of the
-tarball: only the build reads them. The built ssh, sshd and ssh-keygen are
-held to their pinned digests; a pin that still reads PENDING prints the
-digests to record and fails.
+through ci/fetch-retry (or taken from $BURROW_ORACLE_DIR), held to
+burrow-oracle.toml's digests twice, and the signature must be a VALIDSIG
+by the pinned fingerprint. The tarball is then built by its own
+`configure` (only --prefix is set) and `make install-nokeys`. This script
+never opens a source file of the tarball: only the build reads them. The
+built ssh, sshd and ssh-keygen are held to their pinned digests; a pin
+that still reads PENDING prints the digests to record and fails.
 
 Must run in the pinned container (tools/in-container), whose image and
 build path (/work/burrow) the binary digests depend on.
@@ -90,7 +90,10 @@ def main():
             print(f"fetch-oracle: {p.name} from {local}")
         else:
             print(f"fetch-oracle: {url}", flush=True)
-            run("curl", "-fsSL", "--retry", "3", "--retry-delay", "5", url, "-o", p)
+            # Bounded tries with backoff and time limits; a failure named by its URL.
+            r = subprocess.run([sys.executable, "-I", str(ROOT / "ci" / "fetch-retry"), "url", url, str(p)])
+            if r.returncode != 0:
+                sys.exit(r.returncode)
         digest = PIN[{"url": "sha256", "sig_url": "sig_sha256", "key_url": "key_sha256"}[key]]
         for read in (1, 2):
             have = sha(p)
