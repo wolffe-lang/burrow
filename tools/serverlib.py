@@ -213,13 +213,17 @@ class Pair:
         e.update(extra or {})
         return e
 
-    def ssh(self, port, args, user=USER, keys=None, opts=(), inp=None, env=None, timeout=120, stdin=None):
+    def argv(self, port, args, user=USER, keys=None, opts=()):
+        """The pinned ssh's arguments for `port`: batch mode, this pair's
+        client key and known_hosts, then `args`."""
         argv = [SSH, "-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o",
                 f"UserKnownHostsFile={self.kh}", "-o", "StrictHostKeyChecking=yes"]
         for k in (keys if keys is not None else [self.key]):
             argv += ["-i", str(k)]
-        argv += list(opts) + ["-p", str(port), "-l", user, "127.0.0.1"] + list(args)
-        return run(argv, inp=inp, env=self.env(env), timeout=timeout, stdin=stdin)
+        return argv + list(opts) + ["-p", str(port), "-l", user, "127.0.0.1"] + list(args)
+
+    def ssh(self, port, args, user=USER, keys=None, opts=(), inp=None, env=None, timeout=120, stdin=None):
+        return run(self.argv(port, args, user, keys, opts), inp=inp, env=self.env(env), timeout=timeout, stdin=stdin)
 
     def both(self, args, **kw):
         """(burrowd's, sshd's) results for the same arguments, each with its
