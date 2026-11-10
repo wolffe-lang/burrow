@@ -13,12 +13,14 @@
 //!
 //! **What burrowd enforces.** Only `ssh-ed25519` keys can match. The first
 //! line naming the offered key decides (`find`): `command="…"` is honoured
-//! (the forced command; the client's goes to `SSH_ORIGINAL_COMMAND`), and
-//! `restrict`, `no-pty`, `no-port-forwarding`, `no-agent-forwarding`,
-//! `no-X11-forwarding` and `no-user-rc` are taken, since burrowd allows
-//! none of those anyway. Any other option (`from=`, `environment=`,
-//! `expiry-time=`, `cert-authority`, `principals=`, `permitopen=`,
-//! `permitlisten=`, `tunnel=`, `pty`, …) is a restriction or a grant
+//! (the forced command; the client's goes to `SSH_ORIGINAL_COMMAND`);
+//! `no-pty` and `restrict` refuse the key a pty and `pty` grants it again,
+//! left to right (bw06, `sshd(8)`: `pty` "permits tty allocation previously
+//! disabled by the restrict option"); `no-port-forwarding`,
+//! `no-agent-forwarding`, `no-X11-forwarding` and `no-user-rc` are taken,
+//! since burrowd allows none of those anyway. Any other option (`from=`,
+//! `environment=`, `expiry-time=`, `cert-authority`, `principals=`,
+//! `permitopen=`, `permitlisten=`, `tunnel=`, …) is a restriction or a grant
 //! burrowd cannot honour, so that line admits nothing and no later line is
 //! consulted for the key: the key is refused, and `why` names the option.
 //!
@@ -39,6 +41,8 @@ pub struct Found {
     /// The line's `command="…"`, when `has_command`.
     command: str,
     has_command: bool,
+    /// bw06: the key may have a pty (no `no-pty`, or `pty` after `restrict`).
+    pty: bool,
     /// Why the first line naming the key admits nothing ("" when ok or
     /// when no line names it).
     why: str,
@@ -178,7 +182,8 @@ fn taken(o: Opt) -> bool {
                 o.name == "no-port-forwarding" ||
                 o.name == "no-agent-forwarding" ||
                 o.name == "no-x11-forwarding" ||
-                o.name == "no-user-rc"
+                o.name == "no-user-rc" ||
+                o.name == "pty"
         )
 }
 
@@ -204,11 +209,22 @@ pub fn find(text: str, blob: List[byte]) -> Found {
         if wire.hex(key) != wire.hex(blob) {
             continue
         }
-        var f = Found { ok: true, command: "", has_command: false, why: "", line: number }
+        var f = Found {
+            ok: true,
+            command: "",
+            has_command: false,
+            pty: true,
+            why: "",
+            line: number,
+        }
         for o in options(parts[0]) {
             if o.name == "command" && o.has_value && !f.has_command {
                 f.command = o.value
                 f.has_command = true
+            } else if !o.has_value && (o.name == "no-pty" || o.name == "restrict") {
+                f.pty = false
+            } else if !o.has_value && o.name == "pty" {
+                f.pty = true
             } else if !taken(o) {
                 f.ok = false
                 f.why = "the option {o.name} on line {number}, which burrowd does not honour"
@@ -217,7 +233,7 @@ pub fn find(text: str, blob: List[byte]) -> Found {
         }
         return f
     }
-    Found { ok: false, command: "", has_command: false, why: "", line: 0 }
+    Found { ok: false, command: "", has_command: false, pty: false, why: "", line: 0 }
 }
 
 /// `AuthorizedKeysFile`'s paths for an account (`sshd_config(5)`): each
