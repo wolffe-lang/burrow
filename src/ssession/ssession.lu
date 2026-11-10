@@ -2,7 +2,8 @@
 //!
 //! burrow.ssession — burrowd's session, as the authenticated user: the
 //! connection protocol on one `session` channel (`src/schannel`), and the
-//! one command it runs, until the channel closes.
+//! one program it runs (a command, or the login shell), until the channel
+//! closes.
 //!
 //! **The command** runs as `sshd(8)` describes (LOGIN PROCESS): the user's
 //! login shell with `-c` and the command, in the user's home directory, with
@@ -16,6 +17,17 @@
 //! the command is not run: its text goes to stderr and the status is 254,
 //! as the pinned `sshd`'s session ends (measured; LOGIN PROCESS, step 3;
 //! root, who could pass, never logs in).
+//!
+//! **The shell** (px112; RFC 4254 §6.5 `shell`, sshd(8) LOGIN PROCESS step
+//! 9): with no command the user's shell runs as a login shell, `argv[0]`
+//! its base name after `-` (`-sh`), no `-c`, its stdin the channel's, with
+//! no pty: burrowd has none yet. A forced command (`command=`) runs in its
+//! place, as for `exec` (sshd(8): it "applies to shell, command or
+//! subsystem execution"), with no SSH_ORIGINAL_COMMAND, there being no
+//! command to carry. When the client's `pty-req` was refused, burrowd's
+//! first bytes on the session's stderr are one line saying the shell has
+//! no terminal (`no_pty_text`); a command after a refused pty gets none,
+//! as through `sshd` with `PermitTTY no`.
 //!
 //! **Waiting.** wolf-std at the pin has no one wait over a socket and
 //! files (wolf-std#134): an idle turn waits up to 5 ms on the socket, then
@@ -107,11 +119,13 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
     for e in schannel.environment(ch) {
         (mut envs).push(e)
     }
-    if plan.forced {
-        let original = str_from_utf8(ch.command) else ""
-        (mut envs).push("SSH_ORIGINAL_COMMAND={original}")
-    }
     let asked = str_from_utf8(ch.command) else ""
+    if plan.forced && !ch.shell {
+        (mut envs).push("SSH_ORIGINAL_COMMAND={asked}")
+    }
+    // The login shell only with no forced command: a forced command runs
+    // for a shell request too, never the shell.
+    let login = ch.shell && !plan.forced
     let command = if plan.forced then plan.command else asked
     let f = process.fork() else { return io }
     if process.is_child(f) {
@@ -130,9 +144,13 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
             env.set_cwd("/") else {}
         }
         var argv = List[str]()
-        (mut argv).push(plan.argv0)
-        (mut argv).push("-c")
-        (mut argv).push(command)
+        if login {
+            (mut argv).push("-{plan.argv0}")
+        } else {
+            (mut argv).push(plan.argv0)
+            (mut argv).push("-c")
+            (mut argv).push(command)
+        }
         var c = process.from_argv(argv)
         process.set_stdin(mut c, copy pin.read)
         process.set_stdout(mut c, copy pout.write)
@@ -265,6 +283,12 @@ fn turn_once(
                 pr.err_eof = false
                 flow.started = true
                 transport.write(mut c, schannel.start_msg(mut ch))?
+                if ch.shell && ch.pty_asked {
+                    let text = wire_bytes(no_pty_text())
+                    if text.len <= schannel.room(ch) {
+                        transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
+                    }
+                }
             }
         }
         for b in s.input {
@@ -438,6 +462,12 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
         (mut refused).push("nologin")
     }
     Result { status: st, refused: refused, failure: str_from_utf8(failed) else "io" }
+}
+
+/// The line a shell's session starts with on stderr when the client's
+/// `pty-req` was refused (px112): burrowd has no ptys yet.
+pub fn no_pty_text() -> str {
+    "burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)\n"
 }
 
 fn wire_bytes(s: str) -> List[byte] {
