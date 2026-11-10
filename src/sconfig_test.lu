@@ -143,8 +143,15 @@ fn main() {
         file("SetEnv A=1 FOO\n").detail ==
             "/etc/burrowd/burrowd_config line 1: SetEnv FOO: not NAME=VALUE",
     )
+    // `SetEnv =x` is the keyword, its `=` separator and the argument `x`
+    // (sshd_config's `keyword=value` form): `x` is refused. An argument
+    // with nothing before its `=` is refused as itself.
     assert(
         file("SetEnv =x\n").detail ==
+            "/etc/burrowd/burrowd_config line 1: SetEnv x: not NAME=VALUE",
+    )
+    assert(
+        file("SetEnv A=1 =x\n").detail ==
             "/etc/burrowd/burrowd_config line 1: SetEnv =x: not NAME=VALUE",
     )
     assert(
