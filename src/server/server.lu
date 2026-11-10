@@ -337,6 +337,7 @@ fn holder_main(
         env: session_env(a, ends),
         set_env: copy s.set_env,
         verbose: if s.debug then 1 else 0,
+        pty: s.permit_tty && pipe.text(go, 9) == "1",
         drop: false,
         uid: a.uid,
         gid: a.gid,
@@ -568,6 +569,7 @@ fn monitor_main(
     var authed_blob = List[byte]()
     var verdict_cmd = ""
     var verdict_forced = false
+    var verdict_pty = true
     var state = List[byte]()
     let started = time.monotonic_ns()
     var phase = "auth"
@@ -636,6 +638,7 @@ fn monitor_main(
                         authed_blob = copy blob
                         verdict_cmd = v.command
                         verdict_forced = v.has_command
+                        verdict_pty = v.pty
                     }
                 } else {
                     line.outcome = if v.why.starts_with("StrictModes") {
@@ -694,6 +697,7 @@ fn monitor_main(
                 authed_blob = List[byte]()
                 verdict_cmd = ""
                 verdict_forced = false
+                verdict_pty = true
             } else {
                 line.outcome = why
             }
@@ -734,6 +738,8 @@ fn monitor_main(
         (mut f).push(wire.bytes_of(if verdict_forced then "1" else "0"))
         (mut f).push(wire.bytes_of(verdict_cmd))
         (mut f).push(state)
+        // bw06: field 9, whether this login may have a pty (the key's options).
+        (mut f).push(wire.bytes_of(if verdict_pty then "1" else "0"))
         pipe.send(mut to_h, pipe.k_go(), f) else {}
         line.outcome = "ok"
         line.user = authed_user
@@ -847,6 +853,7 @@ fn oneproc_main(
         env: session_env(a, ends),
         set_env: copy s.set_env,
         verbose: 0,
+        pty: false,
         drop: pre.root,
         uid: a.uid,
         gid: a.gid,
