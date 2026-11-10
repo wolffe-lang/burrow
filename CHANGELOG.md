@@ -4,7 +4,9 @@
   leads its own at start. A job-control stop a program draws on burrowd's
   terminal (on PAX, a bare `sudo` over ssh, which asks on the console)
   stopped burrowd's whole group, its listener included, until the machine
-  restarted; it now stops that program alone. A session of its own for
+  restarted; it now stops that program alone. A stopped program is no
+  longer taken for an ended one (its log line read `status 278`, a stop
+  by SIGTTOU): its session waits for its end. A session of its own for
   each program, as `sshd` gives, waits for a toolchain call.
 - A session reads at most one packet a turn, on both sides. burrowd's
   session stalled when the client sent PINGs (OpenSSH obscures keystroke
