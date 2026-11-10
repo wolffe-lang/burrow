@@ -1,5 +1,13 @@
 ## Unreleased
 
+- burrowd takes `SetEnv` (`sshd_config(5)`): `NAME=VALUE` variables set in
+  every session, over burrowd's defaults and the accepted `GIT_PROTOCOL`,
+  never over `SSH_CONNECTION` or a forced command's `SSH_ORIGINAL_COMMAND`;
+  the first line and the first value of a name win; quotes and a trailing
+  `#` as the pinned `sshd` reads them; a malformed line refused at start by
+  file and line; `burrowd -T` prints a `setenv` line per variable. On PAX
+  a command over ssh gets the console's `WOLF_STD`, `LUPIN_STD` and
+  `DEN_TLS_ROOTS` this way, with no `. /etc/shrc;` before it.
 - Each session's program leads a process group of its own, and burrowd
   leads its own at start. A job-control stop a program draws on burrowd's
   terminal (on PAX, a bare `sudo` over ssh, which asks on the console)
