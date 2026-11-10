@@ -14,6 +14,7 @@ use std.net
 use std.os
 use std.process
 use std.signal
+use std.term
 use std.time
 use entropy
 use hostkey
@@ -258,6 +259,20 @@ fn session_env(a: mon.Account, ends: peer.Ends) -> List[str] {
         (mut e).push("TZ={tz}")
     }
     e
+}
+
+// px112: burrowd leads a process group of its own, away from the group that
+// started it (on PAX, the boot hook's, in pid 1's session with the console as
+// its terminal), so that no job-control stop meant for another group stops the
+// listener. A person who ran `burrowd -D` at a prompt keeps it in the
+// terminal's foreground group (^C reaches it); a session leader may not move.
+fn leave_group() {
+    let fg = term.foreground(fs.stdin()) else -1
+    let mine = term.group() else -2
+    if fg == mine {
+        return
+    }
+    process.lead_group() else {}
 }
 
 fn base_name(path: str) -> str {
@@ -933,6 +948,7 @@ pub fn run(args: List[str], one_process: bool) -> int {
     if s.test_only {
         return 0
     }
+    leave_group()
     let lg = Log { file: s.log_file, quiet: s.quiet }
     var listeners = List[net.Listener]()
     var ports = List[int]()
