@@ -20,6 +20,8 @@ fn step(mut ch: schannel.Chan, p: List[byte]) -> schannel.Step {
             start: false,
             want_reply: false,
             close_input: false,
+            pty: false,
+            resize: false,
             info: "refused {e}",
         }
     }
@@ -261,11 +263,17 @@ fn main() {
     let pr = step(mut tt, pty_req(true, wire.bytes_of("xterm-256color"), 132, 40, echo_on()))
     assert(pr.pty && pr.want_reply && pr.replies.len == 0 && schannel.refusals(tt).len == 0)
     assert(schannel.term_name(tt) == "xterm-256color" && tt.cols == 132 && tt.rows == 40)
-    assert(tt.xpixels == 640 && tt.ypixels == 480 && ttymodes.value(ttymodes.decode(tt.modes), 53) == 1)
+    assert(
+        tt.xpixels == 640 &&
+            tt.ypixels == 480 &&
+            ttymodes.value(ttymodes.decode(tt.modes), 53) == 1,
+    )
     schannel.grant_pty(mut tt)
     // A second pty-req: pty_twice.
     let again = step(mut tt, pty_req(true, wire.bytes_of("vt100"), 80, 24, echo_on()))
-    assert(!again.pty && again.replies[0][0] as int == 100 && schannel.refusals(tt)[0] == "pty_twice")
+    assert(
+        !again.pty && again.replies[0][0] as int == 100 && schannel.refusals(tt)[0] == "pty_twice",
+    )
     // window-change on the pty: the size kept, a zero dimension ignored.
     let wc = step(mut tt, window_change(100, 50))
     assert(wc.resize && wc.replies.len == 0 && tt.cols == 100 && tt.rows == 50)
@@ -303,7 +311,11 @@ fn main() {
     let b4 = step(mut bad, pty_req(true, wire.bytes_of("xterm"), 80, 24, cut))
     assert(!b1.pty && !b2.pty && !b3.pty && !b4.pty)
     assert(b1.replies[0][0] as int == 100 && b4.replies[0][0] as int == 100)
-    assert(schannel.refusals(bad).len == 4 && schannel.refusals(bad)[3] == "pty_malformed" && bad.pty_asked)
+    assert(
+        schannel.refusals(bad).len == 4 &&
+            schannel.refusals(bad)[3] == "pty_malformed" &&
+            bad.pty_asked,
+    )
     // The empty TERM and a 255-byte one are well formed.
     var edge = List[byte]()
     while edge.len < 255 {
