@@ -178,6 +178,84 @@ def local_shell():
     return "burrow with no command: the login shell, exit 3"
 
 
+# bw06: a terminal through burrowd, with the system's OpenSSH client (burrow's
+# own client takes no pty); its version line is recorded in the row's note.
+SYSTEM_SSH = "/usr/bin/ssh"
+
+
+def system_ssh_on_tty(args, steps, rows=40, cols=132, timeout=30):
+    """The system's ssh with its stdin a pseudo-terminal of the row's own,
+    sized before ssh starts; `steps` are (marker, action) run once the
+    marker shows on stdout. (exit, stdout, stderr)."""
+    import fcntl
+    import pty
+    import select
+    import signal
+    import struct
+    import termios
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    argv = [SYSTEM_SSH, "-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-i",
+            str(L.home / ".ssh" / "id_ed25519"), "-o", f"UserKnownHostsFile={L.home / '.ssh' / 'known_hosts'}",
+            "-o", "StrictHostKeyChecking=yes", "-p", str(L.port), "-l", L.user, "127.0.0.1"] + list(args)
+    proc = subprocess.Popen(argv, stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=L.env())
+    os.close(slave)
+    got = {proc.stdout.fileno(): b"", proc.stderr.fileno(): b""}
+    live = set(got)
+    i = 0
+    deadline = time.monotonic() + timeout
+    while live and time.monotonic() < deadline:
+        for fd in select.select(sorted(live), [], [], 0.1)[0]:
+            d = os.read(fd, 65536)
+            if d:
+                got[fd] += d
+            else:
+                live.discard(fd)
+        if i < len(steps) and steps[i][0] in got[proc.stdout.fileno()]:
+            steps[i][1](master, proc, fcntl, struct, termios, signal)
+            i += 1
+    if live:
+        proc.kill()
+    rc = proc.wait(timeout=10)
+    os.close(master)
+    return rc, got[proc.stdout.fileno()], got[proc.stderr.fileno()]
+
+
+@row
+def local_tty():
+    """`ssh -tt` at a terminal through burrowd: the pty's name, its size,
+    a window change, Ctrl-C to a trap, the status; the session's line names
+    no refusal."""
+    if not os.path.exists(SYSTEM_SSH):
+        check(False, f"no {SYSTEM_SSH} on this host")
+    version = subprocess.run([SYSTEM_SSH, "-V"], capture_output=True, text=True).stderr.strip()
+
+    def resize(master, proc, fcntl, struct, termios, signal):
+        fcntl.ioctl(master, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 100, 0, 0))
+        proc.send_signal(signal.SIGWINCH)
+
+    def go(master, proc, *_):
+        time.sleep(0.5)
+        os.write(master, b"go\r")
+
+    def ctrl_c(master, proc, *_):
+        time.sleep(0.3)
+        os.write(master, b"\x03")
+
+    r = system_ssh_on_tty(["-tt", "tty; stty size; echo ready; read x; stty size; exit 3"],
+                          [(b"ready", resize), (b"ready", go)])
+    check(r[0] == 3, f"exit {r[0]}, stderr {r[2][-200:]!r} ({version})")
+    lines = r[1].split(b"\r\n")
+    check(lines[0].startswith(b"/dev/tty") and lines[1] == b"40 132" and lines[-2] == b"50 100",
+          f"stdout {r[1][:200]!r}")
+    c = system_ssh_on_tty(["-tt", "exec /bin/sh -c \"trap 'echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done\""],
+                          [(b"ready", ctrl_c)])
+    check(c[0] == 7 and b"caught INT" in c[1], f"Ctrl-C: exit {c[0]}, stdout {c[1][-120:]!r}")
+    got = L.lines()
+    check(got and all(" refused " not in x for x in got[-2:]), f"burrowd's log: {got[-2:]}")
+    return f"{lines[0][:12].decode()}…, 40 132 then 50 100, exit 3; Ctrl-C to a trap: 7 ({version})"
+
+
 @row
 def local_git():
     git = shutil.which("git")
