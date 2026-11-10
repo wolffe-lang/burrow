@@ -168,11 +168,14 @@ def local_other_user():
 
 
 @row
-def local_no_command():
-    r = L.ssh([])
-    check(r[0] == 255, f"exit {r[0]}")
-    check(any("shell_refused" in x for x in L.lines()), "burrowd's log does not name shell_refused")
-    return "burrowd refuses the shell by name (shell_refused), burrow exits 255"
+def local_shell():
+    """No command (px112): the account's login shell reads burrow's
+    standard input; any shell takes `exit 3`."""
+    r = L.ssh([], inp=b"exit 3\n")
+    check(r[0] == 3, f"exit {r[0]}, stderr {r[2][-200:]!r}")
+    got = L.lines()
+    check(got and " status 3" in got[-1] and " refused " not in got[-1], f"burrowd's log: {got[-1:]}")
+    return "burrow with no command: the login shell, exit 3"
 
 
 @row
