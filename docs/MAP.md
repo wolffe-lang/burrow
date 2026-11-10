@@ -54,14 +54,14 @@ clone, fetch and push byte for byte as the pinned `ssh` does
 | `src/burrowd.lu` | `burrowd`: `server.run` |
 | `src/oneproc.lu` | a row program, never installed or built `--static`: burrowd as one root process per connection, for `tools/measure-server`'s comparison only |
 | `src/server` | the listener (MaxStartups, the host key checked in a forked child), and per connection the monitor, the worker and the holder, or the one-process program's one process |
-| `src/sconfig` | burrowd's command line and its `sshd_config(5)` subset, first value wins, `-T`'s lines, refusals by name |
+| `src/sconfig` | burrowd's command line and its `sshd_config(5)` subset, first value wins, `-T`'s lines, refusals by name; `SetEnv`'s arguments and a session's environment in its one order (px116) |
 | `src/akeys` | `authorized_keys` as `sshd(8)` documents it: options taken, honoured or admitting nothing; the files' paths (`%h`, `%u`, `%%`) and StrictModes |
 | `src/sauth` | authentication from the server's side as a state machine with no I/O: the request, the decision, the tries, a changed user or service |
 | `src/mon` | the monitor's checks: the account (passwd and group as root, the running user otherwise), the key against `authorized_keys`, the signature over its own session identifier |
 | `src/pipe` | bounded frames between burrowd's processes (length, kind, RFC 4251 strings) |
 | `src/worker` | authentication in the unprivileged worker, asking the monitor; or deciding in place in the one-process program |
 | `src/schannel` | burrowd's one `session` channel as a state machine with no I/O: requests taken and refused by name, the window, the ends |
-| `src/ssession` | the session's I/O: the command and its three pipes, the socket, a region per turn, the exit status or signal |
+| `src/ssession` | the session's I/O: the command and its three pipes, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
 | `src/slog` | the one log line per connection: UTC time, escaped user, fingerprint, outcome, status |
 | `src/peer` | the client's address and port from `/proc/net/tcp` and `tcp6` by the socket's inode, RFC 5952 text; `UNKNOWN` where there is none (wolf-std#140) |
 
