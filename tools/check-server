@@ -895,8 +895,10 @@ def session_terminal_stop():
     burrowd started as on PAX, in a background group of a session whose
     controlling terminal another group holds in the foreground. A program
     over ssh sets that terminal's modes (`stty -echo </dev/tty`, as sudo
-    does before it reads a password) and is stopped (SIGTTOU); a second
-    connection is answered all the same."""
+    does before it reads a password) and is stopped (SIGTTOU); while it is,
+    a second connection is answered all the same. Then the stopped program
+    is ended (SIGKILL to its group), and the first session's line names that
+    end: a stop is not an end."""
     master, slave = pty.openpty()
     with Pair(BIN, rundir("session-terminal-stop")) as p:
         d = p.dir / "console"
@@ -910,7 +912,26 @@ def session_terminal_stop():
         leader = subprocess.Popen([sys.executable, "-I", "-c", CONSOLE_LEADER, os.ttyname(slave), str(d / "burrowd.log"),
                                    str(BIN), "-D", "-e", "-f", str(cfg)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
         bpid = int(leader.stdout.readline())
-        stopped = []
+
+        def in_session(state=None):
+            """(pid, comm, state, pgrp) of each process in the leader's session."""
+            got = []
+            for q in pathlib.Path("/proc").iterdir():
+                if q.name.isdigit() and int(q.name) != leader.pid:
+                    try:
+                        f = stat_of(int(q.name))
+                        if int(f[3]) == leader.pid and (state is None or f[0] == state):
+                            got.append((int(q.name), (q / "comm").read_text().strip(), f[0], int(f[2])))
+                    except (OSError, ValueError, IndexError):
+                        pass
+            return got
+
+        def burrowtest_lines():
+            return [x.split(": ", 1)[1] for x in (d / "burrowd.log").read_text(errors="replace").splitlines()
+                    if " user burrowtest " in x]
+
+        stopped, listener, r1, r2 = [], "?", None, None
+        first = None
         try:
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline:
@@ -921,27 +942,43 @@ def session_terminal_stop():
                     break
                 except OSError:
                     time.sleep(0.05)
-            r1 = p.ssh(port, ["stty -echo </dev/tty; echo not-stopped"], timeout=8)
-            for q in pathlib.Path("/proc").iterdir():
-                if q.name.isdigit():
-                    try:
-                        if (q / "comm").read_text().strip() == "stty" and stat_of(int(q.name))[0] == "T":
-                            stopped.append(int(q.name))
-                    except OSError:
-                        pass
+            first = subprocess.Popen(p.argv(port, ["stty -echo </dev/tty; echo not-stopped"]), stdin=subprocess.DEVNULL,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=p.env())
+            # The stop, looked for while the first session is live.
+            deadline = time.monotonic() + 10
+            while not stopped and first.poll() is None and time.monotonic() < deadline:
+                stopped = [x for x in in_session("T") if x[1] == "stty"]
+                if not stopped:
+                    time.sleep(0.05)
             listener = stat_of(bpid)[0]
             r2 = p.ssh(port, ["echo second"], timeout=15)
-            record(p, f"stty over ssh: {show(r1)}\nstopped stty: {stopped}\nlistener {bpid} state {listener}\n"
-                      f"second connection: {show(r2)}\n")
+            # End the stopped program, its whole group, while its session is live.
+            for g in sorted({x[3] for x in stopped}):
+                try:
+                    os.killpg(g, signal_mod.SIGKILL)
+                except OSError:
+                    pass
+            try:
+                out, err = first.communicate(timeout=10)
+                r1 = (first.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                first.kill()
+                out, err = first.communicate()
+                r1 = (-999, out, err + b"\n[row: timed out]")
+            # Each session's line is its monitor's last act: wait for both before burrowd goes.
+            deadline = time.monotonic() + 5
+            while len(burrowtest_lines()) < 2 and time.monotonic() < deadline:
+                time.sleep(0.05)
         finally:
+            if first is not None and first.poll() is None:
+                first.kill()
+                first.wait()
             # Whatever the stop left in the leader's session (its id the leader's pid) goes.
-            for q in pathlib.Path("/proc").iterdir():
-                if q.name.isdigit() and int(q.name) != leader.pid:
-                    try:
-                        if int(stat_of(int(q.name))[3]) == leader.pid and stat_of(int(q.name))[0] == "T":
-                            os.kill(int(q.name), signal_mod.SIGKILL)
-                    except (OSError, ValueError, IndexError):
-                        pass
+            for x in in_session("T"):
+                try:
+                    os.kill(x[0], signal_mod.SIGKILL)
+                except OSError:
+                    pass
             for sig in (signal_mod.SIGCONT, signal_mod.SIGTERM):
                 try:
                     os.killpg(bpid, sig)
@@ -954,10 +991,16 @@ def session_terminal_stop():
                 os.killpg(bpid, signal_mod.SIGKILL)
             os.close(master)
             os.close(slave)
-        check(r1[0] == -999 and b"not-stopped" not in r1[1], f"the stty over ssh was not stopped: {show(r1)}")
-        check(stopped, "no stty in state T (stopped)")
+        lines = burrowtest_lines()
+        record(p, f"stopped: {stopped}\nlistener {bpid} state {listener}\nsecond connection: {show(r2)}\n"
+                  f"first connection, after its program was ended: {show(r1)}\nburrowd's lines: {lines}\n")
+        check(stopped, f"no stty in state T (stopped) while the first session was live; the first client: "
+                       f"{'still running' if r1 is None else show(r1)}")
         check(r2[:2] == (0, b"second\n"), f"the second connection after the stop: {show(r2)} (the listener's state {listener})")
-        return f"stty stopped ({len(stopped)}), the listener {listener}, the second connection answered"
+        check(r1 is not None and b"not-stopped" not in r1[1], f"the stty over ssh was not stopped: {show(r1)}")
+        check(any(" outcome " in x and x.split(" outcome ", 1)[1].split(" ", 1)[1].startswith("signal KILL") for x in lines),
+              f"the first session's end, its program killed after its stop: burrowd's lines {lines}")
+        return f"stty stopped ({len(stopped)}), the listener {listener}, the second connection answered, the first's end signal KILL"
 
 
 @row
