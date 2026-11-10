@@ -73,8 +73,14 @@ fn apply(
     }
 }
 
+// At most one packet (px112): a transport message (an IGNORE, a PING, a
+// re-exchange the server started) is handled by `step`, which gives back
+// nothing, so a turn goes on to standard input after it.
 fn pump(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> () ! refuse.Refusal {
-    let p = transport.next(mut c)?
+    let p = transport.step(mut c)?
+    if p.len == 0 {
+        return
+    }
     let s = channel.on(mut ch, p)?
     apply(mut c, mut ch, plan, s)?
 }
