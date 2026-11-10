@@ -838,6 +838,20 @@ def session_id():
 
 
 @row
+def session_own_session():
+    """Each session's program leads a session of its own, with no
+    controlling terminal (px112): the shell is the session's leader (its
+    session id its own pid), `tty_nr` 0, and burrowd's own session is not
+    the program's. Held to sshd's shape."""
+    script = "set -- $(cat /proc/self/stat); echo \"sid_is_shell=$([ \"$6\" = \"$$\" ] && echo yes || echo no) tty_nr=$7\""
+    with Pair(BIN, rundir("session-own-session")) as p:
+        rb, rs = p.both([script])
+        note = same(p, rb, rs, "the session's program: its session and its terminal")
+        check(rb[1] == b"sid_is_shell=yes tty_nr=0\n", f"burrowd's session: {rb[1]!r}")
+        return note + f", {rb[1].decode().strip()}"
+
+
+@row
 def session_stdin_held():
     data = bytes(i % 251 for i in range(8 * 1024 * 1024))
     with Pair(BIN, rundir("session-stdin-held")) as p:
