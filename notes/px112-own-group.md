@@ -103,10 +103,24 @@ Written before either change, at `74f81ea`:
 - **Unchanged:** every other row; what this does not fix (the client that ran the stopped program still waits; the
   prompt still lands on the console).
 
+Development takes on a light slot, one log (sha256 `cdf42e62…`): the rows tip `260ca2a`, the head `d6789d5` and the
+plant on it (`850b06f`), each with toolchain, oracle, `fmt`, the native build, the group rows and the session rows
+beside them, then `session-terminal-stop` twice more.
+
+```text
+FAIL session-terminal-stop the first session's end, its program killed after its stop: burrowd's lines ['… outcome ok status 0', '… outcome ok status 278']
+PASS session-terminal-stop (stty stopped (1), the listener S, the second connection answered, the first's end signal KILL)
+FAIL session-terminal-stop the second connection after the stop: exit -999, stdout b'', stderr '[row: timed out]' (the listener's state T)
+```
+
+**Scored:** red at the rows tip by name (`status 278`) in three of three, green at the head in three of three, and the
+plant red by name in three of three, as predicted; the other rows unchanged.
+
 ## Done-when
 
 - [x] The prediction, committed first (`641d66c`, `f231a22` after the rebase).
 - [x] The three rows red at the rows tip by name, green at the head.
 - [x] README (what this does not fix), MAP, CHANGELOG.
+- [x] A stop is not an end: predicted first (`d2b9fbf`), the row red at `260ca2a` by name, green at `d6789d5`.
 - [ ] The gauntlet green at the final head; the plant (the program back in burrowd's group) red by name: the PR's
   records.
