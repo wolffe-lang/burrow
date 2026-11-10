@@ -1,0 +1,267 @@
+# bw06 phase 1, linux: the pinned container (Ubuntu 24.04 by digest), two CPUs, linux 7.2.4 x86_64.
+# Take 1 at 54bb2efb2f0145a0b08d490fec44b4456b279ecc: the probes built with the pinned wolf 0.2.37 and wolf-std 2411d868, run as root and as the rows' account.
+START build-probes
+END build-probes exit=0 secs=2
+START ptyprobe-root
+  S0 host linux x86_64
+  S1 open /dev/ptmx (mode 3): ok
+  S2 is_terminal(master): true
+  S3 term.size(master): 0 0
+  S4 term.mode(master): pack 287
+  S5 fdinfo tty-index: none
+  F1 posix_openpt, grantpt, unlockpt, ptsname: fd ok, slave /dev/pts/N
+  F2 a read of the master before any slave open: deadline, 0 bytes
+  F3 term.size(master), never set: 0 0
+  F4 the child's line and the shell's ready: seen
+  F4 bytes: child: setsid pid; /dev/tty ok; foreground its group; size N N; mode pack N\r\nready\r\n
+  F5 0x03 written (1); the shell: seen; bytes ^C\r\ncaught INT\r\n
+  F5 the shell's status: 7
+  F6 the master after the slave's last close: io os_error 5, 0 more bytes
+  F7 the slave's name after the master's close: gone
+  END
+END ptyprobe-root exit=0 secs=1
+START ptyprobe-account
+  S0 host linux x86_64
+  S1 open /dev/ptmx (mode 3): ok
+  S2 is_terminal(master): true
+  S3 term.size(master): 0 0
+  S4 term.mode(master): pack 287
+  S5 fdinfo tty-index: none
+  F1 posix_openpt, grantpt, unlockpt, ptsname: fd ok, slave /dev/pts/N
+  F2 a read of the master before any slave open: deadline, 0 bytes
+  F3 term.size(master), never set: 0 0
+  F4 the child's line and the shell's ready: seen
+  F4 bytes: child: setsid pid; /dev/tty ok; foreground its group; size N N; mode pack N\r\nready\r\n
+  F5 0x03 written (1); the shell: seen; bytes ^C\r\ncaught INT\r\n
+  F5 the shell's status: 7
+  F6 the master after the slave's last close: io os_error 5, 0 more bytes
+  F7 the slave's name after the master's close: gone
+  END
+END ptyprobe-account exit=0 secs=1
+START ptyprobe-ioctl
+  I1 TIOCSWINSZ 40x132 on the master: 0; term.size(master) 40 132
+  I2 TIOCSWINSZ 50x100 on the master: 0
+  I3 child: size 40 132
+  I3 child: SIGWINCH; size 50 100
+  I4 the child's status: 0; pid true
+  END
+END ptyprobe-ioctl exit=0 secs=1
+# Take 2 at 94b9cb3564b0fbb7d992b8e5c9657c995ef46587: the pinned sshd, black box (sshd_pty.py), then the background child (sshd_pty_hold.py).
+START sshd-pty
+  bw06 probe: OpenSSH_10.0p2, OpenSSL 3.0.13 30 Jan 2024; Linux 7.2.4
+  CASE tt-command-no-TERM
+    exit 3
+    stdout b'/dev/pts/N\r\nTERM=unset\r\nSSH_TTY=/dev/pts/N\r\n0 0\r\nout\r\nerr\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE tt-command-TERM-vt100
+    exit 3
+    stdout b'/dev/pts/N\r\nTERM=vt100\r\nSSH_TTY=/dev/pts/N\r\n0 0\r\nout\r\nerr\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE T-command-no-pty
+    exit 3
+    stdout b'not a tty\nTERM=unset\nSSH_TTY=unset\nout\n'
+    stderr b"stty: 'standard input': Inappropriate ioctl for device\nerr\n"
+  CASE sshd-log-pty-lines
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: server_input_channel_req: channel 0 request pty-req reply 1
+    debug1: session_input_channel_req: session 0 req pty-req
+    debug1: Allocating pty.
+    debug3: mm_pty_allocate: waiting for MONITOR_ANS_PTY
+    debug3: mm_answer_pty: entering
+    debug3: mm_answer_pty: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_req: session 0 alloc /dev/pts/N
+    debug2: channel 0: rfd 11 isatty
+    debug1: Setting controlling tty using TIOCSCTTY.
+    debug2: channel 0: obuf empty
+    debug2: channel 0: ibuf empty
+    debug3: mm_answer_pty_cleanup: entering
+    debug1: session_by_tty: session 0 tty /dev/pts/N
+    debug3: mm_session_close: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_cleanup2: session 0 release /dev/pts/N
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: server_input_channel_req: channel 0 request pty-req reply 1
+    debug1: session_input_channel_req: session 0 req pty-req
+    debug1: Allocating pty.
+    debug3: mm_pty_allocate: waiting for MONITOR_ANS_PTY
+    debug3: mm_answer_pty: entering
+    debug3: mm_answer_pty: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_req: session 0 alloc /dev/pts/N
+    debug2: channel 0: rfd 11 isatty
+    debug1: Setting controlling tty using TIOCSCTTY.
+    debug2: channel 0: obuf empty
+    debug2: channel 0: ibuf empty
+    debug3: mm_answer_pty_cleanup: entering
+    debug1: session_by_tty: session 0 tty /dev/pts/N
+    debug3: mm_session_close: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_cleanup2: session 0 release /dev/pts/N
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug2: channel 0: obuf empty
+    debug2: channel 0: ibuf empty
+  CASE tt-size-modes-window-change
+    exit 0
+    stdout b'40 132\r\nspeed 38400 baud; rows 40; columns 132; line = 0;\r\nintr = ^G; quit = ^\\; erase = ^H; kill = ^U; eof = ^D; eol = <undef>; eol2 = <undef>; swtch = <undef>; start = ^Q; stop = ^S;\r\nsusp = ^Z; rprnt = ^R; werase = ^W; lnext = ^V; discard = ^O; min = 1; time = 0;\r\n-parenb -parodd -cmspar cs8 -hupcl -cstopb cread -clocal -crtscts\r\n-ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr icrnl -ixon -ixoff -iuclc -ixany -imaxbel -iutf8\r\nopost -olcuc -ocrnl onlcr -onocr -onlret -ofill -ofdel nl0 cr0 tab0 bs0 vt0 ff0\r\nisig icanon iexten echo echoe echok -echonl -noflsh -xcase -tostop -echoprt echoctl echoke -flusho -extproc\r\nready\r\ngo\r\n50 100\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE tt-ctrl-c-trap
+    exit 7
+    stdout b'ready\r\n^Ccaught INT\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE tt-ctrl-c-exit-signal
+    exit 255
+    stdout b'ready\r\n^C'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE tt-full-screen-key
+    exit 0
+    stdout b'40 132\r\nkey=q\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE shell-at-terminal
+    exit 4
+    stdout b'$ tty; echo $0; exit 4\r\n/dev/pts/N\r\n-sh\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE tt-background-holds-slave
+    exit 0
+    stdout b'/dev/pts/N\r\nstarted\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.1 s; /dev/pts before [], after []; the account's processes after: []
+  CASE tt-background-no-trap
+    exit 0
+    stdout b'started\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.1 s; the account's processes after: []
+  CASE tt-burst-before-exit
+    exit 0
+    stdout b'995\r\n19996\r\n19997\r\n19998\r\n19999\r\n20000\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    20000 CRLF lines; the numbers 1 to 20000 in order: True
+  CASE tt-client-eof
+    exit -999
+    stdout b'one\r\none\r\n'
+    stderr b'\n[row: timed out]'
+    took 10.0 s
+  CASE tt-client-ctrl-d-then-eof
+    exit 0
+    stdout b'one\r\none\r\ncat-ended\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.1 s
+  CASE tt-default-modes-stdin-not-a-terminal
+    exit 0
+    stdout b'speed 38400 baud; rows 0; columns 0; line = 0;\r\nintr = ^C; quit = ^\\; erase = ^?; kill = ^U; eof = ^D; eol = <undef>;\r\neol2 = <undef>; swtch = <undef>; start = ^Q; stop = ^S; susp = ^Z; rprnt = ^R;\r\nwerase = ^W; lnext = ^V; discard = ^O; min = 1; time = 0;\r\n-parenb -parodd -cmspar cs8 -hupcl -cstopb cread -clocal -crtscts\r\n-ignbrk -brkint -ignpar -parmrk -inpck -istrip -inlcr -igncr icrnl ixon -ixoff\r\n-iuclc -ixany -imaxbel -iutf8\r\nopost -olcuc -ocrnl onlcr -onocr -onlret -ofill -ofdel nl0 cr0 tab0 bs0 vt0 ff0\r\nisig icanon iexten echo echoe echok -echonl -noflsh -xcase -tostop -echoprt\r\nechoctl echoke -flusho -extproc\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE key-no-pty
+    exit 255
+    stdout b''
+    stderr b'PTY allocation request failed on channel 0\r\n'
+  CASE key-restrict
+    exit 255
+    stdout b''
+    stderr b'PTY allocation request failed on channel 0\r\n'
+  CASE key-restrict-pty
+    exit 0
+    stdout b'/dev/pts/N\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+  CASE PermitTTY-no
+    exit 255
+    stdout b''
+    stderr b'PTY allocation request failed on channel 0\r\n'
+  END
+END sshd-pty exit=0 secs=23
+START sshd-pty-hold
+  CASE control-T-nohup
+    exit 0
+    stdout b'started\n'
+    stderr b''
+    took 0.1 s; after 0.5 s: [['12', 'burrowt+', '11', '11', '?', 'S', 'sleep']]; sleep 12 SigIgn 0000000000000007
+  CASE tt-hup-ignored-child
+    exit 0
+    stdout b'     17      15      15 ?        S    sshd-session\r\n     18      18      18 pts/0    Ss+  sh\r\n     19      18      18 pts/0    S+   sleep\r\n     21      18      18 pts/0    R+   ps\r\nSigIgn:\t0000000000000007\r\nstarted\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.5 s; after 0.5 s: [['19', 'burrowt+', '18', '18', '?', 'S', 'sleep']]; sleep 19 SigIgn 0000000000000007
+  CASE tt-hup-ignored-child-detached-stdio
+    exit 0
+    stdout b'started\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.1 s; after 0.5 s: []
+  CASE tt-plain-child
+    exit 0
+    stdout b'started\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.4 s; after 0.5 s: []
+  CASE tt-setsid-child
+    exit 0
+    stdout b'started\r\n'
+    stderr b'Connection to 127.0.0.1 closed.\r\n'
+    took 0.4 s; after 0.5 s: [['44', 'burrowt+', '44', '44', '?', 'Ss', 'sleep']]; sleep 44 SigIgn 0000000000000006
+  END
+END sshd-pty-hold exit=0 secs=39
+# Take 1's sshd log lines for its first three cases (take 2's case printed none), sshd's own debug output:
+  CASE sshd-log-pty-lines
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: server_input_channel_req: channel 0 request pty-req reply 1
+    debug1: session_input_channel_req: session 0 req pty-req
+    debug1: Allocating pty.
+    debug3: mm_pty_allocate: waiting for MONITOR_ANS_PTY
+    debug3: mm_answer_pty: entering
+    debug3: mm_answer_pty: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_req: session 0 alloc /dev/pts/N
+    debug2: channel 0: rfd 11 isatty
+    debug1: Setting controlling tty using TIOCSCTTY.
+    debug2: channel 0: obuf empty
+    debug2: channel 0: ibuf empty
+    debug3: mm_answer_pty_cleanup: entering
+    debug1: session_by_tty: session 0 tty /dev/pts/N
+    debug3: mm_session_close: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_cleanup2: session 0 release /dev/pts/N
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: server_input_channel_req: channel 0 request pty-req reply 1
+    debug1: session_input_channel_req: session 0 req pty-req
+    debug1: Allocating pty.
+    debug3: mm_pty_allocate: waiting for MONITOR_ANS_PTY
+    debug3: mm_answer_pty: entering
+    debug3: mm_answer_pty: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_req: session 0 alloc /dev/pts/N
+    debug2: channel 0: rfd 11 isatty
+    debug1: Setting controlling tty using TIOCSCTTY.
+    debug2: channel 0: obuf empty
+    debug3: mm_answer_pty_cleanup: entering
+    debug1: session_by_tty: session 0 tty /dev/pts/N
+    debug3: mm_session_close: tty /dev/pts/N ptyfd 6
+    debug1: session_pty_cleanup2: session 0 release /dev/pts/N
+    debug2: channel 0: ibuf empty
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug1: active: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug3: sending debug message: /home/burrowtest/.ssh/authorized_keys:1: key options: agent-forwarding port-forwarding pty user-rc x11-forwarding
+    debug2: channel 0: obuf empty
+    debug2: channel 0: ibuf empty
