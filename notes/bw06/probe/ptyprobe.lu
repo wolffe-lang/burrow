@@ -1,0 +1,321 @@
+//! member: false
+//!
+//! bw06 phase 1's probe: what a wolf program at burrow's pin (wolf 0.2.37,
+//! wolf-std 2411d868) can do with a pseudo-terminal, on the host it runs on.
+//! Not burrow: never built by tools/build, never installed.
+//!
+//! Part S uses wolf-std alone: it opens the pty multiplexer, asks what std
+//! answers on it, and (linux) tries the slave its number names.
+//! Part F declares the C library's pty calls (`extern "c"`, the `ffi`
+//! capability) and runs the whole chain an interactive session needs: a
+//! master and its slave's name, the window size set, a forked child that
+//! leads a new session, opens the slave (its controlling terminal), and
+//! reports; then a shell on the slave that a Ctrl-C byte on the master
+//! interrupts; then the master's reads after the slave's last close.
+
+use std.env
+use std.fs
+use std.io
+use std.os
+use std.process
+use std.signal
+use std.term
+use std.time
+
+import c "stdlib.h"
+
+extern "c" fn posix_openpt(flags: i32) -> i32
+
+extern "c" fn grantpt(fd: i32) -> i32
+
+extern "c" fn unlockpt(fd: i32) -> i32
+
+extern "c" fn ptsname(fd: i32) -> *u8
+
+extern "c" fn setsid() -> i32
+
+extern "c" fn ioctl(fd: i32, req: u64, ...) -> i32
+
+fn linux() -> bool {
+    os.name() == "linux" || os.name() == "pax"
+}
+
+fn o_rdwr_noctty() -> int {
+    if linux() then 2 + 256 else 2 + 131072
+}
+
+fn tiocswinsz() -> int {
+    if linux() then 21524 else 2148037735
+}
+
+fn push_text(mut out: List[byte], s: str) {
+    for b in s.bytes() {
+        (mut out).push(b)
+    }
+}
+
+// The pty's number written N, so two hosts' lines compare.
+fn digits_out(s: str) -> str {
+    var out = List[byte]()
+    var last_digit = false
+    for b in s.bytes() {
+        let d = b as int >= 48 && b as int <= 57
+        if d {
+            if !last_digit {
+                push_text(mut out, "N")
+            }
+        } else {
+            (mut out).push(b)
+        }
+        last_digit = d
+    }
+    str_from_utf8(out) else ""
+}
+
+fn shown(b: List[byte]) -> str {
+    var out = List[byte]()
+    for x in b {
+        let v = x as int
+        if v == 13 {
+            push_text(mut out, "\\r")
+        } else if v == 10 {
+            push_text(mut out, "\\n")
+        } else if v < 32 || v > 126 {
+            push_text(mut out, "\\x{v}")
+        } else {
+            (mut out).push(x)
+        }
+    }
+    str_from_utf8(out) else ""
+}
+
+fn has(text: str, want: str) -> bool {
+    let at = text.find(want) else -1
+    at >= 0
+}
+
+fn c_text(p: *u8) -> str {
+    var out = List[byte]()
+    // # Safety: ptsname's answer is a NUL-terminated name in a static
+    // buffer, read before any other pty call.
+    unsafe {
+        var i = 0
+        while i < 128 && p[i] as int != 0 {
+            (mut out).push(p[i] as byte)
+            i += 1
+        }
+    }
+    str_from_utf8(out) else ""
+}
+
+fn part_s() {
+    print("S0 host {os.name()} {os.arch()}")
+    var m = fs.open_mode("/dev/ptmx", 3) else |e| {
+        print("S1 open /dev/ptmx (mode 3): {e} os_error {os_error()}")
+        return
+    }
+    print("S1 open /dev/ptmx (mode 3): ok")
+    let t = io.is_terminal(m) else |e| {
+        print("S2 is_terminal(master): {e}")
+        false
+    }
+    print("S2 is_terminal(master): {t}")
+    let sz = term.size(m) else |e| {
+        print("S3 term.size(master): {e} os_error {os_error()}")
+        term.Size { rows: -1, columns: -1 }
+    }
+    if sz.rows >= 0 {
+        print("S3 term.size(master): {sz.rows} {sz.columns}")
+    }
+    let md = term.mode(m) else |e| {
+        print("S4 term.mode(master): {e} os_error {os_error()}")
+        term.unpack(0)
+    }
+    print("S4 term.mode(master): pack {term.pack(md)}")
+    if linux() {
+        let info = fs.read_text("/proc/self/fdinfo/{m.fd}") else ""
+        var index = ""
+        for l in info.lines() {
+            if l.starts_with("tty-index:") {
+                index = l[10..l.len].trim()
+            }
+        }
+        print("S5 fdinfo tty-index: {if index == "" then "none" else "present"}")
+        if index != "" {
+            var s = fs.open_mode("/dev/pts/{index}", 3) else |e| {
+                print("S6 open its slave (mode 3), never unlocked: {e} os_error {os_error()}")
+                fs.close(take m) else {}
+                return
+            }
+            print("S6 open its slave (mode 3), never unlocked: ok")
+            fs.close(take s) else {}
+        }
+    } else {
+        print("S5 fdinfo tty-index: no /proc on this host; std names no slave")
+    }
+    fs.close(take m) else {}
+}
+
+// Reads the master until `want` shows, the deadline passes, or it ends.
+fn read_until(mut m: fs.File, mut got: List[byte], want: str, ms: int) -> str {
+    let start = time.now()
+    loop {
+        if want != "" {
+            let text = str_from_utf8(got) else ""
+            if has(text, want) {
+                return "seen"
+            }
+        }
+        let left = ms - time.as_millis(time.elapsed(start))
+        if left <= 0 {
+            return "deadline"
+        }
+        var one = List[fs.File]()
+        (mut one).push(copy m)
+        let w = signal.wait_fds(one, signal.child(), if left > 50 then 50 else left) else |e| {
+            return "wait {e}"
+        }
+        if w.ready == 0 {
+            var end = ""
+            let b = fs.read_chunk(mut m, 4096) else |e| {
+                end = "{e} os_error {os_error()}"
+                List[byte]()
+            }
+            if end != "" {
+                return end
+            }
+            if b.len == 0 {
+                return "zero bytes"
+            }
+            for x in b {
+                (mut got).push(x)
+            }
+        }
+    }
+    "deadline"
+}
+
+fn open_pty() -> (int, str) {
+    var fd = -1
+    var name = ""
+    // # Safety: the C library's own pty calls on a descriptor they made.
+    unsafe {
+        fd = posix_openpt(o_rdwr_noctty() as i32) as int
+        if fd >= 0 {
+            let g = grantpt(fd as i32) as int
+            let u = unlockpt(fd as i32) as int
+            if g == 0 && u == 0 {
+                name = c_text(ptsname(fd as i32))
+            }
+        }
+    }
+    (fd, name)
+}
+
+fn set_size(fd: int, rows: int, cols: int) -> int {
+    var r = -1
+    // # Safety: an 8-byte zeroed buffer as `struct winsize` (four
+    // unsigned shorts: rows, columns, x pixels, y pixels), freed once.
+    unsafe {
+        let ws = c.calloc(1, 8) as *u16
+        ws[0] = rows as u16
+        ws[1] = cols as u16
+        r = ioctl(fd as i32, tiocswinsz() as u64, ws) as int
+        c.free(ws as *u8)
+    }
+    r
+}
+
+fn part_f() {
+    signal.listen(signal.child()) else {}
+    let (fd, name) = open_pty()
+    print("F1 posix_openpt, grantpt, unlockpt, ptsname: fd {if fd >= 0 then "ok" else "failed"}, slave {digits_out(name)}")
+    if fd < 0 || name == "" {
+        return
+    }
+    var m = fs.adopt(fd) else |e| {
+        print("F1 adopt: {e}")
+        return
+    }
+    fs.set_nonblock(mut m, true) else {}
+    var early = List[byte]()
+    let before = read_until(mut m, mut early, "", 100)
+    print("F2 a read of the master before any slave open: {before}, {early.len} bytes")
+    let r = set_size(fd, 40, 132)
+    let sz = term.size(m) else term.Size { rows: -1, columns: -1 }
+    print("F3 TIOCSWINSZ 40x132 on the master: {r}; term.size(master) {sz.rows} {sz.columns}")
+    // The child: a session of its own, the slave its controlling terminal.
+    let f = process.fork() else |e| {
+        print("F4 fork: {e}")
+        return
+    }
+    if process.is_child(f) {
+        var mc = copy m
+        fs.close(take mc) else {}
+        var sid = -1
+        // # Safety: setsid takes no arguments; this child leads no group.
+        unsafe {
+            sid = setsid() as int
+        }
+        var s = fs.open_mode(name, 3) else {
+            process.exit(3)
+            fs.File { fd: -1 }
+        }
+        var tty_ok = "ok"
+        var t = fs.open_mode("/dev/tty", 3) else |e| {
+            tty_ok = "{e} os_error {os_error()}"
+            fs.File { fd: -1 }
+        }
+        if t.fd >= 0 {
+            fs.close(take t) else {}
+        }
+        let fg = term.foreground(s) else -1
+        let mine = term.group() else -2
+        let csz = term.size(s) else term.Size { rows: -1, columns: -1 }
+        let md = term.mode(s) else term.unpack(0)
+        fs.write(
+            mut s,
+            "child: setsid {if sid == env.pid() then "pid" else "{sid}"}; /dev/tty {tty_ok}; foreground {if fg == mine then "its group" else "{fg}"}; size {csz.rows} {csz.columns}; mode pack {term.pack(md)}\n",
+        ) else {}
+        // A shell on the slave: Ctrl-C (0x03) reaches it as SIGINT.
+        var argv = List[str]()
+        (mut argv).push("sh")
+        (mut argv).push("-c")
+        (mut argv).push("trap 'echo; echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done")
+        var cmd = process.from_argv(argv)
+        process.set_stdin(mut cmd, copy s)
+        process.set_stdout(mut cmd, copy s)
+        process.set_stderr(mut cmd, copy s)
+        var envs = List[str]()
+        (mut envs).push("PATH=/usr/bin:/bin")
+        os_exec("/bin/sh", cmd.argv, envs, cmd.fds) else {}
+        process.exit(4)
+    }
+    var got = List[byte]()
+    let r1 = read_until(mut m, mut got, "ready", 5000)
+    print("F4 the child's line and the shell's ready: {r1}")
+    print("F4 bytes: {digits_out(shown(got))}")
+    var ctrl_c = List[byte]()
+    (mut ctrl_c).push(3 as byte)
+    let n = fs.write_some(mut m, ctrl_c) else -1
+    var after = List[byte]()
+    let r2 = read_until(mut m, mut after, "caught INT", 5000)
+    print("F5 0x03 written ({n}); the shell: {r2}; bytes {shown(after)}")
+    var ch = process.Child { slot: f.child.slot }
+    let st = process.wait_status(take ch) else -999
+    print("F5 the shell's status: {st}")
+    // The slave's last close: what the master reads after it.
+    var tail = List[byte]()
+    let r3 = read_until(mut m, mut tail, "", 1000)
+    print("F6 the master after the slave's last close: {r3}, {tail.len} more bytes")
+    fs.close(take m) else {}
+    let still = fs.exists(name)
+    print("F7 the slave's name after the master's close: {if still then "still there" else "gone"}")
+}
+
+fn main() -> int {
+    part_s()
+    part_f()
+    print("END")
+    0
+}

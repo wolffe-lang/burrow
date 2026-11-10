@@ -1,0 +1,8 @@
+// bw06 phase 1's probe only: the C library's pty calls need `ffi`.
+// burrow itself (src/wolf.pkg) declares no `ffi`.
+pkg {
+    name: "ptyprobe",
+    version: "0.0.0",
+    edition: "1",
+    capabilities: [env, fs, exec, ffi],
+}
