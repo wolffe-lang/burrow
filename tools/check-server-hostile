@@ -253,7 +253,8 @@ def hostile_window_overrun():
 def hostile_requests_refused():
     """Every request burrowd refuses, each wanting a reply: CHANNEL_FAILURE
     for each, the session still serves, and the log names them all."""
-    with Server("hostile-requests-refused") as s:
+    # bw06: PermitTTY no here, so the pty-req is refused by policy (pty_refused).
+    with Server("hostile-requests-refused", config=["PermitTTY no"]) as s:
         c = logged_in(s)
         c.open_session()
         conf = c.recv()
@@ -281,6 +282,85 @@ def hostile_requests_refused():
         names = ["pty_refused", "x11_refused", "agent_refused", "subsystem_refused", "signal_refused", "env_refused"]
         check(lines and all(n in lines[-1] for n in names), f"the log line does not name them all: {lines[-1:]}")
         return "six CHANNEL_FAILUREs, the command still runs, the log names each"
+
+
+# ---- a terminal (bw06) ------------------------------------------------------------------
+def pty_fields(term=b"xterm", cols=80, rows=24, modes=b"\x35\x00\x00\x00\x01\x00"):
+    return string(term) + u32(cols) + u32(rows) + u32(0) + u32(0) + string(modes)
+
+
+def window_fields(cols, rows):
+    return u32(cols) + u32(rows) + u32(0) + u32(0)
+
+
+@row
+def hostile_pty_malformed():
+    """pty-req whose contents are malformed (RFC 4254 §6.2, §8): a mode's
+    value cut short, a TERM with a control byte, a TERM of 4 KiB, a
+    dimension past 65535; each CHANNEL_FAILURE named pty_malformed, the
+    connection kept. A window-change with no pty: ignored. A pty-req after
+    the program started: pty_late. The command's output still arrives."""
+    with Server("hostile-pty-malformed", config=["PermitTTY yes"]) as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        seen = []
+        asks = [pty_fields(modes=b"\x35\x00\x00"), pty_fields(term=b"xterm\n"), pty_fields(term=b"x" * 4096),
+                pty_fields(cols=70000)]
+        answers = []
+        for f in asks:
+            c.request(0, b"pty-req", True, f)
+            answers.append(answer(c, seen))
+        check(answers == [100] * 4, f"answers {answers}, wanted four CHANNEL_FAILUREs")
+        c.request(0, b"window-change", False, window_fields(100, 50))
+        c.request(0, b"exec", True, string(b"sleep 0.5; echo still"))
+        ok = answer(c, seen)
+        check(ok == 99, f"message {ok} instead of CHANNEL_SUCCESS for exec")
+        c.request(0, b"pty-req", True, pty_fields())
+        late = answer(c, seen)
+        check(late == 100, f"message {late} for a pty-req after the program started")
+        got = seen + c.until_end(seconds=10)
+        c.close()
+        data = b"".join(p[9:] for t, p in got if t == 94)
+        check(data == b"still\n", f"the command's output {data!r}")
+        lines = s.b.conn_lines(settle=5)
+        check(lines and " refused pty_malformed,pty_malformed,pty_malformed,pty_malformed,pty_late " in lines[-1] + " ",
+              f"the log line: {lines[-1:]}")
+        return "four pty_malformed, a window-change with no pty ignored, pty_late, the command's output"
+
+
+@row
+def hostile_pty_granted():
+    """A pty-req whose modes end in an opcode from 160 and bytes past it
+    (§8: the parse stops there): granted. A second: pty_twice. A
+    window-change past 65535: window_malformed, the size kept; one with
+    zero columns: the rows alone. `stty size` on the pty then reads them."""
+    with Server("hostile-pty-granted", config=["PermitTTY yes"]) as s:
+        c = logged_in(s)
+        c.open_session()
+        conf = c.recv()
+        check(conf[0] == 91, f"message {conf[0]} instead of the confirmation")
+        seen = []
+        c.request(0, b"pty-req", True, pty_fields(modes=b"\x35\x00\x00\x00\x01\xc8junk"))
+        first = answer(c, seen)
+        check(first == 99, f"message {first} instead of CHANNEL_SUCCESS for the pty")
+        c.request(0, b"pty-req", True, pty_fields())
+        second = answer(c, seen)
+        check(second == 100, f"message {second} for a second pty-req")
+        c.request(0, b"window-change", False, window_fields(70000, 30))
+        c.request(0, b"window-change", False, window_fields(0, 50))
+        c.request(0, b"exec", True, string(b"stty size"))
+        ok = answer(c, seen)
+        check(ok == 99, f"message {ok} instead of CHANNEL_SUCCESS for exec")
+        got = seen + c.until_end(seconds=10)
+        c.close()
+        data = b"".join(p[9:] for t, p in got if t == 94)
+        check(data == b"50 80\r\n", f"stty size on the pty: {data!r}")
+        lines = s.b.conn_lines(settle=5)
+        check(lines and " refused pty_twice,window_malformed " in lines[-1] + " " and " status 0" in lines[-1],
+              f"the log line: {lines[-1:]}")
+        return "granted, pty_twice, window_malformed, stty size 50 80"
 
 
 def answer(c, seen):
