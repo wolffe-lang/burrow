@@ -54,8 +54,16 @@ fn main() {
     (mut twice).push(0)
     assert(ttymodes.value(ttymodes.decode(ttymodes.encode(twice)), 53) == 0)
     // The names §8 and RFC 8160 give.
-    assert(ttymodes.name(1) == "VINTR" && ttymodes.name(18) == "VDISCARD" && ttymodes.name(42) == "IUTF8")
-    assert(ttymodes.name(93) == "PARODD" && ttymodes.name(129) == "TTY_OP_OSPEED" && ttymodes.name(19) == "")
+    assert(
+        ttymodes.name(1) == "VINTR" &&
+            ttymodes.name(18) == "VDISCARD" &&
+            ttymodes.name(42) == "IUTF8",
+    )
+    assert(
+        ttymodes.name(93) == "PARODD" &&
+            ttymodes.name(129) == "TTY_OP_OSPEED" &&
+            ttymodes.name(19) == "",
+    )
     assert(ttymodes.is_char(1) && ttymodes.is_char(18) && !ttymodes.is_char(30))
     assert(ttymodes.none_char() == 255)
 }
