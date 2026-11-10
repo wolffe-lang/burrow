@@ -18,9 +18,22 @@
 //! accepts (R-bw04-4: `GIT_PROTOCOL` only) before the program starts;
 //! `exec` or `shell` (§6.5) once, whichever comes first (px112: the shell
 //! runs with no pty); `eow@openssh.com` (`PROTOCOL` §2.1: no more input to
-//! the program); `window-change` and `break` taken and ignored (no pty).
+//! the program); `break` taken and ignored.
+//!
+//! **A pty** (bw06; §6.2, §6.7, §8): `pty-req` is parsed (TERM, the size in
+//! characters and pixels, the encoded modes, `src/ttymodes`) and, where the
+//! session allows one (`allow_pty`: `PermitTTY` and the key's options), handed
+//! to the session (`Step.pty`), which opens the pty and answers (`grant_pty`,
+//! or `refuse_pty` with its own name). Refused by name otherwise:
+//! `pty_refused` (not allowed), `pty_malformed` (a TERM over 255 bytes or with
+//! a byte outside `!`..`~`, a dimension past 65535, a mode cut short),
+//! `pty_twice` (a pty already granted), `pty_late` (after the program
+//! started); a refusal is remembered, and a shell after it says so. With a pty,
+//! `window-change` keeps the new size (a zero dimension ignored) for the
+//! session to apply (`Step.resize`); one past 65535 is `window_malformed`.
+//! With none, `window-change` is taken and ignored.
+//!
 //! Refused, CHANNEL_FAILURE when a reply is wanted, and named in the log:
-//! `pty-req` (`pty_refused`, remembered: a shell after it says so),
 //! `subsystem` (`subsystem_refused`), `x11-req` (`x11_refused`),
 //! `auth-agent-req@openssh.com` (`agent_refused`), `signal`
 //! (`signal_refused`), a second program, `exec` or `shell` after either
@@ -45,6 +58,7 @@
 //! answered once, in either order.
 
 use refuse
+use ttymodes
 use wire
 
 /// burrowd's channel number.
@@ -82,6 +96,18 @@ pub struct Chan {
     shell: bool,
     /// A `pty-req` was refused on this channel.
     pty_asked: bool,
+    /// The session may grant a pty (bw06: `PermitTTY`, the key's options).
+    pty_allowed: bool,
+    /// A pty was granted: the program runs on it.
+    pty: bool,
+    /// The last well-formed `pty-req`'s TERM and modes, and the size (from
+    /// it, then each `window-change`).
+    term: List[byte],
+    modes: List[byte],
+    cols: int,
+    rows: int,
+    xpixels: int,
+    ypixels: int,
     env: List[byte],
     got_eof: bool,
     got_close: bool,
@@ -114,6 +140,14 @@ pub fn sized(window: int) -> Chan {
         command: List[byte](),
         shell: false,
         pty_asked: false,
+        pty_allowed: false,
+        pty: false,
+        term: List[byte](),
+        modes: List[byte](),
+        cols: 0,
+        rows: 0,
+        xpixels: 0,
+        ypixels: 0,
         env: List[byte](),
         got_eof: false,
         got_close: false,
@@ -193,6 +227,11 @@ pub struct Step {
     start: bool,
     want_reply: bool,
     close_input: bool,
+    /// bw06: a `pty-req` for the session to serve (the request is in the
+    /// channel; the session answers it, `want_reply` saying whether).
+    pty: bool,
+    /// bw06: a new size for the session's pty (in the channel).
+    resize: bool,
     info: str,
 }
 
@@ -203,8 +242,46 @@ fn nothing() -> Step {
         start: false,
         want_reply: false,
         close_input: false,
+        pty: false,
+        resize: false,
         info: "",
     }
+}
+
+/// bw06: the session may grant a pty on this channel.
+pub fn allow_pty(mut ch: Chan) {
+    ch.pty_allowed = true
+}
+
+/// bw06: the session opened the pty the last `pty-req` asked for.
+pub fn grant_pty(mut ch: Chan) {
+    ch.pty = true
+}
+
+/// bw06: the session could not give the pty the last `pty-req` asked for;
+/// `why` names it in the log, and a shell after it says it has none.
+pub fn refuse_pty(mut ch: Chan, why: str) {
+    ch.pty_asked = true
+    refuse_name(mut ch, why)
+}
+
+/// bw06: the TERM the client sent with its pty ("" for none).
+pub fn term_name(ch: Chan) -> str {
+    str_from_utf8(ch.term) else ""
+}
+
+// A TERM burrowd puts in the environment: up to 255 bytes, each printable
+// ASCII and no space.
+fn term_ok(b: List[byte]) -> bool {
+    if b.len > 255 {
+        return false
+    }
+    for x in b {
+        if x as int < 33 || x as int > 126 {
+            return false
+        }
+    }
+    true
 }
 
 fn plain(ch: Chan, t: int) -> List[byte] {
@@ -502,7 +579,11 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
             ch.shell = true
             s.start = true
             s.want_reply = want
-            s.info = "shell: the login shell, no pty"
+            s.info = if ch.pty {
+                "shell: the login shell, on the pty"
+            } else {
+                "shell: the login shell, no pty"
+            }
             return s
         }
         if kind == "env" && !ch.started && ch.command.len == 0 && !ch.shell {
@@ -532,15 +613,89 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
             s.info = "eow@openssh.com: no more input to the command"
             return s
         }
+        if kind == "pty-req" {
+            let term = wire.read_string(mut r) else { return malformed }
+            let cols = wire.read_u32(mut r) else { return malformed }
+            let rows = wire.read_u32(mut r) else { return malformed }
+            let xp = wire.read_u32(mut r) else { return malformed }
+            let yp = wire.read_u32(mut r) else { return malformed }
+            let modes = wire.read_string(mut r) else { return malformed }
+            var why = ""
+            if ch.started || ch.command.len > 0 || ch.shell {
+                why = "pty_late"
+            } else if ch.pty {
+                why = "pty_twice"
+            } else if !term_ok(term) || cols > 65535 || rows > 65535 || xp > 65535 || yp > 65535 {
+                why = "pty_malformed"
+            } else if !ttymodes.decode(modes).ok {
+                why = "pty_malformed"
+            } else if !ch.pty_allowed {
+                why = "pty_refused"
+            }
+            if why != "" {
+                refuse_pty(mut ch, why)
+                if want {
+                    (mut s.replies).push(failure_msg(ch))
+                }
+                s.info = "{why}: pty-req"
+                return s
+            }
+            (mut ch.term).reset()
+            for b in term {
+                (mut ch.term).push(b)
+            }
+            (mut ch.modes).reset()
+            for b in modes {
+                (mut ch.modes).push(b)
+            }
+            ch.cols = cols
+            ch.rows = rows
+            ch.xpixels = xp
+            ch.ypixels = yp
+            s.pty = true
+            s.want_reply = want
+            s.info = "pty-req: TERM {term.len} bytes, {cols}x{rows}, {modes.len} bytes of modes"
+            return s
+        }
+        if kind == "window-change" && ch.pty {
+            let cols = wire.read_u32(mut r) else { return malformed }
+            let rows = wire.read_u32(mut r) else { return malformed }
+            let xp = wire.read_u32(mut r) else { return malformed }
+            let yp = wire.read_u32(mut r) else { return malformed }
+            if cols > 65535 || rows > 65535 || xp > 65535 || yp > 65535 {
+                refuse_name(mut ch, "window_malformed")
+                if want {
+                    (mut s.replies).push(failure_msg(ch))
+                }
+                s.info = "window_malformed: {cols}x{rows}"
+                return s
+            }
+            // §6.2: zero dimensions are ignored.
+            if cols > 0 {
+                ch.cols = cols
+            }
+            if rows > 0 {
+                ch.rows = rows
+            }
+            if xp > 0 {
+                ch.xpixels = xp
+            }
+            if yp > 0 {
+                ch.ypixels = yp
+            }
+            if want {
+                (mut s.replies).push(success_msg(ch))
+            }
+            s.resize = true
+            s.info = "window-change: {ch.cols}x{ch.rows}"
+            return s
+        }
         if kind == "window-change" || kind == "break" {
             if want {
                 (mut s.replies).push(failure_msg(ch))
             }
             s.info = "{kind}: no pty, ignored"
             return s
-        }
-        if kind == "pty-req" {
-            ch.pty_asked = true
         }
         let why = request_name(kind)
         refuse_name(mut ch, why)
