@@ -8,8 +8,8 @@ one per-run host key, one account, one client key, equivalent
 configurations), runs the pinned ssh against both with the same arguments,
 and holds burrowd's client-visible outcome to sshd's: stdout bytes, stderr
 lines with each server's port written PORT, and the exit status. Where sshd
-has no equivalent (strict kex required, a shell refused), the row says so
-and holds burrowd to the prediction. A row prints `PASS <row>` or `FAIL <row>
+has no equivalent (strict kex required, burrowd's line for a shell with no
+pty), the row says so and holds burrowd to the prediction. A row prints `PASS <row>` or `FAIL <row>
 <why>` at column 0; the exit status is the number of failures (capped at 100).
 
 Runs as root in the pinned container: burrowd becomes the account (and its
@@ -22,7 +22,9 @@ import argparse
 import hashlib
 import os
 import pathlib
+import pty
 import re
+import select
 import shutil
 import socket
 import subprocess
@@ -854,16 +856,98 @@ def session_pty_refused():
         return note
 
 
+# ---- a shell with no pty (px112) ---------------------------------------------------------
+# RFC 4254 §6.5's `shell`: the account's login shell, its standard input,
+# output and error the channel's; a pty-req stays pty_refused. When a shell
+# starts after a refused pty-req, burrowd's first bytes on the session's
+# stderr are NO_PTY, and nowhere else.
+NO_PTY = b"burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)\n"
+
+
+def at_terminal(p, port, typed, after, args=(), timeout=60):
+    """The pinned ssh with its standard input a pseudo-terminal's (not its
+    controlling terminal; stdout and stderr pipes), as a person at a
+    terminal runs it, `typed` written to the terminal once `after` shows on
+    its stderr: (exit, stdout, stderr)."""
+    master, slave = pty.openpty()
+    try:
+        proc = subprocess.Popen(p.argv(port, list(args)), stdin=slave, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, env=p.env())
+    finally:
+        os.close(slave)
+    out, err = proc.stdout.fileno(), proc.stderr.fileno()
+    got = {out: b"", err: b""}
+    live = {out, err}
+    sent = False
+    deadline = time.monotonic() + timeout
+    try:
+        while live and time.monotonic() < deadline:
+            for fd in select.select(sorted(live), [], [], 0.2)[0]:
+                d = os.read(fd, 65536)
+                if d:
+                    got[fd] += d
+                else:
+                    live.discard(fd)
+            if not sent and after in got[err]:
+                os.write(master, typed)
+                sent = True
+        if live:
+            proc.kill()
+            got[err] += b"\n[row: timed out]"
+        rc = proc.wait(timeout=10)
+    finally:
+        os.close(master)
+        proc.stdout.close()
+        proc.stderr.close()
+    return rc, got[out], got[err]
+
+
 @row
-def session_shell_refused():
-    with Pair(BIN, rundir("session-shell-refused")) as p:
-        rb = serverlib.norm(p.ssh(p.burrowd.port, []), p.burrowd.port)
-        record(p, f"burrowd: {show(rb)}\n")
-        check(rb[0] == 255, show(rb))
-        check(b"shell request failed on channel 0" in rb[2], f"ssh did not print its shell refusal: {tail(rb[2])}")
+def session_shell():
+    """No command: the login shell reads the client's standard input, held
+    to sshd byte for byte; burrowd's log names no refusal."""
+    notes = []
+    with Pair(BIN, rundir("session-shell")) as p:
+        cases = ((["-T"], b"echo out; echo err >&2; exit 3\n", "ssh -T host, a script on stdin"),
+                 (["-T"], b"echo $0\n", "ssh -T host, echo $0"),
+                 (["-T"], b"echo ${SSH_ORIGINAL_COMMAND-unset}\n", "ssh -T host, SSH_ORIGINAL_COMMAND"),
+                 ([], b"echo piped; exit 5\n", "ssh host, stdin not a terminal"))
+        for args, script, what in cases:
+            rb, rs = p.both(args, inp=script)
+            same(p, rb, rs, what)
+            notes.append(f"{what.split(', ', 1)[1]}: exit {rs[0]}, stdout {rs[1][:40]!r}")
+            if script.startswith(b"echo out"):
+                check(rb[:3] == (3, b"out\n", b"err\n"), show(rb))
         got = p.burrowd.conn_lines()
-        check(any("shell_refused" in x for x in got), f"burrowd's log does not name shell_refused: {got[-2:]}")
-        return f"exit 255, {tail(rb[2], 120)!r} (sshd has no equivalent)"
+        deadline = time.monotonic() + 5
+        while len(got) < len(cases) and time.monotonic() < deadline:
+            time.sleep(0.1)
+            got = p.burrowd.conn_lines()
+        record(p, "\n".join(notes) + "\n" + "\n".join(got) + "\n")
+        check(len(got) == len(cases) and all(" outcome ok " in x and " refused " not in x for x in got),
+              f"burrowd's log: {got}")
+        return "; ".join(notes)
+
+
+@row
+def session_shell_pty():
+    """`ssh host` at a terminal, a line typed once the session has answered:
+    both servers refuse the pty (sshd: PermitTTY no) and run the shell
+    without one; burrowd says so on stderr in NO_PTY, its one named
+    difference, after ssh's own line."""
+    with Pair(BIN, rundir("session-shell-pty")) as p:
+        typed = b"echo typed; exit 4\n"
+        after = b"PTY allocation request failed"
+        rb = serverlib.norm(at_terminal(p, p.burrowd.port, typed, after), p.burrowd.port)
+        rs = serverlib.norm(at_terminal(p, p.sshd.port, typed, after), p.sshd.port)
+        record(p, f"sshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+        check(rb[2].count(NO_PTY) == 1, f"burrowd's stderr does not hold its no-pty line once: exit {rb[0]}, {tail(rb[2])!r}")
+        check(-1 < rb[2].find(after) < rb[2].find(NO_PTY), f"burrowd's no-pty line before ssh's own: {tail(rb[2])!r}")
+        note = same(p, (rb[0], rb[1], rb[2].replace(NO_PTY, b"", 1)), rs, "ssh host at a terminal, less burrowd's no-pty line")
+        check(rb[:2] == (4, b"typed\n"), show(rb))
+        got = p.burrowd.conn_lines()
+        check(any(" refused pty_refused" in x and " status 4" in x for x in got), f"burrowd's log: {got[-2:]}")
+        return note + f"; burrowd adds {NO_PTY.decode().strip()!r}"
 
 
 @row
