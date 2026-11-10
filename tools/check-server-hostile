@@ -323,6 +323,58 @@ def hostile_program_twice():
         return "the shell served, exec and shell after it refused (exec_twice), the shell's status 5"
 
 
+def output_while(c, seconds, every=None, send=None):
+    """Messages from the server for `seconds`, `send` (a payload) sent every
+    `every` seconds meanwhile (never, if None): a list of (seconds since the
+    start, type, payload)."""
+    got, t0, last = [], time.monotonic(), None
+    while time.monotonic() - t0 < seconds:
+        now = time.monotonic()
+        if every is not None and (last is None or now - last >= every):
+            c.w.send(send)
+            last = now
+        c.s.settimeout(0.01 if every is not None else 0.2)
+        try:
+            p = c._recv()
+            got.append((time.monotonic() - t0, p[0], p))
+        except (socket.timeout, TimeoutError):
+            pass
+    return got
+
+
+@row
+def hostile_transport_mid_session():
+    """Transport messages while a command's output waits (px112): one IGNORE
+    and then nothing, on one connection; a PING every 20 ms for three
+    seconds, as the pinned ssh's keystroke chaff, on another. The command
+    (`sleep 1; echo out`) answers within two seconds in both, the PINGs
+    each answered with a PONG."""
+    notes = []
+    for name, every, msg in (("one IGNORE", None, bytes([2]) + string(b"x")),
+                             ("a PING every 20 ms", 0.02, bytes([192]) + string(b"chaff"))):
+        with Server("hostile-transport-mid-session") as s:
+            c = logged_in(s)
+            c.open_session()
+            conf = c.recv()
+            check(conf[0] == 91, f"{name}: message {conf[0]} instead of the confirmation")
+            c.request(0, b"exec", True, string(b"sleep 1; echo out"))
+            ok = c.recv()
+            check(ok[0] == 99, f"{name}: message {ok[0]} instead of CHANNEL_SUCCESS")
+            if every is None:
+                c.w.send(msg)
+            got = output_while(c, 3, every, msg)
+            c.close()
+        out = [(t, p[9:]) for t, k, p in got if k == 94]
+        pongs = sum(1 for _, k, _ in got if k == 193)
+        when = out[0][0] if out else None
+        check(out and b"out" in b"".join(d for _, d in out) and when < 2,
+              f"{name}: the command's output did not arrive within 2 s (got {[k for _, k, _ in got][:12]}…, {pongs} PONGs)")
+        if every is not None:
+            check(pongs > 10, f"{name}: {pongs} PONGs")
+        notes.append(f"{name}: output at {when:.2f} s" + (f", {pongs} PONGs" if every else ""))
+    return "; ".join(notes)
+
+
 # ---- passwords (px112) -----------------------------------------------------------------
 def failure_of(p):
     """(methods, partial success) of a USERAUTH_FAILURE payload."""
