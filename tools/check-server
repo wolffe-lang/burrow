@@ -1368,12 +1368,17 @@ def auth_no_pty():
     """Who may have a pty (sshd(8) AUTHORIZED_KEYS FILE FORMAT): no-pty and
     restrict refuse it (under -tt the client gives up: 255), restrict,pty
     grants it, and pty,restrict as sshd reads it."""
-    notes = []
+    notes, bad = [], []
     for opts in ("no-pty", "restrict", "restrict,pty", "pty,restrict"):
         with tty_pair(f"auth-no-pty-{opts.replace(',', '-')}", install=False) as p:
             serverlib.install_keys([f"{opts} " + pathlib.Path(str(p.key) + ".pub").read_text()])
             rb, rs = p.both(["-tt", "tty; exit 0"])
-            notes.append(f"{opts}: " + same(p, pts(rb), pts(rs), f"a key with {opts}, ssh -tt host tty"))
+            # Every case is taken before the row fails, so each is named.
+            try:
+                notes.append(f"{opts}: " + same(p, pts(rb), pts(rs), f"a key with {opts}, ssh -tt host tty"))
+            except Fail as e:
+                bad.append(f"{opts}: {e}")
+    check(not bad, "; ".join(bad))
     return "; ".join(notes)
 
 
