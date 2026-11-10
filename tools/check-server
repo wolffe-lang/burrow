@@ -1023,6 +1023,27 @@ def limits_defaults():
     return ", ".join(s[k] for k in keys)
 
 
+# What the client says of a connection the server ends before the
+# identifications: its words depend on whether its own identification reached
+# the server before the end (a reset) or after it (an end), a race of the two
+# ends that both servers draw both ways on a loaded host.
+ENDED_EARLY = {
+    "kex_exchange_identification: read: Connection reset by peer",
+    "kex_exchange_identification: Connection closed by remote host",
+    "Connection reset by 127.0.0.1 port PORT",
+    "Connection closed by 127.0.0.1 port PORT",
+}
+
+
+def ended_early(r):
+    """`r` (port-normalized) with its stderr as one line when every line is
+    the client's word for an end before the identifications."""
+    got = lines(r[2])
+    if got and all(x in ENDED_EARLY for x in got):
+        return (r[0], r[1], b"(ended before the identifications)\n")
+    return r
+
+
 @row
 def limits_startups():
     import socket as so
@@ -1051,7 +1072,8 @@ def limits_startups():
             r2 = p.ssh(port, ["true"], timeout=30)
             out.append((r, r2))
         (rb, rb2), (rs, rs2) = out
-        note = same(p, rb, rs, "a fourth connection past MaxStartups 3")
+        (p.dir / "fourth.txt").write_text(f"sshd:    {show(rs)}\nburrowd: {show(rb)}\n")
+        note = same(p, ended_early(rb), ended_early(rs), "a fourth connection past MaxStartups 3")
         check(rb2[0] == 0 and rs2[0] == 0, f"after the held ones ended: burrowd {show(rb2)}, sshd {show(rs2)}")
         outcome(p, "startups_exceeded")
         return note
