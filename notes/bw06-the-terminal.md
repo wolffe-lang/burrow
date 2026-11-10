@@ -404,3 +404,32 @@ At the head `844b2cb` (the protocol half; no pty at the pin):
   `session-own-group`, `session-terminal-stop`, `session-exit-codes`, `session-sigterm`, `auth-forced-shell`,
   `auth-option-unhonoured`, `hostile-requests-refused`, `hostile-program-twice`,
   `hostile-transport-mid-session`.
+
+### The takes, scored
+
+Development takes on the Linux build host's light slots (two CPUs, the pinned container), not records: the
+rows tip `a596082` (build, every unit test, the terminal rows and their neighbours) and the head `844b2cb`
+(`fmt` too, and more neighbours). Raw logs sha256 `0f196ab4…` and `7f1c2b5b…`; their rows and steps are
+`notes/bw06/evidence/phase2a-takes.log`.
+
+- **The rows tip, as predicted:** the four unit files do not build on any machine (checked, native, lupin;
+  lupin names each missing field or call); all ten terminal rows and both new hostile rows fail by name
+  before a client runs (`config_unsupported: … PermitTTY yes: burrowd takes no only`);
+  `session-own-group`, `session-pty-refused`, `session-shell`, `session-shell-pty` and
+  `hostile-requests-refused` pass with `PermitTTY no` in burrowd's base.
+- **The head, as predicted:** `fmt` and the native build green; every unit test green on all three machines
+  (22 files); `hostile-pty-malformed` green; `auth-no-pty`'s `no-pty` and `restrict` cases alike through both
+  servers (255, the PTY line) and its `restrict,pty` case red (`sshd` grants, burrowd `pty_failed`); red by
+  name, as they stay until the release: `session-tty-command`, `-size`, `-full-screen`, `-interrupt`,
+  `-gone`, `-burst`, `-eof` (burrowd 255 and the PTY line against `sshd`'s session), `session-own-session`
+  (`sid_is_shell=no` through burrowd, `yes` through `sshd`, with no pty), `hostile-pty-granted` (FAILURE for
+  the first `pty-req`); every neighbour green (`session-pty-refused`, `session-shell-pty` and `-slow`,
+  `session-shell`, `session-own-group`, `session-terminal-stop`, `session-exit-codes`, `session-sigterm`,
+  `auth-forced-shell`, `auth-option-unhonoured`, `hostile-requests-refused`, `hostile-program-twice`,
+  `hostile-transport-mid-session`).
+- **One shape not predicted:** `session-tty-shell` through burrowd ends at the row's deadline, not with 255:
+  with no pty the shell prints no prompt, so the row never types. Red either way.
+- **Not reached:** `auth-no-pty`'s `pty,restrict` case, after the first red case. The row now takes every
+  case before it fails (`629c957`), so the next take names each.
+- `local-tty` (`tools/check-server-local`, the Air) is written (`8e16b35`), after the protocol half; it is
+  red until the release (the pty refused), and its first take belongs to phase 2b.
