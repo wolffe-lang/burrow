@@ -276,3 +276,10 @@ The man pages, from the same signed `openssh-10.0p2.tar.gz`, the same digests as
 shell request, and what the pinned `ssh` prints at a terminal when the pty is refused were measured
 from the pinned `sshd` and `ssh` (tools/check-server's `session-shell`, `auth-forced-shell` and
 `session-shell-pty`), black-box.
+
+## px112: one packet a turn
+
+`ssh_config(5)`, the same page and digest as above: `ObscureKeystrokeTiming` (on by default: in a session that asked
+for a pty, keystrokes sent at fixed intervals and fake packets for a while after typing stops). `PROTOCOL` §1.9, as
+read for B1: `ping@openssh.com`, PING answered with PONG. The fake packets' kind, a PING every 20 ms, was measured
+black box: a packet capture of the pinned client against burrowd, and the client with the option on and off.
