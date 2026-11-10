@@ -9,7 +9,8 @@
 #
 #   toolchain   the pinned wolf, lupin and std, by digest and identity
 #   oracle      the pinned OpenSSH, by digest and `ssh -V`
-#   planner     the CI planner's own test and the local-gate wiring proof
+#   planner     the CI planner's own test, the local-gate wiring proof and
+#               ci/fetch-retry's rows
 #   vectors     tools/vectorgen.py regenerates src/kexvec, tools/nistvec.py src/sha1vec,
 #               byte for byte
 #   fmt         `wolf fmt --check`
@@ -74,7 +75,7 @@ run() {
     case $1 in
     toolchain) tools/in-container tools/fetch-toolchain ;;
     oracle) tools/in-container tools/fetch-oracle ;;
-    planner) tools/in-container sh -c 'python3 -I ci/tiers-test.py && python3 -I ci/local-gate-test.py' ;;
+    planner) tools/in-container sh -c 'python3 -I ci/tiers-test.py && python3 -I ci/local-gate-test.py && python3 -I ci/fetch-retry-test.py' ;;
     vectors) tools/in-container sh -c 'python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu && python3 -I tools/nistvec.py --check ci/vectors/nist-sha1.rsp src/sha1vec/sha1vec.lu' ;;
     fmt) tools/in-container tools/check-fmt ;;
     build) tools/in-container tools/build --all ;;
