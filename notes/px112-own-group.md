@@ -48,11 +48,38 @@ Written 2026-11-10 before any change, at `ba2edcc`.
 
 ## Evidence
 
-(The takes, scored.)
+Development takes on the Linux build host's light slots (two CPUs, the pinned container): the rows tip `f103f72` (log
+sha256 `bd9ccf45…`) and the code's head `1a1ce14` (log sha256 `26356060…`), each with toolchain, oracle, the native build, every
+unit test and the session rows beside the new ones.
+
+**Red at the rows tip, by name:**
+
+```text
+FAIL session-own-group stdout differs: burrowd b'pgrp_is_shell=no tty_nr=0\n', sshd b'pgrp_is_shell=yes tty_nr=0\n'
+FAIL server-own-group burrowd 179 is in group 1 (the row's is 1)
+FAIL session-terminal-stop the second connection after the stop: exit -999, stdout b'', stderr '[row: timed out]' (the listener's state T)
+```
+
+The last is PAX's console hang on Linux: the program's `stty` was stopped, and burrowd's listener with it (state `T`).
+
+**Green at `1a1ce14`:**
+
+```text
+PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+PASS server-own-group (burrowd 179 leads group 179; the row's is 1)
+PASS session-terminal-stop (stty stopped (1), the listener S, the second connection answered)
+```
+
+with `session-sigterm`, `session-exit-codes`, `session-shell-pty`, `session-id`, `session-cat-64m` and the hostile session
+rows beside them.
+
+**The prediction, scored:** each row red at the rows tip by name and green at the head, as predicted; nothing else moved.
+What the change does not fix is as predicted and named in the README.
 
 ## Done-when
 
-- [ ] The prediction, committed first.
-- [ ] The three rows red at the rows tip by name, green at the head.
-- [ ] README (what this does not fix), MAP, CHANGELOG.
-- [ ] The gauntlet green at the final head; the plant (the program back in burrowd's group) red by name.
+- [x] The prediction, committed first (`641d66c`).
+- [x] The three rows red at the rows tip by name, green at the head.
+- [x] README (what this does not fix), MAP, CHANGELOG.
+- [ ] The gauntlet green at the final head; the plant (the program back in burrowd's group) red by name: the PR's
+  records.
