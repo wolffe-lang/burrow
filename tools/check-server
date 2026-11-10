@@ -1028,12 +1028,15 @@ def limits_startups():
     import socket as so
     with Pair(BIN, rundir("limits-startups"), sshd=["MaxStartups 3"], burrowd=["MaxStartups 3"]) as p:
         out = []
-        for port in (p.burrowd.port, p.sshd.port):
+        for name, port in (("burrowd", p.burrowd.port), ("sshd", p.sshd.port)):
             held = []
-            for _ in range(3):
+            for i in range(3):
                 c = so.create_connection(("127.0.0.1", port))
                 c.settimeout(5)
-                c.recv(64)
+                ident = c.recv(64)
+                # A held connection the server refused reads its end, not an
+                # identification: the fourth would then be the third.
+                check(ident.startswith(b"SSH-"), f"{name} ended held connection {i + 1} of 3: {ident!r}")
                 held.append(c)
             time.sleep(0.5)
             r = serverlib.norm(p.ssh(port, ["true"], timeout=30), port)
