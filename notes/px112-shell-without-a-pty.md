@@ -93,11 +93,57 @@ Red at the rows tip (burrowd refuses every shell), committed before the code:
 
 ## Evidence
 
-(The takes, scored.)
+Development takes on the Linux build host's light slot (two CPUs, the pinned container), the rows
+tip `00ef865` and then the code's head `2204d73`, one log (sha256 `2064bb87…`): toolchain, oracle,
+the native build, every unit test, and the new and neighbouring rows of `tools/check-server` and
+`tools/check-server-hostile`. The final gauntlet and the plant are the PR's records.
+
+**Red at the rows tip, by name:**
+
+```text
+check-test: src/schannel_test.lu [checked] fail (trap(assert))
+FAIL auth-forced-shell exit 255 through burrowd, 0 through sshd; burrowd stderr 'shell request failed on channel 0', sshd's ''
+FAIL session-shell exit 255 through burrowd, 3 through sshd; burrowd stderr 'shell request failed on channel 0', sshd's 'err'
+FAIL session-shell-pty burrowd's stderr does not hold its no-pty line once: exit 255, 'PTY allocation request failed on channel 0 | shell request failed on channel 0'
+FAIL hostile-program-twice message 100 instead of CHANNEL_SUCCESS for the shell
+```
+
+`auth-forced-command`, `session-pty-refused` and the six-refusal `hostile-requests-refused` held.
+
+**Green at `2204d73`:** every unit test on every tier; then
+
+```text
+PASS auth-forced-shell (exit 0, stdout b'forced: unset\necho shell ran\n')
+PASS session-shell (a script on stdin: exit 3, stdout b'out\n'; echo $0: exit 0, stdout b'-sh\n'; SSH_ORIGINAL_COMMAND: exit 0, stdout b'unset\n'; stdin not a terminal: exit 5, stdout b'piped\n')
+PASS session-shell-pty (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.'; burrowd adds 'burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)')
+PASS hostile-program-twice (the shell served, exec and shell after it refused (exec_twice), the shell's status 5)
+```
+
+**The predictions, scored:**
+
+- Hit: `ssh -T host` with a script on stdin is byte for byte alike through both servers: `out`,
+  `err`, status 3.
+- Hit: `$0` is `-sh` through the pinned `sshd`, the login form, and burrowd matches.
+- Hit: `SSH_ORIGINAL_COMMAND` is unset for a shell request, through `sshd` with and without a forced
+  command (`forced: unset`).
+- Hit: a forced command runs for a shell request through `sshd`, the client's script its stdin, read
+  as data; burrowd matches.
+- Hit: `ssh -tt host echo ran` is unchanged: no line from burrowd for a command after a refused pty.
+- Miss, in the rig's favour: the last table row said `sshd` grants the pty at a terminal. The rows'
+  `sshd` runs `PermitTTY no`, so it refuses it as burrowd does, and the row holds the two alike, but
+  for burrowd's line. Both print `Connection to 127.0.0.1 closed.` at the end, as `ssh` does when its
+  stdin is a terminal.
+- Unpredicted, measured: `ssh host` with stdin a pipe (no `-T`) asks for no pty, and runs the same
+  shell through both servers (`piped`, status 5).
+
+**The rulings recommended** were built as recommended, each open to change: `-sh`; the line only for
+a shell after a refused pty; `exec_twice` for a second program.
 
 ## Done-when
 
-- [ ] The prediction, committed first.
-- [ ] The rows red at the rows tip by name, green at the head; the forced-command row among the red.
-- [ ] README, MAP, SOURCES, CHANGELOG.
-- [ ] The gauntlet green at the final head; the plant (the forced command skipped for a shell) red by name.
+- [x] The prediction, committed first (`3d13d19`).
+- [x] The rows red at the rows tip by name, green at the head; the forced-command row among the red.
+- [x] README, MAP, SOURCES, CHANGELOG.
+- [ ] The gauntlet green at the final head; the plant (the forced command skipped for a shell) red by
+  name: the PR's records.
+- [ ] `tools/check-server-local` on macOS (`local-shell`): not taken here; the Mac builds only.
