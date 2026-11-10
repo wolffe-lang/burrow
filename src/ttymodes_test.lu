@@ -1,0 +1,61 @@
+//! member: false
+
+// bw06: RFC 4254 §8's encoded terminal modes, decoded. Opcode and uint32
+// pairs end at TTY_OP_END (0); an opcode from 160 stops the parse, the
+// rest ignored; a value cut short is malformed; a stream with no
+// TTY_OP_END ends where it ends.
+use ttymodes
+
+fn main() {
+    // The shape the OpenSSH client sends: VINTR 3, ECHO on, then the end.
+    var p = List[int]()
+    (mut p).push(1)
+    (mut p).push(3)
+    (mut p).push(53)
+    (mut p).push(1)
+    let b = ttymodes.encode(p)
+    assert(b.len == 11 && b[0] as int == 1 && b[4] as int == 3 && b[10] as int == 0)
+    let m = ttymodes.decode(b)
+    assert(m.ok && m.pairs.len == 4 && ttymodes.value(m, 1) == 3 && ttymodes.value(m, 53) == 1)
+    assert(ttymodes.value(m, 54) == -1)
+    // Nothing at all, and the end alone: no modes, well formed.
+    assert(ttymodes.decode(List[byte]()).ok && ttymodes.decode(List[byte]()).pairs.len == 0)
+    var end = List[byte]()
+    (mut end).push(0 as byte)
+    assert(ttymodes.decode(end).ok && ttymodes.decode(end).pairs.len == 0)
+    // A value cut short.
+    var short = List[byte]()
+    (mut short).push(53 as byte)
+    (mut short).push(0 as byte)
+    (mut short).push(0 as byte)
+    let s = ttymodes.decode(short)
+    assert(!s.ok && s.why != "")
+    // An opcode from 160 stops the parse; what follows is not read.
+    var stop = List[byte]()
+    for x in b[0..b.len - 1] {
+        (mut stop).push(x)
+    }
+    (mut stop).push(200 as byte)
+    (mut stop).push(1 as byte)
+    (mut stop).push(2 as byte)
+    let t = ttymodes.decode(stop)
+    assert(t.ok && t.pairs.len == 4)
+    // No TTY_OP_END: the stream ends where it ends.
+    var open = List[byte]()
+    for x in b[0..b.len - 1] {
+        (mut open).push(x)
+    }
+    assert(ttymodes.decode(open).ok && ttymodes.decode(open).pairs.len == 4)
+    // The last value of an opcode wins.
+    var twice = List[int]()
+    (mut twice).push(53)
+    (mut twice).push(1)
+    (mut twice).push(53)
+    (mut twice).push(0)
+    assert(ttymodes.value(ttymodes.decode(ttymodes.encode(twice)), 53) == 0)
+    // The names §8 and RFC 8160 give.
+    assert(ttymodes.name(1) == "VINTR" && ttymodes.name(18) == "VDISCARD" && ttymodes.name(42) == "IUTF8")
+    assert(ttymodes.name(93) == "PARODD" && ttymodes.name(129) == "TTY_OP_OSPEED" && ttymodes.name(19) == "")
+    assert(ttymodes.is_char(1) && ttymodes.is_char(18) && !ttymodes.is_char(30))
+    assert(ttymodes.none_char() == 255)
+}
