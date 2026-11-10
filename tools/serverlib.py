@@ -33,7 +33,9 @@ PREAUTH = "burrowd"
 SSHD_BASE = ["AuthorizedKeysFile .ssh/authorized_keys", "StrictModes yes", "PermitRootLogin no",
              "AcceptEnv GIT_PROTOCOL", "PermitTTY no", "X11Forwarding no", "AllowAgentForwarding no",
              "DisableForwarding yes", "HostKeyAlgorithms ssh-ed25519"]
-BURROWD_BASE = ["AcceptEnv GIT_PROTOCOL"]
+# bw06: PermitTTY no on both by default, so every row but the terminal's
+# compares two servers that refuse a pty; those rows give both `yes` first.
+BURROWD_BASE = ["AcceptEnv GIT_PROTOCOL", "PermitTTY no"]
 
 
 def run(argv, inp=None, env=None, timeout=120, stdin=None):
