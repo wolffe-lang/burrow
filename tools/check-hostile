@@ -13,6 +13,7 @@ import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -211,6 +212,48 @@ def shell_refused():
     asked = [e[1] for e in f.record["events"] if e[0] == "request"]
     check(asked == ["shell"], f"requests {asked}; server {f.record['error']}")
     return "requests " + ", ".join(asked)
+
+
+@row
+def transport_mid_session():
+    """Transport messages while the server waits for burrow's input (px112):
+    one IGNORE, in the same write as the command's CHANNEL_SUCCESS, and then
+    nothing; on another connection a PING every 20 ms for three seconds.
+    burrow's standard input reaches the server within two seconds in both,
+    each PING answered with a PONG, and burrow exits with the status."""
+    notes = []
+    ignore = bytes([2]) + fakeserver.string(b"x")
+    for name, every, first in (("one IGNORE", None, [ignore]), ("a PING every 20 ms", 0.02, [])):
+        def script(s, w, every=every):
+            ping = bytes([192]) + fakeserver.string(b"chaff")
+            t0, last, seen, pongs = time.monotonic(), None, None, 0
+            while time.monotonic() - t0 < 3:
+                now = time.monotonic()
+                if every is not None and (last is None or now - last >= every):
+                    w.send(ping)
+                    last = now
+                w.s.settimeout(0.01 if every is not None else 0.2)
+                try:
+                    p = w.recv()
+                except (socket.timeout, TimeoutError):
+                    continue
+                if p[0] == 94 and seen is None:
+                    seen = time.monotonic() - t0
+                pongs += p[0] == 193
+            s.event("input-at", seen)
+            s.event("pongs", pongs)
+            s.finish(w, 0)
+
+        with fakeserver.FakeServer(script, with_success=first) as f:
+            r = burrow(f, inp=b"hello\n", cmd="cat")
+        ev = {e[0]: e[1] for e in f.record["events"] if e[0] in ("input-at", "pongs")}
+        at = ev.get("input-at")
+        check(at is not None and at < 2, f"{name}: burrow's input did not reach the server within 2 s ({ev}); server {f.record['error']}")
+        if every is not None:
+            check(ev.get("pongs", 0) > 10, f"{name}: {ev.get('pongs')} PONGs")
+        check(r.returncode == 0, f"{name}: exit {r.returncode}; stderr {tail(r.stderr)}")
+        notes.append(f"{name}: input at {at:.2f} s" + (f", {ev['pongs']} PONGs" if every is not None else ""))
+    return "; ".join(notes)
 
 
 def main():
