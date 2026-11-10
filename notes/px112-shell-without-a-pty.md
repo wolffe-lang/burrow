@@ -145,6 +145,8 @@ plain line only for a shell after a refused pty, so a command after one stays by
 - [x] The prediction, committed first (`3d13d19`).
 - [x] The rows red at the rows tip by name, green at the head; the forced-command row among the red.
 - [x] README, MAP, SOURCES, CHANGELOG.
-- [ ] The gauntlet green at the final head; the plant (the forced command skipped for a shell) red by
-  name: the PR's records.
-- [ ] `tools/check-server-local` on macOS (`local-shell`): not taken here; the Mac builds only.
+- [x] The gauntlet green at the final head; the plant (the forced command skipped for a shell) red by
+  name: the merged PR's records.
+- [x] `tools/check-server-local` on macOS (`local-shell`): taken after this note's last commit, on an Apple M2 laptop
+  (macOS 15.5) from a fresh clone: red at the rows tip (`local-shell`: exit 255, `shell_refused`), all ten rows green
+  at the final head; the merged PR's records.
