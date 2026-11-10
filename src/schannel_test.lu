@@ -5,6 +5,7 @@
 // windows both ways; EOF and CLOSE in either order.
 use kexvec
 use schannel
+use ttymodes
 use wire
 
 fn x(h: str) -> List[byte] {
@@ -48,6 +49,34 @@ fn request(kind: str, want: bool) -> List[byte] {
     wire.put_text(mut p, kind)
     wire.put_bool(mut p, want)
     p
+}
+
+// bw06: a pty-req (RFC 4254 §6.2) with its fields.
+fn pty_req(want: bool, term: List[byte], cols: int, rows: int, modes: List[byte]) -> List[byte] {
+    var p = request("pty-req", want)
+    wire.put_string(mut p, term)
+    wire.put_u32(mut p, cols)
+    wire.put_u32(mut p, rows)
+    wire.put_u32(mut p, 640)
+    wire.put_u32(mut p, 480)
+    wire.put_string(mut p, modes)
+    p
+}
+
+fn window_change(cols: int, rows: int) -> List[byte] {
+    var p = request("window-change", false)
+    wire.put_u32(mut p, cols)
+    wire.put_u32(mut p, rows)
+    wire.put_u32(mut p, 0)
+    wire.put_u32(mut p, 0)
+    p
+}
+
+fn echo_on() -> List[byte] {
+    var pairs = List[int]()
+    (mut pairs).push(53)
+    (mut pairs).push(1)
+    ttymodes.encode(pairs)
 }
 
 fn data(n: int) -> List[byte] {
@@ -107,7 +136,7 @@ fn main() {
             schannel.refusals(ch)[2] == "env_refused",
     )
     // pty-req, subsystem, x11-req, the agent: CHANNEL_FAILURE, named.
-    let pty = step(mut ch, request("pty-req", true))
+    let pty = step(mut ch, pty_req(true, wire.bytes_of("xterm"), 80, 24, echo_on()))
     assert(
         pty.replies.len == 1 &&
             pty.replies[0][0] as int == 100 &&
@@ -203,7 +232,7 @@ fn main() {
     // refused pty-req; then exec or a second shell is exec_twice.
     var sh = schannel.new()
     let _ = step(mut sh, open("session", 0))
-    let _ = step(mut sh, request("pty-req", true))
+    let _ = step(mut sh, pty_req(true, wire.bytes_of("xterm"), 80, 24, echo_on()))
     let ss = step(mut sh, request("shell", true))
     assert(ss.start && ss.want_reply && ss.replies.len == 0 && sh.command.len == 0)
     let _ = schannel.start_msg(mut sh)
@@ -224,6 +253,72 @@ fn main() {
     let t1 = step(mut twice, request("shell", true))
     let t2 = step(mut twice, request("shell", true))
     assert(t1.start && !t2.start && schannel.refusals(twice)[0] == "exec_twice")
+    // bw06: a pty-req where the session allows one: parsed and kept, and
+    // the session answers it (Step.pty); then the shell on it.
+    var tt = schannel.new()
+    let _ = step(mut tt, open("session", 0))
+    schannel.allow_pty(mut tt)
+    let pr = step(mut tt, pty_req(true, wire.bytes_of("xterm-256color"), 132, 40, echo_on()))
+    assert(pr.pty && pr.want_reply && pr.replies.len == 0 && schannel.refusals(tt).len == 0)
+    assert(schannel.term_name(tt) == "xterm-256color" && tt.cols == 132 && tt.rows == 40)
+    assert(tt.xpixels == 640 && tt.ypixels == 480 && ttymodes.value(ttymodes.decode(tt.modes), 53) == 1)
+    schannel.grant_pty(mut tt)
+    // A second pty-req: pty_twice.
+    let again = step(mut tt, pty_req(true, wire.bytes_of("vt100"), 80, 24, echo_on()))
+    assert(!again.pty && again.replies[0][0] as int == 100 && schannel.refusals(tt)[0] == "pty_twice")
+    // window-change on the pty: the size kept, a zero dimension ignored.
+    let wc = step(mut tt, window_change(100, 50))
+    assert(wc.resize && wc.replies.len == 0 && tt.cols == 100 && tt.rows == 50)
+    let wz = step(mut tt, window_change(0, 30))
+    assert(wz.resize && tt.cols == 100 && tt.rows == 30)
+    // A dimension past 65535: refused by name, the size unchanged.
+    let wbig = step(mut tt, window_change(70000, 30))
+    assert(!wbig.resize && tt.cols == 100 && schannel.refusals(tt)[1] == "window_malformed")
+    let ts = step(mut tt, request("shell", true))
+    assert(ts.start && tt.shell && tt.pty)
+    // After the program started: pty_late.
+    let late_pty = step(mut tt, pty_req(false, wire.bytes_of("vt100"), 80, 24, echo_on()))
+    assert(!late_pty.pty && late_pty.replies.len == 0 && schannel.refusals(tt)[2] == "pty_late")
+    // window-change with no pty: taken and ignored, as before.
+    var nopty = schannel.new()
+    let _ = step(mut nopty, open("session", 0))
+    let wn = step(mut nopty, window_change(80, 24))
+    assert(!wn.resize && wn.replies.len == 0 && schannel.refusals(nopty).len == 0)
+    // Malformed contents: FAILURE, pty_malformed, the channel kept.
+    var bad = schannel.new()
+    let _ = step(mut bad, open("session", 0))
+    schannel.allow_pty(mut bad)
+    var ctl = wire.bytes_of("xterm")
+    (mut ctl).push(10 as byte)
+    let b1 = step(mut bad, pty_req(true, ctl, 80, 24, echo_on()))
+    var long = List[byte]()
+    while long.len < 256 {
+        (mut long).push(120 as byte)
+    }
+    let b2 = step(mut bad, pty_req(true, long, 80, 24, echo_on()))
+    let b3 = step(mut bad, pty_req(true, wire.bytes_of("xterm"), 65536, 24, echo_on()))
+    var cut = List[byte]()
+    (mut cut).push(53 as byte)
+    (mut cut).push(0 as byte)
+    let b4 = step(mut bad, pty_req(true, wire.bytes_of("xterm"), 80, 24, cut))
+    assert(!b1.pty && !b2.pty && !b3.pty && !b4.pty)
+    assert(b1.replies[0][0] as int == 100 && b4.replies[0][0] as int == 100)
+    assert(schannel.refusals(bad).len == 4 && schannel.refusals(bad)[3] == "pty_malformed" && bad.pty_asked)
+    // The empty TERM and a 255-byte one are well formed.
+    var edge = List[byte]()
+    while edge.len < 255 {
+        (mut edge).push(122 as byte)
+    }
+    let e255 = step(mut bad, pty_req(true, edge, 80, 24, echo_on()))
+    assert(e255.pty && schannel.term_name(bad).len == 255)
+    // A pty the session could not open: refused by the name it gives.
+    schannel.refuse_pty(mut bad, "pty_failed")
+    assert(schannel.refusals(bad)[4] == "pty_failed" && !bad.pty)
+    // A pty-req whose fields stop short is a malformed message.
+    var lame = schannel.new()
+    let _ = step(mut lame, open("session", 0))
+    schannel.allow_pty(mut lame)
+    assert(why(mut lame, request("pty-req", true)) == "malformed")
     // The signal names exit-signal carries.
     assert(
         schannel.signal_name(15) == "TERM" &&
