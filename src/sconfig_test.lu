@@ -151,6 +151,11 @@ fn main() {
         file("SetEnv A=\"x\n").detail ==
             "/etc/burrowd/burrowd_config line 1: SetEnv: invalid quotes",
     )
+    // A later line counts for nothing, but a malformed one is refused.
+    assert(
+        file("SetEnv A=1\nSetEnv FOO\n").detail ==
+            "/etc/burrowd/burrowd_config line 2: SetEnv FOO: not NAME=VALUE",
+    )
     // -o, the command line's, wins over the file's line.
     var so = sconfig.parse_args(args("-oSetEnv=A=cli"))
     sconfig.apply_file(mut so, "SetEnv A=file B=file\n", "f")
