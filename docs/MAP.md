@@ -477,7 +477,8 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   A program keeps burrowd's session and controlling terminal, so where
   burrowd was started from a terminal (PAX's console), a program that
   touches it (a bare `sudo`) is stopped there and its client waits; the
-  stop stays in its group, and burrowd goes on.
+  stop stays in its group, burrowd goes on, and the session waits for the
+  stopped program's end (a stop is not an end).
 - burrowd checks crypt(5)'s `$7$` alone (wolf-std's scrypt): a stock Linux
   account's `$y$` (yescrypt) or `$6$` password is refused by name where
   `sshd` checks it. burrowd changes no password (no
