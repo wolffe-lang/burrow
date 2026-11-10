@@ -1,0 +1,247 @@
+#!/usr/bin/env python3
+"""fetch-retry — one remote fetch, tried a bounded number of times (tl38).
+
+    ci/fetch-retry url URL OUT          curl URL into OUT
+    ci/fetch-retry git DIR REPO REV     git -C DIR fetch --depth 1 REPO REV
+    ci/fetch-retry run WHAT -- CMD...   any command, named WHAT (a docker pull)
+
+Every fetch of burrow's CI and container files that is not apt's goes
+through here: tools/fetch-toolchain (the wolf and lupin archives, the std),
+tools/fetch-oracle (OpenSSH's tarball, signature and key), tools/fetch-den
+(den's pin) and the Linux job's pull of the base image. apt's phases in
+ci/oracle.Containerfile carry the same policy inline, since they run before
+python3 is in the image.
+
+Each try has a connect timeout and a total limit:
+  url  curl --connect-timeout 20 --max-time 300, and a floor of 1 KiB/s
+       over 60 s, so a stalled transfer ends as a timeout
+  git  git's own floor (http.lowSpeedLimit 1000 bytes/s over 60 s) and a
+       600 s limit on the whole fetch
+  run  a 600 s limit
+A try past its limit is stopped with its whole process group.
+
+Tries again only when the failure is the network's or the server's:
+  url  curl's name and connection failures (5, 6, 7), its timeout (28), a
+       reset or dropped transfer (16, 18, 52, 55, 56, 92), TLS (35), and
+       HTTP 408, 425, 429 and 5xx. Any other HTTP status (a 404: a wrong URL
+       or pin) and any other curl exit are not retried.
+  git  read from git's own words on stderr, as pax's tools/fetch-retry
+       reads them: a refusal (`not our ref`, `couldn't find remote ref`, an
+       unadvertised object, a missing repository, a 4xx other than 408, 425
+       and 429, a failed login) is checked first and never retried; then
+       HTTP 5xx, 408, 425 and 429, a reset, a connection or name failure, a
+       timeout and a TLS drop are retried; anything else is not.
+  run  every failure.
+
+Five tries, 5, 15, 45 and 120 s apart. BURROW_FETCH_PAUSES sets the pauses
+(seconds, space-separated; the tries are one more than the pauses), and
+BURROW_FETCH_MAX_TIME the limit of each try in seconds; the rows
+(ci/fetch-retry-test.py) set both, nothing else should.
+
+Lines, on stderr:
+  fetch-retry: WHAT: try N of T failed (CLASS); again in S s
+  fetch-retry: WHAT: fetched on try N of T          (succeeded, for run)
+  FAIL fetch of WHAT failed after T tries (last: CLASS)        exit 3
+  FAIL fetch of WHAT failed (CLASS), not retried               exit 4
+  FAIL fetch of REPO at REV: refused: fetched X, the pin is REV  exit 5
+Exit 0 fetched, 2 usage. WHAT is the URL, `REPO at REV`, or run's WHAT.
+For git with a full commit id as REV, the commit fetched (FETCH_HEAD) must
+be REV; the callers check every other pin's digest as before.
+"""
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+CONNECT = 20
+LIMITS = {"url": 300, "git": 600, "run": 600}
+RETRY_HTTP = {408, 425, 429} | set(range(500, 600))
+CURL = {5: "resolve", 6: "resolve", 7: "connect", 28: "timeout", 35: "tls",
+        16: "reset", 18: "reset", 52: "reset", 55: "reset", 56: "reset", 92: "reset"}
+GIT_REFUSED = re.compile(r"not our ref|couldn.t find remote ref|unadvertised object|[Rr]epository not found|"
+                         r"repository '.*' not found|Authentication failed|could not read Username|"
+                         r"invalid refspec|not a git repository")
+GIT_HTTP = re.compile(r"(?:returned error:|HTTP) ([45]\d\d)\b")
+GIT_CLASSES = (
+    ("reset", re.compile(r"Connection reset by peer|unexpected disconnect|early EOF|remote end hung up unexpectedly|"
+                         r"transfer closed with outstanding read data|Empty reply from server|curl (18|52|55|56|92)\b")),
+    ("connect", re.compile(r"Could not resolve host|Failed to connect to|Couldn.t connect to server|Connection refused|"
+                           r"Network is unreachable|Temporary failure in name resolution|curl (6|7)\b")),
+    ("timeout", re.compile(r"Operation timed out|Connection timed out|Operation too slow|curl 28\b")),
+    ("tls", re.compile(r"GnuTLS recv error|gnutls_handshake\(\) failed|SSL_read|SSL_ERROR_SYSCALL|"
+                       r"OpenSSL SSL_connect|curl 35\b")),
+)
+
+
+def say(msg):
+    print(f"fetch-retry: {msg}", file=sys.stderr, flush=True)
+
+
+def fail(msg):
+    print(f"FAIL {msg}", file=sys.stderr, flush=True)
+
+
+def usage(msg):
+    print(f"fetch-retry: {msg}\n{__doc__.split(chr(10) + chr(10))[1]}", file=sys.stderr, flush=True)
+    sys.exit(2)
+
+
+def stop(p):
+    """End a try past its limit: its whole process group, TERM then KILL."""
+    for sig, grace in ((signal.SIGTERM, 10), (signal.SIGKILL, None)):
+        try:
+            os.killpg(p.pid, sig)
+        except ProcessLookupError:
+            return
+        try:
+            p.wait(timeout=grace)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def limited(cmd, limit, out=False, err=False):
+    """Run cmd in a process group of its own, at most `limit` seconds, its
+    stdout and stderr captured where asked. Returns (exit, or None past the
+    limit; stdout; stderr)."""
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE if out else None, stderr=subprocess.PIPE if err else None,
+                         text=True, start_new_session=True)
+    try:
+        stdout, stderr = p.communicate(timeout=limit)
+        return p.returncode, stdout or "", stderr or ""
+    except subprocess.TimeoutExpired:
+        stop(p)
+        stdout, stderr = p.communicate()
+        return None, stdout or "", stderr or ""
+    except BaseException:
+        stop(p)
+        raise
+
+
+def try_url(url, out, limit):
+    cmd = ["curl", "-q", "-sS", "-L", "--fail", "--connect-timeout", str(CONNECT), "--max-time", str(limit),
+           "--speed-limit", "1024", "--speed-time", "60", "-w", "%{http_code}", "-o", out, url]
+    rc, code, _ = limited(cmd, limit + 30, out=True)
+    if rc == 0:
+        return True, None, False
+    try:
+        os.unlink(out)
+    except FileNotFoundError:
+        pass
+    if rc is None:
+        return False, "timeout", True
+    if rc == 22:
+        status = int(code) if code.strip().isdigit() else 0
+        return False, f"HTTP {status}", status in RETRY_HTTP
+    if rc in CURL:
+        return False, CURL[rc], True
+    return False, f"curl exit {rc}", False
+
+
+def git_class(err, rc):
+    m = GIT_REFUSED.search(err)
+    if m:
+        return m.group(0), False
+    m = GIT_HTTP.search(err)
+    if m:
+        status = int(m.group(1))
+        return f"HTTP {status}", status in RETRY_HTTP
+    for name, pattern in GIT_CLASSES:
+        if pattern.search(err):
+            return name, True
+    return f"git exit {rc}", False
+
+
+def try_git(where, repo, rev, limit):
+    cmd = ["git", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=60", "-C", where,
+           "fetch", "-q", "--depth", "1", repo, rev]
+    rc, _, err = limited(cmd, limit, err=True)
+    sys.stderr.write(err)
+    sys.stderr.flush()
+    if rc == 0:
+        return True, None, False
+    if rc is None:
+        return False, "timeout", True
+    cls, again = git_class(err, rc)
+    return False, cls, again
+
+
+def try_run(cmd, limit):
+    rc, _, _ = limited(cmd, limit)
+    if rc == 0:
+        return True, None, False
+    if rc is None:
+        return False, "timeout", True
+    return False, (f"signal {-rc}" if rc < 0 else f"exit {rc}"), True
+
+
+def pauses():
+    raw = os.environ.get("BURROW_FETCH_PAUSES")
+    if raw is None:
+        return [5, 15, 45, 120]
+    try:
+        return [float(x) if "." in x else int(x) for x in raw.split()]
+    except ValueError:
+        usage(f"BURROW_FETCH_PAUSES is not a list of seconds: {raw!r}")
+
+
+def tries(what, attempt, verb="fetched"):
+    waits = pauses()
+    total = len(waits) + 1
+    for n in range(1, total + 1):
+        ok, cls, again = attempt()
+        if ok:
+            if n > 1:
+                say(f"{what}: {verb} on try {n} of {total}")
+            return 0
+        if not again:
+            fail(f"fetch of {what} failed ({cls}), not retried")
+            return 4
+        if n == total:
+            fail(f"fetch of {what} failed after {total} tries (last: {cls})")
+            return 3
+        say(f"{what}: try {n} of {total} failed ({cls}); again in {waits[n - 1]} s")
+        time.sleep(waits[n - 1])
+    return 3
+
+
+def main(argv):
+    if not argv:
+        usage("no form given")
+    form, args = argv[0], argv[1:]
+    if form not in LIMITS:
+        usage(f"no form {form!r}")
+    limit = LIMITS[form]
+    if os.environ.get("BURROW_FETCH_MAX_TIME"):
+        try:
+            limit = int(os.environ["BURROW_FETCH_MAX_TIME"])
+        except ValueError:
+            usage(f"BURROW_FETCH_MAX_TIME is not a number of seconds: {os.environ['BURROW_FETCH_MAX_TIME']!r}")
+    if form == "url":
+        if len(args) != 2:
+            usage("url takes URL OUT")
+        url, out = args
+        return tries(url, lambda: try_url(url, out, limit))
+    if form == "git":
+        if len(args) != 3:
+            usage("git takes DIR REPO REV")
+        where, repo, rev = args
+        what = f"{repo} at {rev}"
+        rc = tries(what, lambda: try_git(where, repo, rev, limit))
+        if rc == 0 and re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", rev):
+            got = subprocess.run(["git", "-C", where, "rev-parse", "-q", "--verify", "FETCH_HEAD^{commit}"],
+                                 capture_output=True, text=True).stdout.strip()
+            if got != rev:
+                fail(f"fetch of {what}: refused: fetched {got or 'nothing'}, the pin is {rev}")
+                return 5
+        return rc
+    if len(args) < 3 or args[1] != "--":
+        usage("run takes WHAT -- CMD...")
+    what, cmd = args[0], args[2:]
+    return tries(what, lambda: try_run(cmd, limit), verb="succeeded")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
