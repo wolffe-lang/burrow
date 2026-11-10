@@ -106,22 +106,18 @@ fn main() {
             schannel.environment(ch).len == 1 &&
             schannel.refusals(ch)[2] == "env_refused",
     )
-    // pty-req, shell, subsystem, x11-req, the agent: CHANNEL_FAILURE, named.
+    // pty-req, subsystem, x11-req, the agent: CHANNEL_FAILURE, named.
     let pty = step(mut ch, request("pty-req", true))
     assert(
         pty.replies.len == 1 &&
             pty.replies[0][0] as int == 100 &&
             schannel.refusals(ch)[3] == "pty_refused",
     )
-    let _ = step(mut ch, request("shell", true))
     let _ = step(mut ch, request("subsystem", true))
     let _ = step(mut ch, request("x11-req", false))
     let _ = step(mut ch, request("auth-agent-req@openssh.com", false))
-    assert(
-        schannel.refusals(ch)[4] == "shell_refused" &&
-            schannel.refusals(ch)[5] == "subsystem_refused",
-    )
-    assert(schannel.refusals(ch)[6] == "x11_refused" && schannel.refusals(ch)[7] == "agent_refused")
+    assert(schannel.refusals(ch)[4] == "subsystem_refused")
+    assert(schannel.refusals(ch)[5] == "x11_refused" && schannel.refusals(ch)[6] == "agent_refused")
     // A global forward request.
     var g = List[byte]()
     wire.put_u8(mut g, 80)
@@ -131,7 +127,7 @@ fn main() {
     assert(
         gs.replies.len == 1 &&
             gs.replies[0][0] as int == 82 &&
-            schannel.refusals(ch)[8] == "forward_refused",
+            schannel.refusals(ch)[7] == "forward_refused",
     )
     // exec: the command, then the window opens; a second exec is refused.
     var ex = request("exec", true)
@@ -144,7 +140,12 @@ fn main() {
     wire.put_text(mut ex2, "id")
     let es2 = step(mut ch, ex2)
     assert(
-        !es2.start && es2.replies[0][0] as int == 100 && schannel.refusals(ch)[9] == "exec_twice",
+        !es2.start && es2.replies[0][0] as int == 100 && schannel.refusals(ch)[8] == "exec_twice",
+    )
+    // A shell after the command is a second program on the channel (px112).
+    let sh2 = step(mut ch, request("shell", true))
+    assert(
+        !sh2.start && sh2.replies[0][0] as int == 100 && schannel.refusals(ch)[9] == "exec_twice",
     )
     // env after the command started is refused.
     var late = request("env", false)
@@ -198,6 +199,31 @@ fn main() {
     var w2 = schannel.new()
     let _ = step(mut w2, open("session", 0))
     assert(why(mut w2, big) == "window_overflow")
+    // shell (px112): started once, with no command, as exec is, after a
+    // refused pty-req; then exec or a second shell is exec_twice.
+    var sh = schannel.new()
+    let _ = step(mut sh, open("session", 0))
+    let _ = step(mut sh, request("pty-req", true))
+    let ss = step(mut sh, request("shell", true))
+    assert(ss.start && ss.want_reply && ss.replies.len == 0 && sh.command.len == 0)
+    let _ = schannel.start_msg(mut sh)
+    var ex3 = request("exec", true)
+    wire.put_text(mut ex3, "id")
+    let es3 = step(mut sh, ex3)
+    let ss2 = step(mut sh, request("shell", false))
+    assert(!es3.start && es3.replies[0][0] as int == 100 && !ss2.start && ss2.replies.len == 0)
+    assert(
+        schannel.refusals(sh).len == 3 &&
+            schannel.refusals(sh)[0] == "pty_refused" &&
+            schannel.refusals(sh)[1] == "exec_twice" &&
+            schannel.refusals(sh)[2] == "exec_twice",
+    )
+    // A shell asked twice before it starts (its start failed): the second refused.
+    var twice = schannel.new()
+    let _ = step(mut twice, open("session", 0))
+    let t1 = step(mut twice, request("shell", true))
+    let t2 = step(mut twice, request("shell", true))
+    assert(t1.start && !t2.start && schannel.refusals(twice)[0] == "exec_twice")
     // The signal names exit-signal carries.
     assert(
         schannel.signal_name(15) == "TERM" &&
