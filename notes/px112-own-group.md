@@ -78,6 +78,31 @@ rows beside them.
 **The prediction, scored:** each row red at the rows tip by name and green at the head, as predicted; nothing else moved.
 What the change does not fix is as predicted and named in the README.
 
+## The first final take: a stop is not an end
+
+The first final take at `74f81ea` went red on `session-terminal-stop` alone (`no stty in state T (stopped)`; record
+sha256 `d70b38d4…`), with the listener in `S` and the second connection answered. Two findings from that
+take's evidence:
+
+- **The row looked too late.** It looked for the stopped `stty` after the first client had been ended at its 8 s
+  deadline. With the client gone, the session's holder ends, which leaves the stopped program's group orphaned, and
+  POSIX has the kernel send such a group SIGHUP and SIGCONT: the `stty` was gone before the row looked. The development
+  takes happened to look first.
+- **burrowd took the stop for the program's end.** The first session's log line reads `status 278`: std's `poll`
+  reports a stopped child as `256 + N` (`N` 22, SIGTTOU), and the session's reaping read any change as the end, so it
+  stopped watching a program that was only waiting to be continued. Before this change the stop stopped the session
+  too, so nothing was left to misread it.
+
+Written before either change, at `74f81ea`:
+
+- **The row:** `session-terminal-stop` looks for the stopped `stty` and asks for the second connection while the first
+  session is live; then it ends the stopped program (SIGKILL to its group) and asks that the first session's line name
+  that end, `signal KILL`. Red at the code as it is: `status 278`.
+- **The change:** the session's reaping passes over a stop (`process.is_stopped`), so a stopped program stays the
+  session's until it ends.
+- **Unchanged:** every other row; what this does not fix (the client that ran the stopped program still waits; the
+  prompt still lands on the console).
+
 ## Done-when
 
 - [x] The prediction, committed first (`641d66c`, `f231a22` after the rebase).
