@@ -61,6 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: python3 -I ci/tiers-test.py
+      - run: python3 -I ci/fetch-retry-test.py
       - run: python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu
       - run: python3 -I tools/nistvec.py --check ci/vectors/nist-sha1.rsp src/sha1vec/sha1vec.lu
   linux:
@@ -80,45 +81,49 @@ jobs:
             .oracle
           key: burrow-linux-${{ hashFiles('wolf-toolchain.toml', 'burrow-oracle.toml', 'ci/oracle.Containerfile', 'tools/fetch-oracle') }}
       - name: Build own pinned Ubuntu container
-        run: tools/in-container true
+        run: |
+          base=$(awk '$1 == "FROM" { print $2; exit }' ci/oracle.Containerfile)
+          python3 -I ci/fetch-retry run "the base image $base" -- docker pull -q "$base"
+          tools/in-container true
       - name: Stage digest-pinned toolchain and the OpenSSH oracle
+        id: stage
         run: tools/in-container sh -c 'tools/fetch-toolchain && tools/fetch-oracle'
       - name: Vectors regenerate byte for byte
         run: python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu && python3 -I tools/nistvec.py --check ci/vectors/nist-sha1.rsp src/sha1vec/sha1vec.lu
       - name: Format and both compiler tiers
         run: tools/in-container sh -c 'tools/check-fmt && tools/build --all'
       - name: Unit rows on the checked machine, native and lupin
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container tools/check-test
       - name: Transport rows against the pinned sshd, native
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-transport --bin target/native/burrow
       - name: Transport rows against the pinned sshd, release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-transport --bin target/release/burrow
       - name: Session rows against the pinned sshd, ssh and ssh-keygen, native
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-session --bin target/native/burrow
       - name: Session rows against the pinned sshd, ssh and ssh-keygen, release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-session --bin target/release/burrow
       - name: Hostile-peer rows (tools/fakeserver.py), native
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-hostile --bin target/native/burrow
       - name: Hostile-peer rows (tools/fakeserver.py), release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-hostile --bin target/release/burrow
       - name: Server rows against the pinned sshd, native
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-server --bin target/native/burrowd
       - name: Server rows against the pinned sshd, release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-server --bin target/release/burrowd
       - name: Hostile-client rows (tools/fakeclient.py), native
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-server-hostile --bin target/native/burrowd
       - name: Hostile-client rows (tools/fakeclient.py), release
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-server-hostile --bin target/release/burrowd
       - name: Retain row evidence
         if: ${{ !cancelled() }}
