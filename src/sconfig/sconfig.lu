@@ -27,7 +27,8 @@
 //! (10:30:100), `PasswordAuthentication` (`no` unless a line says `yes`,
 //! R-px112-2: burrowd's default is key-only, `sshd`'s is `yes`),
 //! `PermitRootLogin` (`no` only, R-bw04-3), `PidFile`, `Port`
-//! (22), `RekeyLimit`, `StrictModes` (yes); and the keywords whose one value
+//! (22), `RekeyLimit`, `SetEnv` (px116: none; see below), `StrictModes`
+//! (yes); and the keywords whose one value
 //! is burrowd's: `KbdInteractiveAuthentication
 //! no` (and its alias `ChallengeResponseAuthentication`),
 //! `PubkeyAuthentication yes`, `AuthenticationMethods publickey` or `any`,
@@ -43,6 +44,18 @@
 //! `sshd_config(5)` lists (`Match`, `Include` and `Subsystem` among them),
 //! is `config_unsupported`; a keyword it does not list is `config_unknown`.
 //! Every refusal names the file and line; burrowd exits 1, as `sshd` does.
+//!
+//! **`SetEnv`** (px116, `sshd_config(5)`, held to the pinned `sshd`'s `-T`,
+//! `-t` and sessions): `NAME=VALUE` arguments split on blanks, double quotes
+//! around a whole argument or part of one, an argument that starts with `#`
+//! ending the list, an empty value allowed. As for any keyword the first
+//! line wins; in it the first value of a name. An argument with no name
+//! before its `=`, or none, and an unbalanced quote are
+//! `config_unsupported`, by file, line and argument, in a later line too
+//! (`sshd` checks every line it reads). `environment` gives a
+//! session its variables: they replace burrowd's defaults and the accepted
+//! `env` names, never `SSH_CONNECTION` or a forced command's
+//! `SSH_ORIGINAL_COMMAND`, which `sshd` also sets after them.
 
 /// Everything burrowd runs with.
 pub struct Settings {
@@ -63,6 +76,8 @@ pub struct Settings {
     strict_modes: bool,
     password_auth: bool,
     accept_env: List[str],
+    /// px116: `SetEnv`'s `NAME=VALUE` entries, in order, one per name.
+    set_env: List[str],
     rekey_bytes: int,
     rekey_seconds: int,
     pid_file: str,
@@ -94,6 +109,7 @@ pub fn defaults() -> Settings {
         strict_modes: true,
         password_auth: false,
         accept_env: List[str](),
+        set_env: List[str](),
         rekey_bytes: 0,
         rekey_seconds: 0,
         pid_file: "",
@@ -262,6 +278,11 @@ pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
     }
     let accumulates = k == "listenaddress" || k == "acceptenv"
     if !accumulates && given(s, k) {
+        // px116: a later SetEnv line counts for nothing, but a malformed one
+        // is refused, as the pinned sshd refuses it (measured).
+        if k == "setenv" {
+            set_env(mut s, value, origin, false)
+        }
         return
     }
     (mut s.given).push(k)
@@ -469,10 +490,148 @@ pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
         s.password_auth = v == "yes"
         return
     }
+    if k == "setenv" {
+        set_env(mut s, value, origin, true)
+        return
+    }
     refuse(mut s, "config_unsupported", "{origin}: {keyword}, which burrowd does not have")
 }
 
-// `keyword value`, `keyword=value`, or with a quoted value.
+/// SetEnv's arguments, or `ok` false on an unbalanced quote.
+pub struct Words {
+    words: List[str],
+    ok: bool,
+}
+
+/// `text` split as `sshd_config(5)`'s arguments (px116, measured against the
+/// pinned `sshd`): on blanks, a double-quoted run taken whole, its quotes
+/// dropped, inside or around an argument (`A="x y"` and `"A=x y"` alike);
+/// an unquoted argument that starts with `#` ends the list.
+pub fn words(text: str) -> Words {
+    var out = List[str]()
+    var cur = List[byte]()
+    var in_word = false
+    var quoted = false
+    for b in text.bytes() {
+        let c = b as int
+        if quoted {
+            if c == 34 {
+                quoted = false
+            } else {
+                (mut cur).push(b)
+            }
+            continue
+        }
+        if c == 34 {
+            quoted = true
+            in_word = true
+            continue
+        }
+        if c == 32 || c == 9 {
+            if in_word {
+                (mut out).push(str_from_utf8(copy cur) else "")
+                (mut cur).reset()
+                in_word = false
+            }
+            continue
+        }
+        if c == 35 && !in_word {
+            break
+        }
+        (mut cur).push(b)
+        in_word = true
+    }
+    if in_word && !quoted {
+        (mut out).push(str_from_utf8(copy cur) else "")
+    }
+    Words { words: out, ok: !quoted }
+}
+
+// The name of a `NAME=VALUE` entry; "" when it has no name before its `=`,
+// or no `=`.
+fn env_name(entry: str) -> str {
+    let eq = entry.find("=") else -1
+    if eq <= 0 then "" else entry[0..eq]
+}
+
+fn named(entries: List[str], name: str) -> int {
+    var i = 0
+    for e in entries {
+        if env_name(e) == name {
+            return i
+        }
+        i += 1
+    }
+    -1
+}
+
+// px116: one SetEnv line: every argument NAME=VALUE, or the line refused;
+// with `keep` (the first line), the first value of each name kept.
+fn set_env(mut s: Settings, value: str, origin: str, keep: bool) {
+    let w = words(value)
+    if !w.ok {
+        refuse(mut s, "config_unsupported", "{origin}: SetEnv: invalid quotes")
+        return
+    }
+    if w.words.len == 0 {
+        refuse(mut s, "config_unsupported", "{origin}: SetEnv has no value")
+        return
+    }
+    for a in w.words {
+        if env_name(a) == "" {
+            refuse(mut s, "config_unsupported", "{origin}: SetEnv {a}: not NAME=VALUE")
+            return
+        }
+    }
+    if !keep {
+        return
+    }
+    for a in w.words {
+        if named(s.set_env, env_name(a)) < 0 {
+            (mut s.set_env).push(a)
+        }
+    }
+}
+
+// `entry` in `entries`, replacing the entry of the same name if there is one.
+fn put_env(mut entries: List[str], entry: str) {
+    let i = named(entries, env_name(entry))
+    if i >= 0 {
+        entries[i] = entry
+    } else {
+        (mut entries).push(entry)
+    }
+}
+
+/// A session's environment (px116): `base` (burrowd's defaults), then
+/// `accepted` (the client's `env` names AcceptEnv took), then `set_vars` (SetEnv's
+/// entries), then `late` (`SSH_CONNECTION`, and a forced command's
+/// `SSH_ORIGINAL_COMMAND`), each `NAME=VALUE` replacing an earlier entry of
+/// the same name: one entry per name, as the pinned `sshd`'s sessions have.
+pub fn environment(
+    base: List[str],
+    accepted: List[str],
+    set_vars: List[str],
+    late: List[str],
+) -> List[str] {
+    var out = List[str]()
+    for e in base {
+        put_env(mut out, e)
+    }
+    for e in accepted {
+        put_env(mut out, e)
+    }
+    for e in set_vars {
+        put_env(mut out, e)
+    }
+    for e in late {
+        put_env(mut out, e)
+    }
+    out
+}
+
+// `keyword value`, `keyword=value`, or with a quoted value; the third
+// entry is the value as written (quotes kept), for SetEnv's own split.
 fn split_line(line: str) -> List[str] {
     var out = List[str]()
     let b = line.bytes()
@@ -485,11 +644,19 @@ fn split_line(line: str) -> List[str] {
     if rest.starts_with("=") {
         rest = rest[1..rest.len].trim()
     }
+    let raw = rest
     if rest.len >= 2 && rest.starts_with("\"") && rest.ends_with("\"") {
         rest = rest[1..rest.len - 1]
     }
     (mut out).push(rest)
+    (mut out).push(raw)
     out
+}
+
+// The value `apply` is given: SetEnv splits its own arguments, quotes and
+// all; every other keyword's value has a pair of outer quotes dropped.
+fn value_of(kv: List[str]) -> str {
+    if kv[0].lower() == "setenv" then kv[2] else kv[1]
 }
 
 /// Applies a configuration file's text, named `file` in refusals.
@@ -506,7 +673,7 @@ pub fn apply_file(mut s: Settings, text: str, file: str) {
             refuse(mut s, "config_unsupported", "{file} line {n}: {kv[0]} has no value")
             return
         }
-        apply(mut s, kv[0], kv[1], "{file} line {n}")
+        apply(mut s, kv[0], value_of(kv), "{file} line {n}")
         if s.refusal != "" {
             return
         }
@@ -587,7 +754,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                     apply(mut s, "Port", v, "-p")
                 } else {
                     let kv = split_line(v.trim())
-                    apply(mut s, kv[0], kv[1], "-o")
+                    apply(mut s, kv[0], value_of(kv), "-o")
                 }
                 continue
             }
@@ -661,6 +828,10 @@ pub fn effective(s: Settings) -> List[str] {
     }
     if env != "" {
         (mut out).push("acceptenv {env}")
+    }
+    // px116: one line per variable, as `sshd -T` prints SetEnv.
+    for e in s.set_env {
+        (mut out).push("setenv {e}")
     }
     (mut out).push("ciphers chacha20-poly1305@openssh.com")
     (mut out).push("kexalgorithms curve25519-sha256,curve25519-sha256@libssh.org")
