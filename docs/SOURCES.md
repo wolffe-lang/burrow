@@ -283,3 +283,24 @@ from the pinned `sshd` and `ssh` (tools/check-server's `session-shell`, `auth-fo
 for a pty, keystrokes sent at fixed intervals and fake packets for a while after typing stops). `PROTOCOL` §1.9, as
 read for B1: `ping@openssh.com`, PING answered with PONG. The fake packets' kind, a PING every 20 ms, was measured
 black box: a packet capture of the pinned client against burrowd, and the client with the option on and off.
+
+## px116: SetEnv
+
+The man pages, from the same signed `openssh-10.0p2.tar.gz`, the same digests as above (`sshd_config.5`
+`9f499c39e00e92f05621c0b259f4d0b05d1cedf34b376fde31fa2787a0d1978c`, `sshd.8`
+`effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c`):
+
+| page | read |
+|---|---|
+| `sshd_config.5` | DESCRIPTION (first value wins unless noted; arguments in double quotes may hold spaces); `SetEnv` ("one or more environment variables to set in child sessions … as `NAME=VALUE`"; a quoted value; overriding "the default environment and any variables specified by the user via AcceptEnv or PermitUserEnvironment"); `AcceptEnv` (noted to accumulate, which `SetEnv` is not) |
+| `sshd.8` | LOGIN PROCESS, step 5 (the basic environment) |
+
+RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`): §6.4, `env`.
+
+The pinned `sshd` as a black box, in the oracle container: `sshd -t` and `sshd -T` on each form of the line
+(one line, two, quotes inside and around an argument, an empty value, a repeated name, a trailing `#`, names
+with `-` and values with `=` and `#`, and the malformed forms: no `=`, no name, `none`, an unbalanced quote,
+on the first line and on a later one), and `env` in a session with the line (the defaults, an accepted
+`GIT_PROTOCOL`, `SSH_CONNECTION`, a forced command's `SSH_ORIGINAL_COMMAND`). `tools/check-server`'s
+`config-setenv`, `session-setenv` and `session-setenv-forced` hold burrowd to those answers. No `.c` or `.h`
+file was opened.
