@@ -6,7 +6,8 @@
 //! closes.
 //!
 //! **The command** runs as `sshd(8)` describes (LOGIN PROCESS): the user's
-//! login shell with `-c` and the command, in the user's home directory, with
+//! login shell with `-c` and the command, leading a process group of its own
+//! (px112; not yet a session of its own), in the user's home directory, with
 //! the environment the caller built (HOME, USER, LOGNAME, SHELL, PATH,
 //! MAIL, SSH_CONNECTION, SSH_ORIGINAL_COMMAND under a forced command) and
 //! the `env` names the channel accepted. It is a `fork` of this process
@@ -130,6 +131,11 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
     let f = process.fork() else { return io }
     if process.is_child(f) {
         var errf = copy perr.write
+        // px112: the program leads a process group of its own, so a
+        // job-control stop it draws (a terminal it touches from the
+        // background) stops it alone, never burrowd. A session of its own,
+        // with no controlling terminal, waits for a call the toolchain lacks.
+        process.lead_group() else {}
         signal.reset(signal.broken_pipe()) else {}
         if plan.drop {
             process.set_ids(plan.uid, plan.gid, plan.groups) else {
