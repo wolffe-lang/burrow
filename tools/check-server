@@ -392,6 +392,23 @@ def auth_forced_command():
 
 
 @row
+def auth_forced_shell():
+    """A forced command runs for a shell request too, never the shell
+    (sshd(8), command=: "applies to shell, command or subsystem execution"):
+    the script the client sends is the forced command's standard input,
+    read as data, never run (px112)."""
+    with Pair(BIN, rundir("auth-forced-shell"), install=False) as p:
+        line = 'command="echo forced: ${SSH_ORIGINAL_COMMAND-unset}; cat" ' + pathlib.Path(str(p.key) + ".pub").read_text()
+        serverlib.install_keys([line])
+        rb, rs = p.both(["-T"], inp=b"echo shell ran\n")
+        note = same(p, rb, rs, "authorized_keys command=, ssh -T host with a script on stdin")
+        check(rb[1].startswith(b"forced: ") and rb[1].endswith(b"echo shell ran\n"),
+              f"stdout {rb[1]!r}: the script did not reach the forced command as its input")
+        check(b"\nshell ran" not in b"\n" + rb[1], f"stdout {rb[1]!r}: the script ran as a shell's")
+        return note + f", stdout {rb[1]!r}"
+
+
+@row
 def auth_option_unhonoured():
     with Pair(BIN, rundir("auth-option-unhonoured"), install=False) as p:
         pub = pathlib.Path(str(p.key) + ".pub").read_text()
