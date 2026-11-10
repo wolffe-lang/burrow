@@ -356,3 +356,51 @@ only) does. That is itself a finding (below).
 - [x] Options and recommendations (§7), revised by the probes above.
 - [ ] Rulings on §7; then phase 2 per the plan: the rows red on this branch, the protocol half, and the
   pty half once a wolf release carries the calls.
+
+## Phase 2a: the protocol half and the rows, before the release
+
+The rulings (2026-11-10) took every recommendation in §7: the pty calls come from a wolf change released with
+the new session; this branch carries the protocol half and the red rows and merges nothing until then;
+`PermitTTY` defaults to `yes`; `no-pty` and `restrict` refuse a pty and `restrict,pty` grants it; the session
+ends at the program's end; §8's whole vocabulary; a malformed `pty-req` is refused by name with the connection
+kept; no motd or last-login line; the system's `ssh` on the Air; both plants. What burrow asks of the wolf
+change is [bw06-wolf-needs.md](bw06-wolf-needs.md).
+
+### What is on the branch
+
+- **Rows first** (`2bfa5b9` to `a596082`): the unit rows (`ttymodes_test`, `schannel_test`, `akeys_test`,
+  `sconfig_test`), `PermitTTY no` in both servers' base (`serverlib`), the terminal rows in `check-server`
+  (`session-tty-command`, `-size`, `-full-screen`, `-interrupt`, `-shell`, `-gone`, `-burst`, `-eof`,
+  `auth-no-pty`, `session-own-session`) and two in `check-server-hostile` (`hostile-pty-malformed`,
+  `hostile-pty-granted`); `hostile-requests-refused` now names `PermitTTY no` for its refusal.
+- **The protocol half** (`67dade3` to `844b2cb`): `src/ttymodes` (§8 decoded), `schannel` (the `pty-req` and
+  `window-change` parse, `pty_refused`, `pty_malformed`, `pty_twice`, `pty_late`, `window_malformed`),
+  `akeys` (`no-pty`, `restrict`, `pty`, left to right), `sconfig` (`PermitTTY`), the key's verdict carried to
+  the holder; and the pty half written against the calls the release should bring, bound in one module
+  (`src/ptyhost`) that at the pin opens no pty (`pty_failed` after the parse) and leads a group, not a
+  session.
+
+### Predicted, before the takes (written 2026-11-10 at 16:00Z)
+
+At the rows tip `a596082` (the code as trunk's):
+
+- The four unit files fail to build (no `ttymodes`; no `allow_pty`, `Step.pty`, `Found.pty`, `permit_tty`).
+- Every terminal row and both new hostile rows fail by name before any client runs: burrowd refuses
+  `PermitTTY yes` (`config_unsupported`), the rows' harness reporting its exit.
+- The neighbouring rows hold with `PermitTTY no` in burrowd's base: `session-pty-refused`,
+  `session-shell-pty`, `session-shell`, `session-own-group`, `hostile-requests-refused`.
+
+At the head `844b2cb` (the protocol half; no pty at the pin):
+
+- `fmt`, the native build and every unit test on the checked machine, native and lupin: green.
+- `hostile-pty-malformed`: green (four `pty_malformed`, the window change ignored, `pty_late`, the output).
+- `auth-no-pty`: its `no-pty` and `restrict` cases alike through both servers (255, the PTY line); its
+  `restrict,pty` case red (`sshd` grants, burrowd answers `pty_failed`); `pty,restrict` as `sshd` reads it
+  left to right (refused), so alike.
+- Red by name, until the release: every other terminal row (the client's `PTY allocation request failed on
+  channel 0` and 255 through burrowd against `sshd`'s session), `session-own-session` (the shell leads a
+  group, not a session, and `-tt` has no pty), `hostile-pty-granted` (FAILURE for the first `pty-req`).
+- Unchanged and green: `session-pty-refused`, `session-shell-pty` and `-slow`, `session-shell`,
+  `session-own-group`, `session-terminal-stop`, `session-exit-codes`, `session-sigterm`, `auth-forced-shell`,
+  `auth-option-unhonoured`, `hostile-requests-refused`, `hostile-program-twice`,
+  `hostile-transport-mid-session`.
