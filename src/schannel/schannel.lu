@@ -1,12 +1,13 @@
 //! member: true
 //!
 //! burrow.schannel — burrowd's one `session` channel (RFC 4254 §5, §6),
-//! commands only, as a state machine with no I/O: the client's messages
-//! in, steps out. `src/ssession` drives it.
+//! one program on it (a command, or the login shell with no pty), as a
+//! state machine with no I/O: the client's messages in, steps out.
+//! `src/ssession` drives it.
 //!
 //! **Opening** (§5.1, §6.1): the first `session` open is confirmed with
 //! burrowd's channel number 0, window 0 and maximum packet 32768, as the
-//! pinned `sshd` confirms; the window opens (2 MiB) once the command runs.
+//! pinned `sshd` confirms; the window opens (2 MiB) once the program runs.
 //! Every other channel type (`direct-tcpip`, `direct-streamlocal@openssh.com`,
 //! `x11`, `auth-agent@openssh.com`, …), a second session, and any session
 //! after `no-more-sessions@openssh.com` (`PROTOCOL` §2.2) are
@@ -14,16 +15,18 @@
 //! failed".
 //!
 //! **Requests on the channel** (§5.4): `env` (§6.4) for the names burrowd
-//! accepts (R-bw04-4: `GIT_PROTOCOL` only) before the command starts;
-//! `exec` (§6.5) once; `eow@openssh.com` (`PROTOCOL` §2.1: no more input to
-//! the command); `window-change` and `break` taken and ignored (no pty).
+//! accepts (R-bw04-4: `GIT_PROTOCOL` only) before the program starts;
+//! `exec` or `shell` (§6.5) once, whichever comes first (px112: the shell
+//! runs with no pty); `eow@openssh.com` (`PROTOCOL` §2.1: no more input to
+//! the program); `window-change` and `break` taken and ignored (no pty).
 //! Refused, CHANNEL_FAILURE when a reply is wanted, and named in the log:
-//! `pty-req` (`pty_refused`), `shell` (`shell_refused`), `subsystem`
-//! (`subsystem_refused`), `x11-req` (`x11_refused`),
+//! `pty-req` (`pty_refused`, remembered: a shell after it says so),
+//! `subsystem` (`subsystem_refused`), `x11-req` (`x11_refused`),
 //! `auth-agent-req@openssh.com` (`agent_refused`), `signal`
-//! (`signal_refused`), a second `exec` (`exec_twice`), an `env` name
-//! outside the list or after the command started (`env_refused`), and any
-//! other (`request_refused`). Global requests (§4) other than
+//! (`signal_refused`), a second program, `exec` or `shell` after either
+//! (`exec_twice`; §6.5: "Only one of these requests can succeed per
+//! channel"), an `env` name outside the list or after the program started
+//! (`env_refused`), and any other (`request_refused`). Global requests (§4) other than
 //! `no-more-sessions@openssh.com` are refused the same way
 //! (`forward_refused` for `tcpip-forward` and
 //! `streamlocal-forward@openssh.com`, else `request_refused`).
@@ -75,6 +78,10 @@ pub struct Chan {
     consumed: int,
     started: bool,
     command: List[byte],
+    /// The program is the login shell (`shell`), not a command (px112).
+    shell: bool,
+    /// A `pty-req` was refused on this channel.
+    pty_asked: bool,
     env: List[byte],
     got_eof: bool,
     got_close: bool,
@@ -87,7 +94,7 @@ pub struct Chan {
 }
 
 /// The channel before any open, with burrowd's window (`window`, which
-/// opens at `exec`) and maximum packet.
+/// opens when the program starts) and maximum packet.
 pub fn new() -> Chan {
     sized(local_window())
 }
@@ -105,6 +112,8 @@ pub fn sized(window: int) -> Chan {
         consumed: 0,
         started: false,
         command: List[byte](),
+        shell: false,
+        pty_asked: false,
         env: List[byte](),
         got_eof: false,
         got_close: false,
@@ -175,8 +184,9 @@ pub fn environment(ch: Chan) -> List[str] {
 }
 
 /// What a message asks of the session: `replies` to send in order,
-/// `input` bytes for the command's stdin, `start` the command (then the
-/// session sends `exec`'s answer), `close_input` the command's stdin.
+/// `input` bytes for the program's stdin, `start` the program (then the
+/// session sends the `exec` or `shell` answer), `close_input` the
+/// program's stdin.
 pub struct Step {
     replies: List[List[byte]],
     input: List[byte],
@@ -204,7 +214,7 @@ fn plain(ch: Chan, t: int) -> List[byte] {
     p
 }
 
-/// CHANNEL_SUCCESS, the answer to the client's `exec` once it runs.
+/// CHANNEL_SUCCESS, the answer to the client's `exec` or `shell` once it runs.
 pub fn success_msg(ch: Chan) -> List[byte] {
     plain(ch, refuse.msg_channel_success())
 }
@@ -334,7 +344,7 @@ pub fn done(ch: Chan) -> bool {
 fn request_name(kind: str) -> str {
     match kind {
         "pty-req" => "pty_refused",
-        "shell" => "shell_refused",
+        "shell" => "exec_twice",
         "subsystem" => "subsystem_refused",
         "x11-req" => "x11_refused",
         "auth-agent-req@openssh.com" => "agent_refused",
@@ -477,7 +487,7 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
     if t == refuse.msg_channel_request() {
         let kind = wire.read_utf8(mut r) else { return malformed }
         let want = wire.read_bool(mut r) else { return malformed }
-        if kind == "exec" && !ch.started && ch.command.len == 0 {
+        if kind == "exec" && !ch.started && ch.command.len == 0 && !ch.shell {
             let cmd = wire.read_string(mut r) else { return malformed }
             (mut ch.command).reset()
             for b in cmd {
@@ -488,7 +498,14 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
             s.info = "exec: {cmd.len} bytes"
             return s
         }
-        if kind == "env" && !ch.started && ch.command.len == 0 {
+        if kind == "shell" && !ch.started && ch.command.len == 0 && !ch.shell {
+            ch.shell = true
+            s.start = true
+            s.want_reply = want
+            s.info = "shell: the login shell, no pty"
+            return s
+        }
+        if kind == "env" && !ch.started && ch.command.len == 0 && !ch.shell {
             let name = wire.read_utf8(mut r) else { return malformed }
             let value = wire.read_utf8(mut r) else { return malformed }
             if env_accepted(name) {
@@ -521,6 +538,9 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
             }
             s.info = "{kind}: no pty, ignored"
             return s
+        }
+        if kind == "pty-req" {
+            ch.pty_asked = true
         }
         let why = request_name(kind)
         refuse_name(mut ch, why)
