@@ -108,6 +108,8 @@ pub struct Verdict {
     ok: bool,
     command: str,
     has_command: bool,
+    /// bw06: the key may have a pty.
+    pty: bool,
     /// Why not, for the log ("" when ok, or no line names the key).
     why: str,
 }
@@ -156,10 +158,16 @@ pub fn check_key(a: Account, files: str, strict_modes: bool, blob: List[byte]) -
         }
         let f = akeys.find(text, blob)
         if f.line > 0 {
-            return Verdict { ok: f.ok, command: f.command, has_command: f.has_command, why: f.why }
+            return Verdict {
+                ok: f.ok,
+                command: f.command,
+                has_command: f.has_command,
+                pty: f.pty,
+                why: f.why,
+            }
         }
     }
-    Verdict { ok: false, command: "", has_command: false, why: why }
+    Verdict { ok: false, command: "", has_command: false, pty: false, why: why }
 }
 
 /// Whether `sig_blob` is `blob`'s Ed25519 signature over RFC 4252 §7's
