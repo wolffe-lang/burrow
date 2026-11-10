@@ -120,6 +120,19 @@ What it does, and what it refuses:
   asked for a pty, the shell's first line on stderr says it has none: no
   line editing, no job control, and ^C is a byte on the shell's stdin, not
   a signal.
+- **Process groups, not yet sessions:** each session's program leads a
+  process group of its own, and burrowd leads its own at start (unless a
+  person runs it in a terminal's foreground). `sshd` gives each program a
+  session of its own, with no controlling terminal; burrowd cannot yet
+  (the toolchain it is built with has no call for it), so a program run
+  through burrowd keeps burrowd's session and controlling terminal. Where
+  burrowd was started from a terminal, as PAX starts it at boot from the
+  console's session, a program that touches that terminal is stopped there
+  by job control: a bare `sudo` over ssh asks for its password on that
+  terminal and waits, and its ssh client waits until it is ended. The
+  stop stays in that program's group, so burrowd and its other sessions
+  go on. Every session also shares the terminal and session that `sudo`
+  keys its remembered password by.
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
 - **The log:** one line per connection: the time (UTC), the client's
