@@ -50,7 +50,9 @@ Written 2026-11-10 before any change, at `ba2edcc`.
 
 Development takes on the Linux build host's light slots (two CPUs, the pinned container): the rows tip `f103f72` (log
 sha256 `bd9ccf45…`) and the code's head `1a1ce14` (log sha256 `26356060…`), each with toolchain, oracle, the native build, every
-unit test and the session rows beside the new ones.
+unit test and the session rows beside the new ones. Those commits are the branch before its rebase onto `610e7a1` (the
+`limits-startups` row's fix below it), kept on `px112-session-before-rebase`; the rebase moved no line of this change,
+and the same two commits are now `0e02704` and `1d6958c`.
 
 **Red at the rows tip, by name:**
 
@@ -78,7 +80,7 @@ What the change does not fix is as predicted and named in the README.
 
 ## Done-when
 
-- [x] The prediction, committed first (`641d66c`).
+- [x] The prediction, committed first (`641d66c`, `f231a22` after the rebase).
 - [x] The three rows red at the rows tip by name, green at the head.
 - [x] README (what this does not fix), MAP, CHANGELOG.
 - [ ] The gauntlet green at the final head; the plant (the program back in burrowd's group) red by name: the PR's
