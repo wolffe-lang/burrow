@@ -4,8 +4,11 @@
 #
 # Archives are fetched from the GitHub release and REFUSED unless their
 # sha256 matches wolf-toolchain.toml. The std tree is fetched at its
-# pinned commit. A stage whose recorded digests already match is left
-# alone, so the tool is cheap to run before every build.
+# pinned commit, and the commit fetched must be the pin. A stage whose
+# recorded digests already match is left alone, so the tool is cheap to
+# run before every build. Every fetch goes through ci/fetch-retry (python3):
+# bounded tries with backoff, a connect and a total limit, and a failure
+# named by its URL.
 set -eu
 BURROW_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export BURROW_ROOT
@@ -56,7 +59,7 @@ fetch_archive() {
     else
         url="https://github.com/$repo/releases/download/v$version/$base.tar.gz"
         echo "fetch-toolchain: $url"
-        curl -sSfL --retry 3 --retry-delay 5 -o "$tmp/$base.tar.gz" "$url"
+        python3 -I ci/fetch-retry url "$url" "$tmp/$base.tar.gz"
     fi
     have=$(sha256 "$tmp/$base.tar.gz")
     if [ "$have" != "$3" ]; then
@@ -84,7 +87,7 @@ fi
 std_repo=$(toml_value std repo)
 echo "fetch-toolchain: https://github.com/$std_repo at $std_rev"
 git init -q "$tmp/std"
-git -C "$tmp/std" fetch -q --depth 1 "https://github.com/$std_repo" "$std_rev"
+python3 -I ci/fetch-retry git "$tmp/std" "https://github.com/$std_repo" "$std_rev"
 git -C "$tmp/std" archive FETCH_HEAD std | tar -x -C .wolf-bin/
 git -C "$tmp/std" rev-parse FETCH_HEAD >.wolf-bin/std/STD-REV
 
