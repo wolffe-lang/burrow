@@ -30,6 +30,23 @@
 //! no terminal (`no_pty_text`); a command after a refused pty gets none,
 //! as through `sshd` with `PermitTTY no`.
 //!
+//! **A pty** (bw06; RFC 4254 §6.2, §6.7): where the channel allows one
+//! (`Plan.pty`: `PermitTTY` and the key's options), a `pty-req` is served
+//! here: the pty opened (`src/ptyhost`) and sized, SUCCESS; or, the host
+//! giving none, FAILURE named `pty_failed`. The program then runs on it: the
+//! child leads a session of its own, opens the slave by name (its
+//! controlling terminal, its group the foreground), sets the client's modes
+//! on it, and has it as stdin, stdout and stderr, with TERM (when the
+//! client sent one) and SSH_TTY in its environment. The master is the
+//! channel's one stream both ways (no extended data); `window-change` sets
+//! its size; the client's EOF is ignored (a pty cannot be half-closed; the
+//! client ends input with its EOF character). **The end** is the program's:
+//! reaped, the master drained until it ends or stays quiet 20 ms (a child
+//! that ignores SIGHUP may still hold the slave), then EOF, the status and
+//! CLOSE, and the master closed, which hangs the slave up. Every program,
+//! with a pty or without, leads a session of its own once the toolchain
+//! has the call (`ptyhost.lead_session`; until then a process group, px112).
+//!
 //! **Waiting.** wolf-std at the pin has no one wait over a socket and
 //! files (wolf-std#134): an idle turn waits up to 5 ms on the socket, then
 //! up to 5 ms on the command's pipes and its end (SIGCHLD). A turn that
@@ -46,6 +63,7 @@ use std.net
 use std.process
 use std.signal
 use pipe
+use ptyhost
 use refuse
 use schannel
 use transport
@@ -59,6 +77,8 @@ pub struct Plan {
     forced: bool,
     env: List[str],
     verbose: int,
+    /// bw06: the channel may grant a pty (`PermitTTY` and the key's options).
+    pty: bool,
     /// Only the one-process row program: the command's process takes the
     /// account's ids (`set_ids`) before its exec, the session staying root.
     drop: bool,
@@ -89,6 +109,12 @@ struct Running {
     out_eof: bool,
     err_eof: bool,
     status: int,
+    /// bw06: a pty was granted; `master` is open until `pty_open` goes
+    /// false, and the program's stdin and stdout are it.
+    pty: bool,
+    pty_open: bool,
+    master: fs.File,
+    slave: List[byte],
 }
 
 fn say(p: Plan, msg: str) {
@@ -108,14 +134,15 @@ fn none_running() -> Running {
         out_eof: true,
         err_eof: true,
         status: -1,
+        pty: false,
+        pty_open: false,
+        master: fs.File { fd: -1 },
+        slave: List[byte](),
     }
 }
 
-// The command's process, forked and exec'd with its three pipes.
-fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
-    let pin = process.pipe() else { return io }
-    let pout = process.pipe() else { return io }
-    let perr = process.pipe() else { return io }
+// The program's environment.
+fn program_env(plan: Plan, ch: schannel.Chan) -> List[str] {
     var envs = copy plan.env
     for e in schannel.environment(ch) {
         (mut envs).push(e)
@@ -124,18 +151,109 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
     if plan.forced && !ch.shell {
         (mut envs).push("SSH_ORIGINAL_COMMAND={asked}")
     }
-    // The login shell only with no forced command: a forced command runs
-    // for a shell request too, never the shell.
+    envs
+}
+
+// The program's argv: the login shell (`-sh`) with no forced command, else
+// `sh -c` and the forced or the client's command. A forced command runs
+// for a shell request too, never the shell.
+fn program_argv(plan: Plan, ch: schannel.Chan) -> List[str] {
+    let asked = str_from_utf8(ch.command) else ""
     let login = ch.shell && !plan.forced
     let command = if plan.forced then plan.command else asked
+    var argv = List[str]()
+    if login {
+        (mut argv).push("-{plan.argv0}")
+    } else {
+        (mut argv).push(plan.argv0)
+        (mut argv).push("-c")
+        (mut argv).push(command)
+    }
+    argv
+}
+
+// bw06: the program on the pty `tty` holds: a session of its own, the
+// slave its controlling terminal and its stdin, stdout and stderr.
+fn start_on_pty(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse.Refusal {
+    var envs = program_env(plan, ch)
+    let term = schannel.term_name(ch)
+    if term != "" {
+        (mut envs).push("TERM={term}")
+    }
+    let slave = str_from_utf8(tty.slave) else { return io }
+    (mut envs).push("SSH_TTY={slave}")
+    let argv = program_argv(plan, ch)
+    let f = process.fork() else { return io }
+    if process.is_child(f) {
+        var m = copy tty.master
+        fs.close(take m) else {}
+        ptyhost.lead_session() else {}
+        signal.reset(signal.broken_pipe()) else {}
+        // The open makes the slave this session's controlling terminal (the
+        // runtime's opens pass no O_NOCTTY), and its group the foreground.
+        var s = fs.open_mode(slave, 3) else {
+            process.exit(1)
+            fs.File { fd: -1 }
+        }
+        ptyhost.set_modes(s, ch.modes) else {}
+        if plan.drop {
+            process.set_ids(plan.uid, plan.gid, plan.groups) else {
+                process.exit(1)
+            }
+        }
+        env.set_cwd(plan.home) else {
+            fs.write(
+                mut s,
+                "Could not chdir to home directory {plan.home}: No such file or directory\n",
+            ) else {}
+            env.set_cwd("/") else {}
+        }
+        var c = process.from_argv(argv)
+        process.set_stdin(mut c, copy s)
+        process.set_stdout(mut c, copy s)
+        process.set_stderr(mut c, copy s)
+        os_exec(plan.shell, c.argv, envs, c.fds) else {}
+        fs.write(mut s, "{plan.shell}: cannot be executed\n") else {}
+        process.exit(1)
+    }
+    var m = copy tty.master
+    fs.set_nonblock(mut m, true) else {}
+    Running {
+        child: copy f.child,
+        running: true,
+        stdin: copy m,
+        stdout: copy m,
+        stderr: fs.File { fd: -1 },
+        in_open: true,
+        out_eof: false,
+        err_eof: true,
+        status: -1,
+        pty: true,
+        pty_open: true,
+        master: copy m,
+        slave: copy tty.slave,
+    }
+}
+
+// The command's process, forked and exec'd with its three pipes, or on the
+// session's pty.
+fn start_command(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse.Refusal {
+    if tty.pty {
+        return start_on_pty(plan, ch, tty)
+    }
+    let pin = process.pipe() else { return io }
+    let pout = process.pipe() else { return io }
+    let perr = process.pipe() else { return io }
+    let envs = program_env(plan, ch)
+    let argv = program_argv(plan, ch)
     let f = process.fork() else { return io }
     if process.is_child(f) {
         var errf = copy perr.write
         // px112: the program leads a process group of its own, so a
         // job-control stop it draws (a terminal it touches from the
-        // background) stops it alone, never burrowd. A session of its own,
-        // with no controlling terminal, waits for a call the toolchain lacks.
-        process.lead_group() else {}
+        // background) stops it alone, never burrowd. bw06: a session of its
+        // own, with no controlling terminal, once the toolchain has the call.
+        ptyhost.lead_session() else {}
         signal.reset(signal.broken_pipe()) else {}
         if plan.drop {
             process.set_ids(plan.uid, plan.gid, plan.groups) else {
@@ -148,14 +266,6 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
                 "Could not chdir to home directory {plan.home}: No such file or directory\n",
             ) else {}
             env.set_cwd("/") else {}
-        }
-        var argv = List[str]()
-        if login {
-            (mut argv).push("-{plan.argv0}")
-        } else {
-            (mut argv).push(plan.argv0)
-            (mut argv).push("-c")
-            (mut argv).push(command)
         }
         var c = process.from_argv(argv)
         process.set_stdin(mut c, copy pin.read)
@@ -183,6 +293,10 @@ fn start_command(plan: Plan, ch: schannel.Chan) -> Running ! refuse.Refusal {
         out_eof: false,
         err_eof: false,
         status: -1,
+        pty: false,
+        pty_open: false,
+        master: fs.File { fd: -1 },
+        slave: List[byte](),
     }
 }
 
@@ -258,6 +372,36 @@ fn on_message(
     for r in s.replies {
         transport.write(mut c, r)?
     }
+    if s.pty {
+        var ok = false
+        let got = ptyhost.open() else |e| {
+            say(plan, "pty_failed: {e}")
+            ptyhost.Pty { master: fs.File { fd: -1 }, slave: "" }
+        }
+        if got.slave != "" {
+            ptyhost.set_size(got.master, ch.rows, ch.cols, ch.xpixels, ch.ypixels) else {}
+            pr.pty = true
+            pr.pty_open = true
+            pr.master = copy got.master
+            (mut pr.slave).reset()
+            for b in got.slave.bytes() {
+                (mut pr.slave).push(b)
+            }
+            schannel.grant_pty(mut ch)
+            ok = true
+        } else {
+            schannel.refuse_pty(mut ch, "pty_failed")
+        }
+        if s.want_reply {
+            transport.write(
+                mut c,
+                if ok then schannel.success_msg(ch) else schannel.failure_msg(ch),
+            )?
+        }
+    }
+    if s.resize && pr.pty_open {
+        ptyhost.set_size(pr.master, ch.rows, ch.cols, ch.xpixels, ch.ypixels) else {}
+    }
     if s.start && nologin != "" {
         if s.want_reply {
             transport.write(mut c, schannel.success_msg(ch))?
@@ -271,7 +415,7 @@ fn on_message(
         pr.status = 254
     } else if s.start {
         var ok = true
-        let got = start_command(plan, ch) else |e| {
+        let got = start_command(plan, ch, pr) else |e| {
             ok = false
             say(plan, "exec_failed: {e}")
             none_running()
@@ -287,11 +431,11 @@ fn on_message(
             pr.stdout = copy got.stdout
             pr.stderr = copy got.stderr
             pr.in_open = true
-            pr.out_eof = false
-            pr.err_eof = false
+            pr.out_eof = got.out_eof
+            pr.err_eof = got.err_eof
             flow.started = true
             transport.write(mut c, schannel.start_msg(mut ch))?
-            if ch.shell && ch.pty_asked {
+            if ch.shell && ch.pty_asked && !ch.pty {
                 let text = wire_bytes(no_pty_text())
                 if text.len <= schannel.room(ch) {
                     transport.write(mut c, schannel.data_msg(mut ch, 1, text))?
@@ -353,13 +497,15 @@ fn turn_once(
         schannel.consumed(mut ch, pending.len)
         (mut pending).reset()
     }
-    if pr.in_open && flow.close_in && pending.len == 0 {
+    // A pty cannot be half-closed: the client's EOF leaves it open (bw06).
+    if pr.in_open && flow.close_in && pending.len == 0 && !pr.pty {
         var w = copy pr.stdin
         fs.close(take w) else {}
         pr.in_open = false
     }
     // The command's output, within the client's window.
     let room = schannel.room(ch)
+    var out_moved = false
     if flow.started && room > 0 {
         let outs = outputs(pr)
         if outs.len > 0 {
@@ -379,14 +525,34 @@ fn turn_once(
                         pr.err_eof = true
                     }
                     fs.close(take f) else {}
+                    if pr.pty && is_out {
+                        // The master: its end (every slave closed) ends input too.
+                        pr.in_open = false
+                        pr.pty_open = false
+                    }
                 } else {
                     transport.write(mut c, schannel.data_msg(mut ch, if is_out then 0 else 1, got))?
                 }
                 moved = true
+                out_moved = true
             }
         }
     }
     reap(mut pr)?
+    // bw06: on a pty the program's end is the session's: what the master
+    // still holds is read, and once it stays quiet 20 ms (a child that
+    // ignores SIGHUP may still hold the slave) the master is closed.
+    if pr.pty && pr.pty_open && !pr.running && !pr.out_eof && !out_moved && room > 0 {
+        let w = signal.wait_fds(outputs(pr), signal.child(), 20) else { return io }
+        if w.ready < 0 && w.meaning == 0 {
+            var f = copy pr.stdout
+            fs.close(take f) else {}
+            pr.out_eof = true
+            pr.in_open = false
+            pr.pty_open = false
+        }
+        moved = true
+    }
     // The end: EOF once the output has ended, then the status and CLOSE.
     if flow.started && pr.out_eof && pr.err_eof && !pr.running && !ch.got_close && !ch.sent_close {
         if !ch.sent_eof {
@@ -431,6 +597,9 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
         put_name(mut failed, "io")
     }
     signal.ignore(signal.broken_pipe()) else {}
+    if plan.pty {
+        schannel.allow_pty(mut ch)
+    }
     var pr = none_running()
     var pending = List[byte]()
     var flow = Flow { started: false, close_in: false }
@@ -472,6 +641,8 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
                         start: false,
                         want_reply: false,
                         close_input: false,
+                        pty: false,
+                        resize: false,
                         info: "",
                     }
                 }
@@ -486,6 +657,11 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
             }
             break
         }
+    }
+    if pr.pty_open {
+        var m = copy pr.master
+        fs.close(take m) else {}
+        pr.pty_open = false
     }
     let st = if flow.started then status_text(pr.status) else "status -"
     var refused = schannel.refusals(ch)
