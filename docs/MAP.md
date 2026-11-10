@@ -472,6 +472,12 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   pty, subsystem, X11, agent or forwarding, each refused by name. A shell
   at a terminal has no line editing or job control, ^C reaches it as a
   byte, not a signal, and a shell reading a pipe prints no prompt.
+- burrowd gives each program a process group of its own, not a session of
+  its own (px112): the toolchain at burrow's pin has no call to start one.
+  A program keeps burrowd's session and controlling terminal, so where
+  burrowd was started from a terminal (PAX's console), a program that
+  touches it (a bare `sudo`) is stopped there and its client waits; the
+  stop stays in its group, and burrowd goes on.
 - burrowd checks crypt(5)'s `$7$` alone (wolf-std's scrypt): a stock Linux
   account's `$y$` (yescrypt) or `$6$` password is refused by name where
   `sshd` checks it. burrowd changes no password (no
