@@ -89,7 +89,18 @@ fn main() {
             blob,
         ).starts_with("refused 1: the option environment"),
     )
-    assert(verdict(line("pty,restrict", blob), blob).starts_with("refused 1: the option pty"))
+    // bw06: who may have a pty (sshd(8)): no-pty and restrict refuse it,
+    // pty after restrict grants it again, left to right.
+    assert(akeys.find(line("", blob), blob).pty)
+    assert(akeys.find(line("command=\"x\"", blob), blob).pty)
+    assert(!akeys.find(line("no-pty", blob), blob).pty)
+    assert(!akeys.find(line("restrict", blob), blob).pty)
+    assert(!akeys.find(line("restrict,No-Pty,command=\"x\"", blob), blob).pty)
+    let granted = akeys.find(line("restrict,pty", blob), blob)
+    assert(granted.ok && granted.pty)
+    let pty_first = akeys.find(line("pty,restrict", blob), blob)
+    assert(pty_first.ok && !pty_first.pty)
+    assert(akeys.find(line("pty", blob), blob).ok && akeys.find(line("pty", blob), blob).pty)
     // An unterminated quote swallows the key: the line names none.
     assert(verdict(line("command=\"open", blob), blob) == "none")
     // A line over 8 KiB is not read.
