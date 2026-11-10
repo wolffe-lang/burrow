@@ -144,10 +144,49 @@ fn main() {
             "/etc/burrowd/burrowd_config line 1: SetEnv FOO: not NAME=VALUE",
     )
     assert(
-        file("SetEnv =x\n").detail == "/etc/burrowd/burrowd_config line 1: SetEnv =x: not NAME=VALUE",
+        file("SetEnv =x\n").detail ==
+            "/etc/burrowd/burrowd_config line 1: SetEnv =x: not NAME=VALUE",
     )
     assert(
-        file("SetEnv A=\"x\n").detail == "/etc/burrowd/burrowd_config line 1: SetEnv: invalid quotes",
+        file("SetEnv A=\"x\n").detail ==
+            "/etc/burrowd/burrowd_config line 1: SetEnv: invalid quotes",
+    )
+    // -o, the command line's, wins over the file's line.
+    var so = sconfig.parse_args(args("-oSetEnv=A=cli"))
+    sconfig.apply_file(mut so, "SetEnv A=file B=file\n", "f")
+    assert(refused(so) == "ok" && so.set_env.len == 1 && so.set_env[0] == "A=cli")
+    // The arguments' split.
+    let q = sconfig.words("a \"b c\" d=\"e f\"g  # h")
+    assert(
+        q.ok &&
+            q.words.len == 3 &&
+            q.words[0] == "a" &&
+            q.words[1] == "b c" &&
+            q.words[2] == "d=e fg",
+    )
+    assert(!sconfig.words("a=\"b").ok && sconfig.words("").words.len == 0)
+    // A session's environment: the defaults, the accepted names, SetEnv's,
+    // then SSH_CONNECTION and SSH_ORIGINAL_COMMAND, one entry per name.
+    var base = List[str]()
+    (mut base).push("USER=u")
+    (mut base).push("HOME=/home/u")
+    (mut base).push("PATH=/usr/bin:/bin")
+    var acc = List[str]()
+    (mut acc).push("GIT_PROTOCOL=version=2")
+    var late = List[str]()
+    (mut late).push("SSH_CONNECTION=1 2 3 4")
+    (mut late).push("SSH_ORIGINAL_COMMAND=asked")
+    let sv = file(
+        "SetEnv WOLF_STD=/w PATH=/x:/usr/bin GIT_PROTOCOL=s SSH_CONNECTION=no SSH_ORIGINAL_COMMAND=no\n",
+    )
+    let merged = sconfig.environment(base, acc, sv.set_env, late)
+    assert(merged.len == 7)
+    assert(merged[0] == "USER=u" && merged[1] == "HOME=/home/u" && merged[2] == "PATH=/x:/usr/bin")
+    assert(merged[3] == "GIT_PROTOCOL=s" && merged[4] == "WOLF_STD=/w")
+    assert(merged[5] == "SSH_CONNECTION=1 2 3 4" && merged[6] == "SSH_ORIGINAL_COMMAND=asked")
+    let plain = sconfig.environment(base, acc, List[str](), late)
+    assert(
+        plain.len == 6 && plain[2] == "PATH=/usr/bin:/bin" && plain[3] == "GIT_PROTOCOL=version=2",
     )
     // TIME FORMATS.
     assert(
