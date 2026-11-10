@@ -233,7 +233,8 @@ signal, stdin a pipe and stdin a terminal), den's exact argv,
 (`tools/check-hostile`) run burrow against a scripted server that never
 adjusts its window, sends data after CLOSE, oversize packets and data, an
 unrequested USERAUTH_SUCCESS, an `exit-status` for another channel, `x11`
-and agent channel opens, and a refused shell request. `tools/measure-session` holds login to first
+and agent channel opens, a refused shell request, and an IGNORE or a stream of PINGs while it waits for
+burrow's input. `tools/measure-session` holds login to first
 byte and `cat` throughput to stated margins against the pinned `ssh`;
 `tools/measure-handshake` compares the cost of a handshake (evidence only).
 
@@ -281,7 +282,8 @@ forced command, an option burrowd cannot honour), 64 MiB through `cat`,
 interleaved streams, exit codes and signals, the session's environment and
 `id`, every refused request, the login shell with no pty (a script on
 stdin, its `$0`, a forced command in its place, `ssh host` at a terminal
-with the pty refused), MaxStartups, `-T`'s limits, the log line and
+with the pty refused, and a slow answer while the client's keystroke-timing
+PINGs arrive), MaxStartups, `-T`'s limits, the log line and
 the processes' users; and (px112) passwords, each run's own, given to the
 pinned `ssh` by its askpass program's environment: the right one, a wrong
 one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
@@ -294,7 +296,8 @@ scripted client that never finishes the exchange, leaves out strict kex,
 sends an oversize packet, signs over another session or with another key,
 sends `exec` before authentication, changes the user mid-authentication,
 sends data before the channel or the command, overruns the window, asks
-every refused request at once, asks for a second program after a shell, asks to change a password, sends an
+every refused request at once, asks for a second program after a shell, sends an IGNORE or a stream of PINGs
+while a command's output waits, asks to change a password, sends an
 overlong one, sends twenty wrong ones at once (one check at a time), times
 a wrong password for a real, root, unknown and locked account (the same
 one hash each), and opens a thousand connections that never
