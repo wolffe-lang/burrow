@@ -136,11 +136,82 @@ Every network fetch in burrow's CI and container files, before this pass (where,
 
 ## Evidence
 
-(Filled in as the runs land.)
+### The rows
+
+- **Red at the rows tip** `fed7646` (the rows, no helper), on an Apple silicon laptop: `FAIL F0 ci/fetch-retry is
+  missing`, exit 1.
+- **Green at the helper** `ef44b81`, the same laptop: F1–F11 PASS, `fetch-retry-test: 11 of 11 rows pass`.
+- **Green on Ubuntu 24.04**, the hosted `plan-test` job of run 42901561274 (job 130128639078) at `78b2828`:
+
+  ```text
+  PASS F1 (exit 0, 1 request)
+  PASS F2 (exit 0, 2 retry lines, 3 requests)
+  PASS F3 (exit 3, 3 requests, named: True, file left: False)
+  PASS F4 (exit 4, 1 request, named: True)
+  PASS F5 (exit 3, named: True)
+  PASS F6 (exit 3, 3 requests, 6.0 s, named: True)
+  PASS F7 (exit 0, FETCH_HEAD d88ac206582a, pin d88ac206582a)
+  PASS F8 (exit 3, 3 requests, named: True)
+  PASS F9 (exit 4, not retried: True)
+  PASS F10 (exit 0, tries 3)
+  PASS F11 (exit 3 and 3, 3.0 s, named: True True)
+  fetch-retry-test: 11 of 11 rows pass
+  ```
+
+- The Containerfile's retry function, joined as the builder joins it and run under `dash` with stub `apt-get`,
+  `timeout` and `sleep`: a phase failing once is fetched on try 2 after `again in 30 s`; one failing every time
+  prints `again in 30 s`, `90 s`, `270 s` and `FAIL fetch of the snapshot's packages (20261101T000000Z) failed after
+  4 tries (last: exit 100)`, exit 1.
+
+### The plant, red by name
+
+`tl38-plant-503` at `76b1b8a` (one commit on `78b2828`: the wolf archive's URL pointed at a server in the container
+that answers 503, the stage's stamp removed), dispatched with `jobs=linux`: run 42901662180, `tier partial` red, the
+Linux job (130129008209) red at its stage step, exit 3, 186 s after the step began (21:07:13Z to 21:10:19Z), and
+every row step after it skipped. The step's log, as printed:
+
+```text
+fetch-toolchain: http://127.0.0.1:8503/wolffe-lang/wolf-lang/releases/download/v0.2.37/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz
+curl: (22) The requested URL returned error: 503
+plant-503: GET /wolffe-lang/wolf-lang/releases/download/v0.2.37/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz -> 503
+fetch-retry: http://127.0.0.1:8503/…/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz: try 1 of 5 failed (HTTP 503); again in 5 s
+fetch-retry: http://127.0.0.1:8503/…/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz: try 2 of 5 failed (HTTP 503); again in 15 s
+fetch-retry: http://127.0.0.1:8503/…/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz: try 3 of 5 failed (HTTP 503); again in 45 s
+fetch-retry: http://127.0.0.1:8503/…/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz: try 4 of 5 failed (HTTP 503); again in 120 s
+FAIL fetch of http://127.0.0.1:8503/wolffe-lang/wolf-lang/releases/download/v0.2.37/wolf-0.2.37-x86_64-unknown-linux-gnu.tar.gz failed after 5 tries (last: HTTP 503)
+##[error]Process completed with exit code 3.
+```
+
+(The URL is shortened with `…` here only; the log prints it whole. Each try's `curl: (22)` and `plant-503: GET`
+line sit between the retry lines: five requests in all.)
+
+### The hosted run at the head
+
+Run 42901561274, a dispatch at `78b2828` with no job named (tier full):
+
+- `plan` and `plan-test` green (the rows above).
+- `linux` (130128639166) green, 21:05:28Z to 21:19:53Z: the base image pulled through `ci/fetch-retry`; the image
+  built from the new `RUN` in 67 s with no retry line, its four phases `Fetched 33.8 MB in 1s`, `3089 kB in 1s`,
+  `33.6 MB in 7s` and `164 MB in 36s`; `--error-on=any` accepted; `tools/fetch-toolchain` through the helper (both
+  archives `sha256 … OK`, the std at `2411d868`); `tools/fetch-oracle` built OpenSSH from a cold cache,
+  `signature VALIDSIG 7168B983…`, and its three binaries held to their pins (`ssh a95aff08…`, `sshd 2b783b02…`,
+  `ssh-keygen d84e9069…`, `holds the pinned OpenSSH`): the image's toolchain is unchanged. Every row step green.
+- `macos`: queued behind the organisation's runners when this was written.
+
+### Scored
+
+| | predicted | measured | |
+|---|---|---|---|
+| the rows | red at the rows tip, green at the helper | `FAIL F0` at `fed7646`; 11 of 11 on macOS and Ubuntu | held |
+| the plant | 4 retry lines 5, 15, 45, 120 s apart, the FAIL line, exit 3, about 190 s, the rows skipped | exactly so, 186 s | held |
+| `--error-on=any` | accepted by apt 2.7 | accepted | held |
+| the oracle's digests | unchanged | unchanged | held |
+| the image | built through the new `RUN` | 67 s, no retry needed on a calm day | held |
+| the apt lines' wording | `(last exit N)` | `(last: exit N)`, or `(last: timeout after S s)` for a try stopped at its limit, to read as `ci/fetch-retry`'s lines do | changed after the prediction |
 
 ## Done-when
 
-- [ ] The prediction, committed first
-- [ ] `ci/fetch-retry-test.py` red at the rows tip, green at the helper
-- [ ] The plant red by name in a hosted run, with the retry lines
-- [ ] The hosted run at the head green, tier full
+- [x] The prediction, committed first (`4d2a550`)
+- [x] `ci/fetch-retry-test.py` red at the rows tip, green at the helper
+- [x] The plant red by name in a hosted run, with the retry lines (run 42901662180)
+- [ ] The hosted run at the head green, tier full (run 42901561274: `plan`, `plan-test` and `linux` green; `macos` queued)
