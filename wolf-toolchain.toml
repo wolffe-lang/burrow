@@ -7,24 +7,30 @@
 # password check). No wolf release bundles them yet; tools/fetch-toolchain
 # stages the std at this pin either way.
 
+# bw06 (2026-11-11): wolf release 441434977 (v0.2.39, tag commit 3fc86f77)
+# and lupin release 441174610 (v0.1.61), read twice from the release API,
+# agreeing on asset ids and digests; the std pin is wolf-std's sc81 head
+# 5263a1fc (wolf-std#143, not yet merged), for process.lead_session and
+# term's pseudo-terminal calls, until it merges and this moves to the merge.
+
 [wolf]
-version = "0.2.37"
+version = "0.2.39"
 repo = "wolffe-lang/wolf-lang"
-rev = "e2757a7bd702d3b21f06396291010d2d1cb6101d"
-version_line = "wolf 0.2.37 (wolfgang, pin e2757a7)"
-aarch64-apple-darwin = "c2ebfba6f80b96710b818d3d72f3a201144698abdfc6d065594acaa8c10f5e15"
-x86_64-unknown-linux-gnu = "9811d32e1dddcb743b96a14ea685faee06ba453242c1ae3deb90063f5bb9bcaa"
-aarch64-unknown-linux-gnu = "24c0975dfbc804dbb76c26449a9795a6897f186089fa39e2de1a84ab78d431f8"
+rev = "3fc86f77795afbbd6fbe483fef76c08e7f13a840"
+version_line = "wolf 0.2.39 (wolfgang, pin 3fc86f7)"
+aarch64-apple-darwin = "63de947671c240fc8be3e3480bb36321b0a6ac0b5e12e16bdae164d9050cfde0"
+x86_64-unknown-linux-gnu = "53f75d2b2dd79c0532b21920bc9f073098154aa0133caa2405209a1ef2af0457"
+aarch64-unknown-linux-gnu = "390b6548d6bd8c7eac3ae0a1d09099437564418440de782caca45954463dd344"
 
 [lupin]
-version = "0.1.59"
+version = "0.1.61"
 repo = "wolffe-lang/wolf-interp"
-rev = "668fb752c690f33cf124c052cc9bae2e9696eeef"
-version_line = "lupin 0.1.59 (wolf-interp, reference interpreter at pin b16353e)"
-aarch64-apple-darwin = "9f091af873768677593659bf2fda97243db01c489e6836b15c17ed50aabbf5f5"
-x86_64-unknown-linux-gnu = "12121909c289ac8ff4a138de8faabdb86b72df97988832b39047d5f312ec3a18"
-aarch64-unknown-linux-gnu = "73bdf749f5c9699c724776d00995e16c6432c66d0e69c497ca6ccdf83f766a3f"
+rev = "a10cbe5745d6092752217932851d3b9c12c66b4d"
+version_line = "lupin 0.1.61 (wolf-interp, reference interpreter at pin 5f1f1c9)"
+aarch64-apple-darwin = "7236424618f5bbf1e5f7693cd6333df90b715e1401b08b795668cbb1425ed5af"
+x86_64-unknown-linux-gnu = "61ce849eac0b531803e5bdf1fe07d91d3d69ecb57f83c5e7eb7c5d553cbef41b"
+aarch64-unknown-linux-gnu = "3a2b92423e53a6b539e30b8a4f055c09ccac30853f332da3305966550d1ac7d3"
 
 [std]
 repo = "wolffe-lang/wolf-std"
-rev = "2411d868ee5c7ce6aee272c0475f049f29bab65d"
+rev = "5263a1fcab3c302a9d078bf20aa4d646146e5f64"
