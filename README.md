@@ -8,7 +8,7 @@ macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` and a shell with no pty for B6, the server on PAX. **B4, den over burrow:** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX, and (bw06) a terminal for an interactive session, each program in a session of its own. **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
@@ -66,10 +66,11 @@ prints the effective settings in `sshd -T`'s shape. The configuration
 stand) takes `AcceptEnv`, `AuthorizedKeysFile` (`%h`, `%u`, `%%`),
 `HostKey`, `ListenAddress`, `LoginGraceTime`, `MaxAuthTries`,
 `MaxStartups`, `PasswordAuthentication` (`no` unless a line says `yes`),
-`PermitRootLogin no`, `PidFile`, `Port`, `RekeyLimit`, `SetEnv`,
+`PermitRootLogin no`, `PermitTTY` (`yes` unless a line says `no`, as
+`sshd`), `PidFile`, `Port`, `RekeyLimit`, `SetEnv`,
 `StrictModes`, and the one value burrowd has of the keywords for what it
 does not do (`KbdInteractiveAuthentication no`, `PermitEmptyPasswords no`,
-`PermitTTY no`, `DisableForwarding yes` and the rest). Any other value, or any other
+`DisableForwarding yes`, `PrintMotd no`, `PrintLastLog no` and the rest). Any other value, or any other
 `sshd_config(5)` keyword, is `config_unsupported`; a keyword that page does
 not list is `config_unknown`; either stops burrowd at start, exit 1.
 
@@ -86,8 +87,10 @@ What it does, and what it refuses:
   `authorized_keys` as `sshd(8)` documents the file, with StrictModes on:
   a writable home, `~/.ssh` or file, or one another user owns, admits no
   key. Of the options, `command="…"` is honoured (the client's command in
-  `SSH_ORIGINAL_COMMAND`) and the restrictions burrowd enforces anyway
-  (`restrict`, `no-pty` and the like) are taken; a line with any option
+  `SSH_ORIGINAL_COMMAND`); `no-pty` and `restrict` refuse that key a pty and
+  `pty` grants it again, read left to right as the pinned `sshd` reads them;
+  the restrictions burrowd enforces anyway (`no-port-forwarding` and the
+  like) are taken; a line with any option
   burrowd cannot enforce (`from=`, `environment=`, `expiry-time=` and the
   rest) admits nothing. **Root is refused, always**, alike to every other
   refusal (`Permission denied (publickey).`): root logs in as a user and
@@ -112,8 +115,9 @@ What it does, and what it refuses:
   key.
 - **The session:** one session channel and one program on it: the
   client's command (`exec`), or with no command the account's login shell
-  (`shell`; `-sh` for `/bin/sh`), with no pty. Its stdin, stdout and stderr
-  are raw bytes, and its exit status or signal goes back. A forced command
+  (`shell`; `-sh` for `/bin/sh`), on a pty when the client asked for one.
+  With no pty its stdin, stdout and stderr are raw bytes, and its exit
+  status or signal goes back. A forced command
   runs in the shell's place too. `env` accepts `GIT_PROTOCOL` only.
   `SetEnv NAME=VALUE …` sets variables in every session, as `sshd_config(5)`
   describes and the pinned `sshd` does: they replace burrowd's defaults
@@ -121,25 +125,32 @@ What it does, and what it refuses:
   `GIT_PROTOCOL`, never `SSH_CONNECTION` or a forced command's
   `SSH_ORIGINAL_COMMAND`. Only the first `SetEnv` line counts, and in it the
   first value of a name; a malformed line, the first or a later one, stops
-  burrowd at start, `config_unsupported` by file and line. A pty,
-  a subsystem, X11, the agent and every forwarding are refused by name, and
-  the program still runs where `sshd` runs it. When a client at a terminal
-  asked for a pty, the shell's first line on stderr says it has none: no
-  line editing, no job control, and ^C is a byte on the shell's stdin, not
-  a signal.
-- **Process groups, not yet sessions:** each session's program leads a
-  process group of its own, and burrowd leads its own at start (unless a
-  person runs it in a terminal's foreground). `sshd` gives each program a
-  session of its own, with no controlling terminal; burrowd cannot yet
-  (the toolchain it is built with has no call for it), so a program run
-  through burrowd keeps burrowd's session and controlling terminal. Where
-  burrowd was started from a terminal, as PAX starts it at boot from the
-  console's session, a program that touches that terminal is stopped there
-  by job control: a bare `sudo` over ssh asks for its password on that
-  terminal and waits, and its ssh client waits until it is ended. The
-  stop stays in that program's group, so burrowd and its other sessions
-  go on. Every session also shares the terminal and session that `sudo`
-  keys its remembered password by.
+  burrowd at start, `config_unsupported` by file and line. A subsystem,
+  X11, the agent and every forwarding are refused by name, and the program
+  still runs where `sshd` runs it.
+- **A terminal** (RFC 4254 §6.2, §6.7, §8): a `pty-req` is granted where
+  `PermitTTY` and the key allow it. The pty takes the client's size and
+  every terminal mode it sends that the host has (the rest passed over, as
+  `sshd` passes them over); the program leads a session of its own with the
+  pty's slave as its controlling terminal and its stdin, stdout and stderr,
+  with `TERM` (when the client sent one) and `SSH_TTY` set. Line editing,
+  echo, Ctrl-C, Ctrl-Z and job control are the terminal's, as through
+  `sshd`; `window-change` resizes it (SIGWINCH). The session ends when the
+  program does: what the pty still holds is sent, then the status, and the
+  pty is closed, which hangs up anything the program left on it. A refused
+  pty is named (`pty_refused` by `PermitTTY no` or the key, `pty_failed`
+  when the host gives none, `pty_malformed`, `pty_twice`, `pty_late`), and
+  a shell after it says on its first line of stderr that it has no
+  terminal. Not done: no utmp, wtmp or lastlog entry (the session runs as
+  the user, who cannot write them), so `who` and `last` do not list
+  burrowd's sessions, and no motd or last-login line.
+- **A session of its own:** every program, on a pty or not, leads a session
+  of its own, as `sshd` gives it; with no pty it has no controlling
+  terminal (`/dev/tty` does not open), so nothing it does reaches the
+  terminal burrowd was started from. burrowd leads a process group of its
+  own at start (unless a person runs it in a terminal's foreground). Where
+  PAX starts burrowd at boot from the console's session, no program run over
+  ssh reaches the console.
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
 - **The log:** one line per connection: the time (UTC), the client's
@@ -204,7 +215,7 @@ The toolchain and the oracle are pinned by digest (`wolf-toolchain.toml`,
 `burrow-oracle.toml`); every tool refuses a binary that does not match.
 
 ```sh
-tools/fetch-toolchain                 # wolf 0.2.37, lupin 0.1.59, the bundled std
+tools/fetch-toolchain                 # wolf 0.2.39, lupin 0.1.61, the std at its pin
 tools/build --all                     # target/{native,release}/{burrow,burrow-keygen,burrowd}, rows/
 tools/check-test                      # src/*_test.lu: checked machine, native, lupin
 tools/in-container tools/fetch-oracle # OpenSSH 10.0p2, built in the pinned image
@@ -304,7 +315,13 @@ interleaved streams, exit codes and signals, the session's environment
 `sshd`'s too) and `id`, every refused request, the login shell with no pty (a script on
 stdin, its `$0`, a forced command in its place, `ssh host` at a terminal
 with the pty refused, and a slow answer while the client's keystroke-timing
-PINGs arrive), MaxStartups, `-T`'s limits, the log line and
+PINGs arrive), and (bw06) a terminal: `ssh -tt` with and without TERM, the
+size and the whole `stty -a` from a client's terminal and a window change,
+a full-screen program reading its size and a key, Ctrl-C to a trap and to a
+program it ends, the login shell at a terminal, the session's end with a
+child left on the pty, 20000 lines before the end, the client's end of
+input, `no-pty`, `restrict` and `pty` on a key, and the program's session
+of its own; MaxStartups, `-T`'s limits, the log line and
 the processes' users; and (px112) passwords, each run's own, given to the
 pinned `ssh` by its askpass program's environment: the right one, a wrong
 one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
