@@ -1,0 +1,154 @@
+# bw06 phase 2b takes, linux: the pinned container (Ubuntu 24.04 by digest), two CPUs, development takes (not records).
+# the rows tip a787eac, then the head aa0a0cf
+# at a787eac
+START toolchain
+END toolchain exit=0 secs=26
+START oracle
+END oracle exit=0 secs=1
+START build-native
+END build-native exit=0 secs=8
+START unit
+    check-test: wolf test: 22 passed, 0 not passed (exit 0)
+END unit exit=0 secs=135
+START rows:check-server:session-tty-command,session-tty-size,session-tty-shell,session-tty-gone,auth-no-pty,session-own-session,session-terminal-stop,session-own-group,session-pty-refused
+  PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+FAIL session-terminal-stop a program over ssh was stopped on burrowd's terminal: [(71, 'stty', 'T', 70)]; the first client: exit 255, stdout b'', stderr ''
+  PASS session-pty-refused (exit 255, stderr 'PTY allocation request failed on channel 0')
+FAIL session-tty-command exit 255 through burrowd, 3 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-size exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-shell exit -9 through burrowd, 4 through sshd; burrowd stderr 'PTY allocation request failed on channel 0 | burrowd: no pty here: this shell runs without a terminal (no line editing, no job control) |  | [row: timed out]', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-gone exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL auth-no-pty restrict,pty: exit 255 through burrowd, 0 through sshd; burrowd stderr 'PTY allocation request failed on channel 0', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-own-session stdout differs: burrowd b'sid_is_shell=no tty=none\nno-tty\n', sshd b'sid_is_shell=yes tty=none\nno-tty\n'
+  check-server: 9 rows, 7 failed, 0 SKIP
+  check-server: 37 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-command,session-tty-size,session-tty-shell,session-tty-gone,auth-no-pty,session-own-session,session-terminal-stop,session-own-group,session-pty-refused exit=7 secs=39
+# at aa0a0cf
+START fmt
+END fmt exit=0 secs=1
+START build-native
+END build-native exit=0 secs=7
+START unit
+    check-test: wolf test: 22 passed, 0 not passed (exit 0)
+END unit exit=0 secs=135
+START server
+    PASS server-true (exit 0)
+    PASS server-version (curve25519-sha256, ssh-ed25519, chacha20-poly1305@openssh.com)
+    PASS server-ext-info (server-sig-algs=<ssh-ed25519>)
+    PASS server-refused-cipher (exit 255, stderr 'Unable to negotiate with 127.0.0.1 port PORT: no matching cipher found. Their offer: chacha20-poly1305@openssh.com')
+    PASS server-refused-kex (exit 255, stderr ' 127.0.0.1 port PORT: no matching key exchange method found. Their offer: curve25519-sha256,curve25519-sha256@libssh.org,ext-info-s,kex-strict-s-v00@openssh.com')
+    PASS server-refused-hostkey (exit 255, stderr 'Unable to negotiate with 127.0.0.1 port PORT: no matching host key type found. Their offer: ssh-ed25519')
+    PASS server-rekey (exit 0; 129 exchanges through burrowd, 257 through sshd)
+    PASS hostkey-required (both refuse to start; sshd: 'able to load host key: /work/burrow/target/server/hostkey-required/host_ed25519\r | sshd: no hostkeys available -- exiting.')
+    PASS hostkey-mode (both refuse a 0644 key; sshd: '\r | Unable to load host key: /work/burrow/target/server/hostkey-mode/host_ed25519\r | sshd: no hostkeys available -- exiting.')
+    PASS hostkey-owner (burrowd refuses another user's key file; sshd -t exit 0)
+    PASS hostkey-fingerprint (SHA256:INqwgS2NDllLYag/pl3eVY+C5cQukQRgdonrRYAPbMA)
+    PASS hostkey-by-burrow-keygen (a host key made by burrow-keygen serves)
+    PASS auth-accepted (exit 0)
+    PASS auth-burrow-key (exit 0)
+    PASS auth-unlisted (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-ssh-dir-writable (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-home-group-writable (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-keys-file-writable (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-keys-owner (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-tries (exit 255, stderr 'Received disconnect from 127.0.0.1 port PORT:2: Too many authentication failures | Disconnected from 127.0.0.1 port PORT')
+    PASS auth-grace (exit 255, stderr 'Connection closed by 127.0.0.1 port PORT')
+    PASS auth-root (exit 255, stderr 'root@127.0.0.1: Permission denied (publickey).')
+    PASS auth-methods (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS auth-unknown-user (exit 255, stderr 'nosuchuser@127.0.0.1: Permission denied (publickey).')
+    PASS auth-forced-command (exit 0)
+    PASS auth-forced-shell (exit 0, stdout b'forced: unset\necho shell ran\n')
+    PASS auth-option-unhonoured (a from= line burrowd cannot honour admits nothing, and the plain line after it is not consulted)
+    PASS auth-nologin (exit 254, stderr 'bw04: logins are off for this row'; sshd -e adds its log line 'User burrowtest not allowed because /etc/nologin exists')
+    PASS password-accepted (exit 0)
+    PASS password-wrong (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-retry (exit 0, stderr 'Permission denied, please try again.')
+    PASS password-tries (exit 255, stderr 'ain. | Permission denied, please try again. | Received disconnect from 127.0.0.1 port PORT:2: Too many authentication failures | Disconnected from 127.0.0.1 port PORT')
+    PASS password-grace (exit 255, stderr 'Connection closed by 127.0.0.1 port PORT')
+    PASS password-root (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | root@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-locked (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-locked-key (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-expired-account (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-expired (burrowd refuses the password; sshd: exit 1, stderr 'WARNING: Your password has expired. | Password change required but no TTY available.')
+    PASS password-empty (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-unset (exit 255, stderr 'Permission denied, please try again. | Permission denied, please try again. | burrowtest@127.0.0.1: Permission denied (publickey,password).')
+    PASS password-unsupported (sshd admits $y$; burrowd refuses it (auth_password_unsupported))
+    PASS password-over-cap (sshd admits N = 2^18; burrowd refuses it (auth_password_over_cap))
+    PASS password-shipped-cost (exit 0)
+    PASS password-off (exit 255, stderr 'burrowtest@127.0.0.1: Permission denied (publickey).')
+    PASS password-start-refused (burrowd: config_unsupported: PasswordAuthentication yes: burrowd checks a password against /etc/shadow, which only root reads; run it as root, or say no)
+    PASS session-cat-64m (64 MiB, sha256 3631732230a06f65…)
+    PASS session-interleaved (exit 0, stderr 'err1 | err2 | err3 | err4 | err5 | err6 | err7 | err8')
+    PASS session-exit-codes (exit 0; exit 1; exit 127, stderr 'sh: 1: nosuchcommand-bw04: not found')
+    PASS session-sigterm (exit 255)
+    PASS session-env (equal but ['SSH_CLIENT'] and sshd's own bin directory on PATH)
+    PASS config-setenv (11 forms taken as sshd -T prints them, 7 refused at start by both, 1 by burrowd alone (an empty name, which sshd takes))
+    PASS session-setenv (command: equal but ['SSH_CLIENT']; shell: equal but ['SSH_CLIENT'])
+    PASS session-setenv-forced (exit 0, stdout b'forced: 1 echo asked\n')
+    PASS session-id (exit 0)
+    PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+    PASS server-own-group (burrowd 1751 leads group 1751; the row's is 2)
+    PASS session-terminal-stop (no terminal for the program (/dev/tty refused), nothing stopped, the listener S, the second connection answered)
+    PASS session-stdin-held (exit 0)
+    PASS session-pty-refused (exit 255, stderr 'PTY allocation request failed on channel 0')
+    PASS session-shell (a script on stdin: exit 3, stdout b'out\n'; echo $0: exit 0, stdout b'-sh\n'; SSH_ORIGINAL_COMMAND: exit 0, stdout b'unset\n'; stdin not a terminal: exit 5, stdout b'piped\n')
+    PASS session-shell-pty (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.'; burrowd adds 'burrowd: no pty here: this shell runs without a terminal (no line editing, no job control)')
+    PASS session-shell-pty-slow (exit 4, stderr 'PTY allocation request failed on channel 0 | Connection to 127.0.0.1 closed.')
+    PASS session-tty-command (exit 3, stderr 'Connection to 127.0.0.1 closed.'; exit 3, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-size (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-full-screen (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-interrupt (exit 7, stderr 'Connection to 127.0.0.1 closed.'; exit 255, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-shell (exit 4, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-gone (exit 0, stderr 'Connection to 127.0.0.1 closed.'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-burst (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-tty-eof (exit -999, stderr '[row: timed out]'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS auth-no-pty (no-pty: exit 255, stderr 'PTY allocation request failed on channel 0'; restrict: exit 255, stderr 'PTY allocation request failed on channel 0'; restrict,pty: exit 0, stderr 'Connection to 127.0.0.1 closed.'; pty,restrict: exit 255, stderr 'PTY allocation request failed on channel 0')
+    PASS session-own-session (exit 0; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+    PASS session-subsystem-refused (exit 255, stderr 'subsystem request failed on channel 0')
+    PASS session-x11-refused (exit 0, stderr 'Warning: No xauth data; using fake authentication data for X11 forwarding. | X11 forwarding request failed on channel 0')
+    PASS session-agent-refused (exit 0)
+    PASS session-forward-refused (exit 255, stderr 'Error: remote port forwarding failed for listen port 0'; exit 255, stderr 'channel 0: open failed: administratively prohibited: open failed | stdio forwarding failed')
+    PASS limits-defaults (logingracetime 120, maxauthtries 6, maxstartups 10:30:100, port 22)
+    PASS limits-startups (exit 255, stderr '(ended before the identifications)')
+    PASS log-line (from 127.0.0.1 port 34462 user burrowtest key SHA256:JNX2q123DKeSB2zEw+EZQc78xu3JQsQr+QvsRgXxti0 outcome ok status 0)
+    PASS priv-worker (monitor root; worker burrowd; holder root until it becomes the user)
+    check-server: 80 rows, 0 failed, 0 SKIP
+    check-server: 237 evidence files in target/evidence/server-native, readable, no key material
+END server exit=0 secs=173
+START server-hostile
+    PASS hostile-never-kex (closed after 2.0 s)
+    PASS hostile-no-strict-kex (DISCONNECT 3: burrowd: strict_kex_missing: the client's KEXINIT does not offer kex-strict-c-v00@openssh.)
+    PASS hostile-oversize-packet (DISCONNECT 2: burrowd: packet_too_long: a packet from the server, sequence number 0)
+    PASS hostile-wrong-session (USERAUTH_FAILURE, auth_sig_bad)
+    PASS hostile-other-key (USERAUTH_FAILURE, auth_sig_bad)
+    PASS hostile-exec-before-auth (DISCONNECT 2: burrowd: message_unexpected: message 98 before authentication)
+    PASS hostile-user-changed (DISCONNECT 2: burrowd: auth_changed: the user or service changed between requests)
+    PASS hostile-data-before-open (DISCONNECT 2: burrowd: channel_unknown: message 94 for channel 0, which burrowd did not confirm)
+    PASS hostile-data-before-exec (DISCONNECT 2: burrowd: window_exceeded: 23 bytes with 0 left in burrowd's window)
+    PASS hostile-window-overrun (DISCONNECT 2: burrowd: window_exceeded: 32768 bytes with 0 left in burrowd's window after 2129920 bytes)
+    PASS hostile-requests-refused (six CHANNEL_FAILUREs, the command still runs, the log names each)
+    PASS hostile-pty-malformed (four pty_malformed, a window-change with no pty ignored, pty_late, the command's output)
+    PASS hostile-pty-granted (granted, pty_twice, window_malformed, stty size 50 80)
+    PASS hostile-program-twice (the shell served, exec and shell after it refused (exec_twice), the shell's status 5)
+    PASS hostile-transport-mid-session (one IGNORE: output at 1.01 s; a PING every 20 ms: output at 1.01 s, 144 PONGs)
+    PASS hostile-password-change (USERAUTH_FAILURE 'publickey,password', no partial success, as sshd)
+    PASS hostile-password-long (USERAUTH_FAILURE after 4 ms)
+    PASS hostile-password-flood (20 FAILUREs in 33.1 s, at most 1 check at once)
+    PASS hostile-password-equal-work (burrowtest 1645 ms (1.00x), root 1646 ms (1.00x), no-such-account 1647 ms (1.00x), nobody 1645 ms (1.00x))
+    PASS hostile-thousand (peak 100 monitors (cap 100), 0 refused at connect, login after it)
+    check-server-hostile: 20 rows, 0 failed, 0 SKIP
+END server-hostile exit=0 secs=131
+# the development plant 97babf8 (a process group in place of a session)
+# at 97babf8
+START build-native
+END build-native exit=0 secs=7
+START rows:check-server:session-own-session,session-terminal-stop,session-tty-interrupt,session-tty-shell,session-tty-command,session-own-group
+  PASS session-own-group (exit 0, pgrp_is_shell=yes tty_nr=0)
+FAIL session-terminal-stop a program over ssh was stopped on burrowd's terminal: [(71, 'stty', 'T', 70)]; the first client: exit 255, stdout b'', stderr ''
+FAIL session-tty-command exit 1 through burrowd, 3 through sshd; burrowd stderr 'Connection to 127.0.0.1 closed.', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-interrupt exit 1 through burrowd, 7 through sshd; burrowd stderr 'Connection to 127.0.0.1 closed.', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-tty-shell exit 1 through burrowd, 4 through sshd; burrowd stderr 'Connection to 127.0.0.1 closed.', sshd's 'Connection to 127.0.0.1 closed.'
+FAIL session-own-session stdout differs: burrowd b'sid_is_shell=no tty=none\nno-tty\n', sshd b'sid_is_shell=yes tty=none\nno-tty\n'
+  check-server: 6 rows, 5 failed, 0 SKIP
+  check-server: 19 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-own-session,session-terminal-stop,session-tty-interrupt,session-tty-shell,session-tty-command,session-own-group exit=5 secs=5
