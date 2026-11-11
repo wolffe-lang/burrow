@@ -15,7 +15,7 @@ of, what it speaks and refuses, and what is measured where. Sources are in
 | **B4** | den over burrow: clone, fetch and push through burrow against the pinned `sshd`, GitHub read only, the live push, the static build for PAX | done here; installing it on PAX is a px lane's |
 | **B5** | `burrowd`, the server for commands: the transport's server role, a required host key, key-only authentication against `authorized_keys` with StrictModes, one session channel with `exec`, `env` and the exit status, the limits and the log line, privilege separation, git through it, each held to the pinned `sshd` | done here, on Linux and macOS |
 | **B6** | burrowd on PAX: started at boot, set-ID into the user, the first-boot host key, git through den | a px lane's (its items: `notes/bw04-the-server.md`) |
-| **B7** | interactive shells, after a PAX pty | later |
+| **B7** | interactive shells: burrowd grants a pty, each program in a session of its own (bw06), held to the pinned `sshd`; burrow, the client, takes no pty yet | the server's half here, on Linux and macOS; PAX's rows a px lane's |
 
 `burrow` logs in with an Ed25519 key, runs one command on a session channel
 with stdin, stdout and stderr as raw bytes, and exits with the command's
@@ -60,8 +60,10 @@ clone, fetch and push byte for byte as the pinned `ssh` does
 | `src/mon` | the monitor's checks: the account (passwd and group as root, the running user otherwise), the key against `authorized_keys`, the signature over its own session identifier |
 | `src/pipe` | bounded frames between burrowd's processes (length, kind, RFC 4251 strings) |
 | `src/worker` | authentication in the unprivileged worker, asking the monitor; or deciding in place in the one-process program |
-| `src/schannel` | burrowd's one `session` channel as a state machine with no I/O: requests taken and refused by name, the window, the ends |
-| `src/ssession` | the session's I/O: the command and its three pipes, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
+| `src/schannel` | burrowd's one `session` channel as a state machine with no I/O: requests taken and refused by name, the window, the ends; `pty-req` and `window-change` parsed and kept (bw06) |
+| `src/ttymodes` | RFC 4254 §8's encoded terminal modes (and RFC 8160's IUTF8), decoded; no I/O (bw06) |
+| `src/ptyhost` | the one place burrowd reaches the host's ptys and new sessions, over wolf-std's: the pty opened, sized and set to the client's modes, the slave taken as a controlling terminal, a session led (bw06) |
+| `src/ssession` | the session's I/O: the command and its three pipes, or (bw06) its pty's master, the program's session of its own, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
 | `src/slog` | the one log line per connection: UTC time, escaped user, fingerprint, outcome, status |
 | `src/peer` | the client's address and port from `/proc/net/tcp` and `tcp6` by the socket's inode, RFC 5952 text; `UNKNOWN` where there is none (wolf-std#140) |
 
@@ -129,7 +131,8 @@ burrowd is not root (px112: only root reads `/etc/shadow`).
 | `auth_changed` | the user or service changed between requests | (a scripted client: DISCONNECT 2) |
 | `channel_type_refused`, `session_limit` | a channel other than one session | `-W`: `channel 0: open failed: administratively prohibited: open failed` |
 | `forward_refused`, `request_refused` | `tcpip-forward` and the like; any other global request | `-R`: `Error: remote port forwarding failed for listen port 0` |
-| `pty_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the program still runs where `sshd` runs it); `exec_twice` is a second program, `exec` or `shell` after either (px112: a shell is served, with no pty) | `PTY allocation request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
+| `pty_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the program still runs where `sshd` runs it); `pty_refused` by `PermitTTY no` or a key's `no-pty` or `restrict` (bw06); `exec_twice` is a second program, `exec` or `shell` after either (px112: a shell is served, with no pty) | `PTY allocation request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
+| `pty_failed`, `pty_malformed`, `pty_twice`, `pty_late`, `window_malformed` | (bw06) a `pty-req` the host could give no pty for; one whose TERM (over 255 bytes, or a byte outside `!`..`~`), size (past 65535) or modes (a value cut short) are malformed; a second after one was granted; one after the program started; a `window-change` past 65535. Each answered CHANNEL_FAILURE when a reply is wanted, the connection kept | `PTY allocation request failed on channel 0` |
 | `channel_unknown`, `channel_closed`, `window_exceeded`, `channel_packet_too_large`, `window_overflow` | the client's channel misbehaves | (a scripted client: DISCONNECT 2) |
 | `nologin`, `exec_failed` | `/etc/nologin` exists (its text on stderr); the shell cannot start | |
 | `disconnected`, `closed`, `timeout`, `io` | the client's DISCONNECT, the socket's end, a deadline, a failure | |
@@ -240,7 +243,7 @@ process that signs with it:
 | monitor, one per connection | root | the host key, read after its two children are forked; the session identifier; `/etc/shadow`'s text (px112) | signs exchange hashes; reads passwd, group, shadow and `authorized_keys`; checks the account's lock, StrictModes, the key and the signature; counts tries; writes the log line |
 | worker | the `burrowd` account, cwd `/` | the connection, before authentication | the version, KEXINIT, ECDH, the service and USERAUTH requests, asking the monitor over bounded frames; then hands the transport's state to the monitor and exits |
 | holder, then the session | root holding nothing, then the user's uid, gid and groups with no way back | the transport's state, after authentication | the session channel; asks the monitor to sign at a re-exchange |
-| the command | the user | its three pipes | the user's shell with `-c` |
+| the command | the user, leading a session of its own (bw06) | its three pipes, or the pty's slave as its controlling terminal | the user's shell with `-c`, or the login shell |
 | checker, one password (px112) | root, forked by the monitor, one at a time across the server (a one-byte token the listener keeps in a pipe, put back by the listener when a monitor ends holding it) | the monitor's memory, the password and the field | scrypt at the field's cost (at most N = 2^17, r = 8, p = 1: 128 MiB), exits 0 on a match; the memory leaves with it |
 
 The session can ask the monitor to sign an exchange hash for as long as it
@@ -468,17 +471,16 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   burrowd process is a fork of the listener, never a fresh image.
 - On macOS burrowd serves only the user who runs it (wolf-std cannot change
   a process's user there), and refuses to start as root.
-- burrowd runs one command, or (px112) the login shell with no pty: no
-  pty, subsystem, X11, agent or forwarding, each refused by name. A shell
-  at a terminal has no line editing or job control, ^C reaches it as a
-  byte, not a signal, and a shell reading a pipe prints no prompt.
-- burrowd gives each program a process group of its own, not a session of
-  its own (px112): the toolchain at burrow's pin has no call to start one.
-  A program keeps burrowd's session and controlling terminal, so where
-  burrowd was started from a terminal (PAX's console), a program that
-  touches it (a bare `sudo`) is stopped there and its client waits; the
-  stop stays in its group, burrowd goes on, and the session waits for the
-  stopped program's end (a stop is not an end).
+- burrowd runs one program, on a pty when the client asks for one (bw06):
+  no subsystem, X11, agent or forwarding, each refused by name. A pty's
+  session writes no utmp, wtmp or lastlog entry (the session runs as the
+  user), so `who` and `last` do not list it, and prints no motd or
+  last-login line.
+- Each program leads a session of its own (bw06; px112's process group
+  before it). With no pty it has no controlling terminal, so a program
+  over ssh never reaches the terminal burrowd was started from (PAX's
+  console); the session still waits for a stopped program's end (a stop is
+  not an end).
 - burrowd checks crypt(5)'s `$7$` alone (wolf-std's scrypt): a stock Linux
   account's `$y$` (yescrypt) or `$6$` password is refused by name where
   `sshd` checks it. burrowd changes no password (no
@@ -494,9 +496,9 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   Its `sign` is not constant time (above).
 - wolf-std has no one wait over a socket and a file at the pin: the session
   waits up to 5 ms on each in turn when idle (`src/session`).
-- No pty (so no interactive shell at a terminal; `-T` runs the shell
-  without one), agent, forwarding, certificates, or RSA and ECDSA keys;
-  each is refused by name.
+- burrow, the client, takes no pty (so no interactive shell at a terminal;
+  `-T` runs the shell without one); no agent, forwarding, certificates, or
+  RSA and ECDSA keys; each is refused by name.
 - No resolver on PAX (wolf-lang#831, wolf-std#4): `HostName` and
   `HostKeyAlias` let den's `git@github.com:…` reach an address under
   GitHub's own host key (above).
