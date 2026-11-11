@@ -150,6 +150,23 @@ fn none_running() -> Running {
     }
 }
 
+// bw07 (burrow#25): in the program's child, before its exec, every signal
+// burrowd does not own back to its default, as `sshd` gives it: an ignored
+// disposition survives `fork` and `exec`, and burrowd started by a shell
+// without job control (`burrowd … &`) has SIGINT and SIGQUIT ignored. The
+// twenty listenable meanings in one call (2^20 - 1: SIGHUP, SIGINT,
+// SIGQUIT, SIGTERM, the terminal's stop signals, SIGPIPE and the rest), then
+// the faults one by one. SIGKILL and SIGSTOP cannot be ignored.
+fn default_signals() {
+    signal.reset(1048575) else {}
+    signal.reset_one(signal.segment_fault()) else {}
+    signal.reset_one(signal.bus_error()) else {}
+    signal.reset_one(signal.arithmetic()) else {}
+    signal.reset_one(signal.illegal()) else {}
+    signal.reset_one(signal.breakpoint()) else {}
+    signal.reset_one(signal.bad_syscall()) else {}
+}
+
 // The program's environment: px116's order (burrowd's defaults, the
 // accepted names, then SetEnv's; the pinned sshd sets SSH_CONNECTION and a
 // forced command's SSH_ORIGINAL_COMMAND after SetEnv, measured, so they
@@ -215,7 +232,7 @@ fn start_on_pty(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse
         ptyhost.lead_session() else {
             process.exit(1)
         }
-        signal.reset(signal.broken_pipe()) else {}
+        default_signals()
         var s = ptyhost.take_terminal(slave) else {
             process.exit(1)
             fs.File { fd: -1 }
@@ -285,7 +302,7 @@ fn start_command(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refus
         ptyhost.lead_session() else {
             process.exit(1)
         }
-        signal.reset(signal.broken_pipe()) else {}
+        default_signals()
         if plan.drop {
             process.set_ids(plan.uid, plan.gid, plan.groups) else {
                 process.exit(1)
