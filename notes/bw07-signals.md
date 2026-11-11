@@ -33,3 +33,24 @@ burrow#25's reproducer. The pinned `sshd` is a black box; its answers below are 
     reaps what it ends where it is their parent, as `session-tty-gone` does.
 - **The plant** (`bw07-plant-pipe`): the child paths reset SIGPIPE alone, as before; the row red by name.
 - **Unchanged:** every other row; burrowd's own dispositions.
+
+## Evidence
+
+Development takes on the Linux build host's light slot (two CPUs, the pinned container), not records; their
+rows and steps are `notes/bw07/takes.log` (raw logs sha256 `d723359f…` and `78895cdf…`).
+
+- **The row's first form was wrong, and is corrected before the code** (`30f7cfb`): it asked that each
+  listener hold both SIGINT and SIGQUIT ignored, and the pinned `sshd` keeps SIGINT ignored but catches
+  SIGQUIT itself (its ignored mask read `0x1002`: SIGINT and SIGPIPE; burrowd's `0x1006`). The row now reads
+  each server's start by what it ignores or catches. The take at the first form (`d35f6d6`, `a1abe57`)
+  stopped there on both heads; it is kept in the log.
+- **Red at the rows tip `30f7cfb`**, with no init in the container as on the hosted runner, by name:
+  `exit -9 through burrowd, 0 through sshd; burrowd stderr '[row: timed out]'`: the sleep at the terminal
+  ignored Ctrl-C through burrowd, and the row's deadline ended the client. Through `sshd`, started the same
+  way, Ctrl-C and Ctrl-\ ended the sleeps ($? 130 and 131): it gives its programs the defaults, as
+  predicted. The row stops at its first case, so the no-pty case was not reached at the tip.
+- **Green at the head `7191002`**, with no init and with it: `ignored 0x1006 by burrowd, 0x1002 by sshd; …
+  $? 130 then 131; kill -INT: exit 255`, byte for byte alike through both; the neighbouring rows
+  (`session-tty-interrupt`, `-gone`, `session-sigterm`, `session-terminal-stop`, `session-own-session`)
+  green.
+- **Scored:** as predicted, but for the row's own first form above.
