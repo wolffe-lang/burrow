@@ -304,3 +304,31 @@ on the first line and on a later one), and `env` in a session with the line (the
 `GIT_PROTOCOL`, `SSH_CONNECTION`, a forced command's `SSH_ORIGINAL_COMMAND`). `tools/check-server`'s
 `config-setenv`, `session-setenv` and `session-setenv-forced` hold burrowd to those answers. No `.c` or `.h`
 file was opened.
+
+## bw06: a terminal for burrowd's sessions
+
+RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`): §6.2
+`pty-req`, §6.7 `window-change`, §6.9 signals again, §6.10 again, §8 the encoded terminal modes.
+
+| document | sha256 of the text | read |
+|---|---|---|
+| RFC 8160, IUTF8 Terminal Mode in SSH | `65eefa2fbc0db6bb8c18046ead8bc3d23bdb2d71c67b753dd98ae9463b2f96a6` | §3, opcode 42 |
+
+The man pages, from the same signed `openssh-10.0p2.tar.gz`, the same digests as above: `sshd(8)`'s LOGIN
+PROCESS and AUTHORIZED_KEYS FILE FORMAT (`no-pty`, `pty`, `restrict`), `sshd_config(5)`'s `PermitTTY`,
+`PrintMotd` and `PrintLastLog`, and `ssh(1)`'s `-t` and `-T`. POSIX's General Terminal Interface, `setsid`,
+`posix_openpt`, `grantpt`, `unlockpt` and `ptsname`, for the design only.
+
+Organisation code: wolf-std's sc81 (`std/term`'s `open_pty`, `pty_name`, `set_size`, `attr`, `set_attr`,
+`open_controlling`; `std/process`'s `lead_session`; its note `docs/sc81-sessions-and-ptys.md`) and wolf-lang's
+s290 note and spec text (`os_setsid`), each read as the toolchain's documentation; PAX's pty branch px111's
+note, for what PAX's kernel serves.
+
+The pinned `ssh` and `sshd` as black boxes, in the oracle container (`notes/bw06/probe/sshd_pty.py`,
+`sshd_pty_hold.py`; their output in `notes/bw06/evidence/linux-probes.log`): `ssh -tt` with and without TERM,
+`-T`, a client's terminal of a given size and modes, a window change, Ctrl-C to a trap and to an exec'd
+program, a full-screen program's size and key, the login shell at a terminal, a child left holding the pty
+with and without SIGHUP ignored, 20000 lines before the end, the client's end of input with and without a
+0x04 byte, the pty's defaults with stdin not a terminal, keys with `no-pty`, `restrict`, `restrict,pty` and
+`pty,restrict`, and `PermitTTY no`; `sshd`'s own debug log beside them. No `.c` or `.h` file was opened, of
+OpenSSH or any other server or terminal program.
