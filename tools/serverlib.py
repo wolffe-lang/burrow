@@ -120,8 +120,10 @@ def childless(pid, seconds=5.0):
 class Burrowd:
     """One `burrowd -D -e` on 127.0.0.1:<port>, its config under `run_dir`."""
 
-    def __init__(self, binary, run_dir, host_key, config=(), port=None):
+    def __init__(self, binary, run_dir, host_key, config=(), port=None, prefix=()):
         self.bin = str(binary)
+        # bw07: an argv that execs burrowd, a shell setting dispositions first.
+        self.prefix = list(prefix)
         self.dir = pathlib.Path(run_dir)
         self.key = str(host_key)
         self.config = list(config)
@@ -135,7 +137,7 @@ class Burrowd:
         lines = self.config + BURROWD_BASE + ["ListenAddress 127.0.0.1", f"Port {self.port}", f"HostKey {self.key}"]
         (self.dir / "burrowd_config").write_text("\n".join(lines) + "\n")
         self.log = open(self.dir / "burrowd.log", "wb")
-        self.proc = subprocess.Popen([self.bin, "-D", "-e", "-f", str(self.dir / "burrowd_config")],
+        self.proc = subprocess.Popen(self.prefix + [self.bin, "-D", "-e", "-f", str(self.dir / "burrowd_config")],
                                      stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
@@ -197,8 +199,9 @@ class Pair:
     """The pinned sshd and burrowd with one host key, one account and one
     client key, and a known_hosts naming both."""
 
-    def __init__(self, binary, run_dir, sshd=(), burrowd=(), keys=None, install=True):
+    def __init__(self, binary, run_dir, sshd=(), burrowd=(), keys=None, install=True, prefix=()):
         self.binary = binary
+        self.prefix = list(prefix)
         self.dir = pathlib.Path(run_dir)
         self.sshd_extra = list(sshd)
         self.burrowd_extra = list(burrowd)
@@ -215,9 +218,10 @@ class Pair:
         if self.install:
             install_keys(self.keys if self.keys is not None else [pathlib.Path(str(self.key) + ".pub").read_text()])
         self.sshd = oraclelib.Sshd(self.dir / "sshd", self.sshd_extra + SSHD_BASE, host_keys=("ed25519",),
-                                   authorized=[str(self.key) + ".pub"])
+                                   authorized=[str(self.key) + ".pub"], prefix=self.prefix)
         self.sshd.__enter__()
-        self.burrowd = Burrowd(self.binary, self.dir / "burrowd", self.sshd.dir / "host_ed25519", self.burrowd_extra)
+        self.burrowd = Burrowd(self.binary, self.dir / "burrowd", self.sshd.dir / "host_ed25519", self.burrowd_extra,
+                               prefix=self.prefix)
         try:
             self.burrowd.__enter__()
         except Exception:

@@ -67,10 +67,11 @@ class Sshd:
     """One `sshd -D -e` on 127.0.0.1:<port>, its config and keys under `run_dir`."""
 
     def __init__(self, run_dir, extra_config=(), host_keys=HOST_KEY_TYPES, port=None, log_level="DEBUG3",
-                 authorized=()):
+                 authorized=(), prefix=()):
         self.dir = pathlib.Path(run_dir)
         self.extra = list(extra_config)
         self.authorized = list(authorized) or list(DEFAULT_AUTHORIZED)
+        self.prefix = list(prefix)
         self.kinds = list(host_keys)
         self.port = port or free_port()
         self.level = log_level
@@ -105,7 +106,8 @@ class Sshd:
         (self.dir / "authorized_keys").write_text("".join(pathlib.Path(p).read_text() for p in self.authorized))
         os.chmod(self.dir / "authorized_keys", 0o644)
         self.log = open(self.dir / "sshd.log", "wb")
-        self.proc = subprocess.Popen([str(SSHD), "-D", "-e", "-f", str(self.dir / "sshd_config")],
+        # `prefix` (bw07): an argv that execs sshd, a shell setting dispositions first.
+        self.proc = subprocess.Popen(list(self.prefix) + [str(SSHD), "-D", "-e", "-f", str(self.dir / "sshd_config")],
                                      stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
