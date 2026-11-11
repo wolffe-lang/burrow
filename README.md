@@ -150,7 +150,9 @@ What it does, and what it refuses:
   terminal burrowd was started from. burrowd leads a process group of its
   own at start (unless a person runs it in a terminal's foreground). Where
   PAX starts burrowd at boot from the console's session, no program run over
-  ssh reaches the console.
+  ssh reaches the console. Every program also starts with the default
+  disposition of every signal burrowd does not own, whatever burrowd was
+  started with (a shell's `burrowd … &` ignores SIGINT and SIGQUIT).
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
 - **The log:** one line per connection: the time (UTC), the client's

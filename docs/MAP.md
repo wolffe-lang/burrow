@@ -243,7 +243,7 @@ process that signs with it:
 | monitor, one per connection | root | the host key, read after its two children are forked; the session identifier; `/etc/shadow`'s text (px112) | signs exchange hashes; reads passwd, group, shadow and `authorized_keys`; checks the account's lock, StrictModes, the key and the signature; counts tries; writes the log line |
 | worker | the `burrowd` account, cwd `/` | the connection, before authentication | the version, KEXINIT, ECDH, the service and USERAUTH requests, asking the monitor over bounded frames; then hands the transport's state to the monitor and exits |
 | holder, then the session | root holding nothing, then the user's uid, gid and groups with no way back | the transport's state, after authentication | the session channel; asks the monitor to sign at a re-exchange |
-| the command | the user, leading a session of its own (bw06) | its three pipes, or the pty's slave as its controlling terminal | the user's shell with `-c`, or the login shell |
+| the command | the user, leading a session of its own (bw06), every signal at its default (bw07) | its three pipes, or the pty's slave as its controlling terminal | the user's shell with `-c`, or the login shell |
 | checker, one password (px112) | root, forked by the monitor, one at a time across the server (a one-byte token the listener keeps in a pipe, put back by the listener when a monitor ends holding it) | the monitor's memory, the password and the field | scrypt at the field's cost (at most N = 2^17, r = 8, p = 1: 128 MiB), exits 0 on a match; the memory leaves with it |
 
 The session can ask the monitor to sign an exchange hash for as long as it

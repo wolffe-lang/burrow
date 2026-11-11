@@ -1,5 +1,10 @@
 ## Unreleased
 
+- A program in a burrowd session starts with the default disposition of
+  every signal burrowd does not own, as `sshd` gives it (burrow#25). burrowd
+  started by a shell without job control has SIGINT and SIGQUIT ignored, and
+  its programs inherited that: Ctrl-C and Ctrl-\ did nothing over `ssh -t`,
+  and `kill -INT` did nothing to a command.
 - burrowd grants a terminal (RFC 4254 §6.2, §6.7, §8): a `pty-req` where
   `PermitTTY` (now `yes` or `no`, `yes` by default as `sshd`) and the key
   allow it (`no-pty` and `restrict` refuse it, `pty` after `restrict` grants
