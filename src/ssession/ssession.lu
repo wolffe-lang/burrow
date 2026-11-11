@@ -6,8 +6,9 @@
 //! closes.
 //!
 //! **The command** runs as `sshd(8)` describes (LOGIN PROCESS): the user's
-//! login shell with `-c` and the command, leading a process group of its own
-//! (px112; not yet a session of its own), in the user's home directory, with
+//! login shell with `-c` and the command, leading a session of its own with
+//! no controlling terminal (bw06; px112 gave it a process group), in the
+//! user's home directory, with
 //! the environment the caller built (HOME, USER, LOGNAME, SHELL, PATH,
 //! MAIL, SSH_CONNECTION, SSH_ORIGINAL_COMMAND under a forced command), the
 //! `env` names the channel accepted and (px116) the configuration's
@@ -24,8 +25,8 @@
 //!
 //! **The shell** (px112; RFC 4254 §6.5 `shell`, sshd(8) LOGIN PROCESS step
 //! 9): with no command the user's shell runs as a login shell, `argv[0]`
-//! its base name after `-` (`-sh`), no `-c`, its stdin the channel's, with
-//! no pty: burrowd has none yet. A forced command (`command=`) runs in its
+//! its base name after `-` (`-sh`), no `-c`, its stdin the channel's, on
+//! the pty when the channel has one (bw06). A forced command (`command=`) runs in its
 //! place, as for `exec` (sshd(8): it "applies to shell, command or
 //! subsystem execution"), with no SSH_ORIGINAL_COMMAND, there being no
 //! command to carry. When the client's `pty-req` was refused, burrowd's
@@ -35,20 +36,19 @@
 //!
 //! **A pty** (bw06; RFC 4254 §6.2, §6.7): where the channel allows one
 //! (`Plan.pty`: `PermitTTY` and the key's options), a `pty-req` is served
-//! here: the pty opened (`src/ptyhost`) and sized, SUCCESS; or, the host
+//! here: the pty opened (`src/ptyhost`), sized, and the client's modes set
+//! on its master (one the host lacks passed over), SUCCESS; or, the host
 //! giving none, FAILURE named `pty_failed`. The program then runs on it: the
 //! child leads a session of its own, opens the slave by name (its
-//! controlling terminal, its group the foreground), sets the client's modes
-//! on it, and has it as stdin, stdout and stderr, with TERM (when the
-//! client sent one) and SSH_TTY in its environment. The master is the
+//! controlling terminal, its group the foreground), and has it as stdin,
+//! stdout and stderr, with TERM (when the client sent one) and SSH_TTY in
+//! its environment; the holder closes its slave after the fork. The master is the
 //! channel's one stream both ways (no extended data); `window-change` sets
 //! its size; the client's EOF is ignored (a pty cannot be half-closed; the
 //! client ends input with its EOF character). **The end** is the program's:
 //! reaped, the master drained until it ends or stays quiet 20 ms (a child
 //! that ignores SIGHUP may still hold the slave), then EOF, the status and
-//! CLOSE, and the master closed, which hangs the slave up. Every program,
-//! with a pty or without, leads a session of its own once the toolchain
-//! has the call (`ptyhost.lead_session`; until then a process group, px112).
+//! CLOSE, and the master closed, which hangs the slave up.
 //!
 //! **Waiting.** wolf-std at the pin has no one wait over a socket and
 //! files (wolf-std#134): an idle turn waits up to 5 ms on the socket, then
@@ -120,6 +120,8 @@ struct Running {
     pty: bool,
     pty_open: bool,
     master: fs.File,
+    /// The slave the pty was opened with, until the program's fork.
+    slave_fd: fs.File,
     slave: List[byte],
 }
 
@@ -143,6 +145,7 @@ fn none_running() -> Running {
         pty: false,
         pty_open: false,
         master: fs.File { fd: -1 },
+        slave_fd: fs.File { fd: -1 },
         slave: List[byte](),
     }
 }
@@ -204,17 +207,19 @@ fn start_on_pty(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse
     let argv = program_argv(plan, ch)
     let f = process.fork() else { return io }
     if process.is_child(f) {
-        var m = copy tty.master
-        fs.close(take m) else {}
-        ptyhost.lead_session() else {}
+        // A session of its own, then the slave by name as its controlling
+        // terminal, its group the foreground. The master and the slave it
+        // inherited stay open until the exec closes them (close-on-exec):
+        // macOS puts a terminal's size and modes back when its slave is
+        // opened with no descriptor of it open.
+        ptyhost.lead_session() else {
+            process.exit(1)
+        }
         signal.reset(signal.broken_pipe()) else {}
-        // The open makes the slave this session's controlling terminal (the
-        // runtime's opens pass no O_NOCTTY), and its group the foreground.
-        var s = fs.open_mode(slave, 3) else {
+        var s = ptyhost.take_terminal(slave) else {
             process.exit(1)
             fs.File { fd: -1 }
         }
-        ptyhost.set_modes(s, ch.modes) else {}
         if plan.drop {
             process.set_ids(plan.uid, plan.gid, plan.groups) else {
                 process.exit(1)
@@ -235,6 +240,9 @@ fn start_on_pty(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse
         fs.write(mut s, "{plan.shell}: cannot be executed\n") else {}
         process.exit(1)
     }
+    // The holder keeps the master alone.
+    var sf = copy tty.slave_fd
+    fs.close(take sf) else {}
     var m = copy tty.master
     fs.set_nonblock(mut m, true) else {}
     Running {
@@ -250,6 +258,7 @@ fn start_on_pty(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refuse
         pty: true,
         pty_open: true,
         master: copy m,
+        slave_fd: fs.File { fd: -1 },
         slave: copy tty.slave,
     }
 }
@@ -271,8 +280,11 @@ fn start_command(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refus
         // px112: the program leads a process group of its own, so a
         // job-control stop it draws (a terminal it touches from the
         // background) stops it alone, never burrowd. bw06: a session of its
-        // own, with no controlling terminal, once the toolchain has the call.
-        ptyhost.lead_session() else {}
+        // own, with no controlling terminal: /dev/tty does not open, and no
+        // terminal's keys, hangup or stop reach it.
+        ptyhost.lead_session() else {
+            process.exit(1)
+        }
         signal.reset(signal.broken_pipe()) else {}
         if plan.drop {
             process.set_ids(plan.uid, plan.gid, plan.groups) else {
@@ -315,6 +327,7 @@ fn start_command(plan: Plan, ch: schannel.Chan, tty: Running) -> Running ! refus
         pty: false,
         pty_open: false,
         master: fs.File { fd: -1 },
+        slave_fd: fs.File { fd: -1 },
         slave: List[byte](),
     }
 }
@@ -395,15 +408,18 @@ fn on_message(
         var ok = false
         let got = ptyhost.open() else |e| {
             say(plan, "pty_failed: {e}")
-            ptyhost.Pty { master: fs.File { fd: -1 }, slave: "" }
+            ptyhost.Pty { master: fs.File { fd: -1 }, slave: fs.File { fd: -1 }, name: "" }
         }
-        if got.slave != "" {
+        if got.name != "" {
             ptyhost.set_size(got.master, ch.rows, ch.cols, ch.xpixels, ch.ypixels) else {}
+            let skipped = ptyhost.set_modes(got.master, ch.modes)
+            say(plan, "pty {got.name}: {ch.cols}x{ch.rows}, {skipped} modes passed over")
             pr.pty = true
             pr.pty_open = true
             pr.master = copy got.master
+            pr.slave_fd = copy got.slave
             (mut pr.slave).reset()
-            for b in got.slave.bytes() {
+            for b in got.name.bytes() {
                 (mut pr.slave).push(b)
             }
             schannel.grant_pty(mut ch)
@@ -452,6 +468,7 @@ fn on_message(
             pr.in_open = true
             pr.out_eof = got.out_eof
             pr.err_eof = got.err_eof
+            pr.slave_fd = copy got.slave_fd
             flow.started = true
             transport.write(mut c, schannel.start_msg(mut ch))?
             if ch.shell && ch.pty_asked && !ch.pty {
@@ -676,6 +693,10 @@ pub fn run(mut c: transport.Conn, mut ch: schannel.Chan, plan: Plan) -> Result {
             }
             break
         }
+    }
+    if pr.slave_fd.fd >= 0 {
+        var sf = copy pr.slave_fd
+        fs.close(take sf) else {}
     }
     if pr.pty_open {
         var m = copy pr.master
