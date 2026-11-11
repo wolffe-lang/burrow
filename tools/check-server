@@ -1042,14 +1042,15 @@ with open(log, "ab") as lf:
 
 @row
 def session_terminal_stop():
-    """A terminal's stop stays with the session that drew it (px112):
-    burrowd started as on PAX, in a background group of a session whose
-    controlling terminal another group holds in the foreground. A program
-    over ssh sets that terminal's modes (`stty -echo </dev/tty`, as sudo
-    does before it reads a password) and is stopped (SIGTTOU); while it is,
-    a second connection is answered all the same. Then the stopped program
-    is ended (SIGKILL to its group), and the first session's line names that
-    end: a stop is not an end."""
+    """burrowd started as on PAX, in a background group of a session whose
+    controlling terminal another group holds in the foreground (px112). A
+    program over ssh asks for that terminal (`stty -echo </dev/tty`, as sudo
+    does before it reads a password). bw06: each program leads a session of
+    its own with no controlling terminal, so `/dev/tty` does not open, the
+    program is not stopped, and it ends with its status; before, px112's
+    group of its own stopped the program alone (SIGTTOU). Either way a
+    second connection is answered and the listener runs. Anything the row
+    finds stopped is ended (SIGKILL to its group) before burrowd goes."""
     master, slave = pty.openpty()
     with Pair(BIN, rundir("session-terminal-stop")) as p:
         d = p.dir / "console"
@@ -1145,13 +1146,13 @@ def session_terminal_stop():
         lines = burrowtest_lines()
         record(p, f"stopped: {stopped}\nlistener {bpid} state {listener}\nsecond connection: {show(r2)}\n"
                   f"first connection, after its program was ended: {show(r1)}\nburrowd's lines: {lines}\n")
-        check(stopped, f"no stty in state T (stopped) while the first session was live; the first client: "
-                       f"{'still running' if r1 is None else show(r1)}")
-        check(r2[:2] == (0, b"second\n"), f"the second connection after the stop: {show(r2)} (the listener's state {listener})")
-        check(r1 is not None and b"not-stopped" not in r1[1], f"the stty over ssh was not stopped: {show(r1)}")
-        check(any(" outcome " in x and x.split(" outcome ", 1)[1].split(" ", 1)[1].startswith("signal KILL") for x in lines),
-              f"the first session's end, its program killed after its stop: burrowd's lines {lines}")
-        return f"stty stopped ({len(stopped)}), the listener {listener}, the second connection answered, the first's end signal KILL"
+        check(not stopped, f"a program over ssh was stopped on burrowd's terminal: {stopped}; the first client: "
+                           f"{'still running' if r1 is None else show(r1)}")
+        check(r2[:2] == (0, b"second\n"), f"the second connection: {show(r2)} (the listener's state {listener})")
+        check(r1 is not None and r1[0] == 0 and b"not-stopped" in r1[1] and b"/dev/tty" in r1[2],
+              f"the program had a terminal, or did not end: {'still running' if r1 is None else show(r1)}")
+        check(any(" outcome ok status 0" in x for x in lines), f"the first session's end: burrowd's lines {lines}")
+        return f"no terminal for the program (/dev/tty refused), nothing stopped, the listener {listener}, the second connection answered"
 
 
 @row
