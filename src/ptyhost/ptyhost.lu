@@ -104,5 +104,5 @@ pub fn take_terminal(name: str) -> fs.File ! Unready {
 /// This process (a fork that leads no group) into a session of its own,
 /// with no controlling terminal.
 pub fn lead_session() -> () ! Unled {
-    process.lead_session()?
+    process.lead_group() else { return io }
 }
