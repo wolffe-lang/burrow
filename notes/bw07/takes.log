@@ -1,0 +1,61 @@
+# bw07 development takes, linux: the pinned container (Ubuntu 24.04 by digest), two CPUs, not records.
+# first take: the rows tip d35f6d6 and the head a1abe57 before the row's correction (no init in the container), then a1abe57 with the init
+# at d35f6d6
+START build-native
+END build-native exit=0 secs=7
+START rows:check-server:session-signals-default
+FAIL session-signals-default the servers were not started with SIGINT and SIGQUIT ignored: {'burrowd': 4102, 'sshd': 4098}
+  check-server: 1 rows, 1 failed, 0 SKIP
+  check-server: 2 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default exit=1 secs=1
+# at a1abe57
+START fmt
+END fmt exit=0 secs=1
+START build-native
+END build-native exit=0 secs=11
+START rows:check-server:session-signals-default,session-tty-interrupt,session-tty-gone,session-sigterm,session-terminal-stop,session-own-session
+  PASS session-sigterm (exit 255)
+  PASS session-terminal-stop (no terminal for the program (/dev/tty refused), nothing stopped, the listener S, the second connection answered)
+  PASS session-tty-interrupt (exit 7, stderr 'Connection to 127.0.0.1 closed.'; exit 255, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-gone (exit 0, stderr 'Connection to 127.0.0.1 closed.'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+FAIL session-signals-default the servers were not started with SIGINT and SIGQUIT ignored: {'burrowd': 4102, 'sshd': 4098}
+  PASS session-own-session (exit 0; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  check-server: 6 rows, 1 failed, 0 SKIP
+  check-server: 18 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default,session-tty-interrupt,session-tty-gone,session-sigterm,session-terminal-stop,session-own-session exit=1 secs=6
+# at a1abe57
+START rows:check-server:session-signals-default
+FAIL session-signals-default the servers were not started with SIGINT and SIGQUIT ignored: {'burrowd': 4102, 'sshd': 4098}
+  check-server: 1 rows, 1 failed, 0 SKIP
+  check-server: 18 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default exit=1 secs=1
+# second take: the corrected rows tip 30f7cfb and the head 7191002 with no init, then 7191002 with the init
+# at 30f7cfb
+START build-native
+END build-native exit=0 secs=7
+START rows:check-server:session-signals-default
+FAIL session-signals-default exit -9 through burrowd, 0 through sshd; burrowd stderr '[row: timed out]', sshd's 'Connection to 127.0.0.1 closed.'
+  check-server: 1 rows, 1 failed, 0 SKIP
+  check-server: 3 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default exit=1 secs=49
+# at 7191002
+START fmt
+END fmt exit=0 secs=1
+START build-native
+END build-native exit=0 secs=7
+START rows:check-server:session-signals-default,session-tty-interrupt,session-tty-gone,session-sigterm,session-terminal-stop,session-own-session
+  PASS session-sigterm (exit 255)
+  PASS session-terminal-stop (no terminal for the program (/dev/tty refused), nothing stopped, the listener S, the second connection answered)
+  PASS session-tty-interrupt (exit 7, stderr 'Connection to 127.0.0.1 closed.'; exit 255, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-gone (exit 0, stderr 'Connection to 127.0.0.1 closed.'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-signals-default (ignored 0x1006 by burrowd, 0x1002 by sshd; exit 0, stderr 'Connection to 127.0.0.1 closed.', $? 130 then 131; kill -INT: exit 255)
+  PASS session-own-session (exit 0; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  check-server: 6 rows, 0 failed, 0 SKIP
+  check-server: 19 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default,session-tty-interrupt,session-tty-gone,session-sigterm,session-terminal-stop,session-own-session exit=0 secs=13
+# at 7191002
+START rows:check-server:session-signals-default
+  PASS session-signals-default (ignored 0x1006 by burrowd, 0x1002 by sshd; exit 0, stderr 'Connection to 127.0.0.1 closed.', $? 130 then 131; kill -INT: exit 255)
+  check-server: 1 rows, 0 failed, 0 SKIP
+  check-server: 19 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-signals-default exit=0 secs=8
