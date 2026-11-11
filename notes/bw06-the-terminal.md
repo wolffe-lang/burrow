@@ -479,3 +479,26 @@ At the head `aa0a0cf`:
 - The risks, named: a mode the client sends that std passes over on linux and `sshd` sets (`stty -a` would
   differ by that line); the drain after the program's end (`session-tty-burst`'s last lines); the
   hangup's timing in `session-tty-gone`.
+
+### The takes, scored
+
+Development takes on the Linux build host's light slots (two CPUs, the pinned container), not records: the
+rows tip `a787eac` and the head `aa0a0cf` in one job (raw log sha256 `acae7eea…`), and the development
+plant `97babf8` (`9b5b80e4…`); their steps and rows are `notes/bw06/evidence/phase2b-takes.log`.
+
+- **The rows tip, as predicted:** wolf 0.2.39, lupin 0.1.61 and wolf-std `5263a1fc` staged by digest; the
+  build and all 22 unit files green on the three machines with no change to burrow's code; the terminal
+  rows red as in phase 2a; `session-terminal-stop` red by name (`stty` stopped on burrowd's terminal).
+- **The head, as predicted, and more:** `fmt`, the native build, the unit files, and the whole of
+  `tools/check-server` (80 rows) and `tools/check-server-hostile` (20 rows) green on the first take. Each
+  terminal row held byte for byte to `sshd`: `session-tty-size`'s whole `stty -a` (so no mode the client
+  sends was passed over that `sshd` set), `session-tty-burst`'s 20000 lines, `session-tty-gone`'s end at the
+  program's with a child left on the pty, `auth-no-pty`'s four cases, `session-own-session` with no pty and
+  on one, and `session-terminal-stop` in its new shape (`/dev/tty` refused, nothing stopped).
+- **The development plant** (`process.lead_group` in place of `process.lead_session`, one line in
+  `src/ptyhost`): red by name as predicted, `session-own-session` (`sid_is_shell=no`) and
+  `session-terminal-stop` (the program stopped on burrowd's terminal); and, beyond the prediction's two,
+  `session-tty-command`, `-interrupt` and `-shell` (status 1: a child that leads no session cannot take
+  the pty as its controlling terminal, so it exits before its program).
+- **Not taken here:** the macOS rows (`local-tty` on the Air, which did not answer today) and PAX
+  (burrowd's pty under QEMU on px111's kernel, now merged, is the pax lane's follow-on).
