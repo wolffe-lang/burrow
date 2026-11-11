@@ -530,3 +530,8 @@ Predicted, before the takes (written 2026-11-11 at 21:05Z): at `a92f2c4` with th
 as on the hosted runner, `session-tty-gone` red with the hosted run's line; at the fix's head green with the
 init and without it, and every other terminal row green as before; the record plant (`no-pty` ignored) red
 by name on `auth-no-pty` alone, as before.
+
+Scored (light slot, raw log sha256 `b5608040…`, its rows appended to `notes/bw06/evidence/phase2b-takes.log`): at
+`a92f2c4` with no init in the container, `session-tty-gone` red with the hosted run's very line
+(`[('?', 'Z'), ('?', 'S')]`); at the fix's head `28cfe69` with no init, it and the ten other terminal rows
+green; with the init, green. As predicted; burrowd is unchanged.

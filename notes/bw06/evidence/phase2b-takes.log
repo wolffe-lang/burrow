@@ -152,3 +152,40 @@ FAIL session-own-session stdout differs: burrowd b'sid_is_shell=no tty=none\nno-
   check-server: 6 rows, 5 failed, 0 SKIP
   check-server: 19 evidence files in target/evidence/server-native, readable, no key material
 END rows:check-server:session-own-session,session-terminal-stop,session-tty-interrupt,session-tty-shell,session-tty-command,session-own-group exit=5 secs=5
+# the row fix's takes: a92f2c4 with no init in the container (as on the hosted runner), then 28cfe69 with no init, then 28cfe69 with the init
+# at a92f2c4
+START toolchain
+END toolchain exit=0 secs=40
+START oracle
+END oracle exit=0 secs=2
+START build-native
+END build-native exit=0 secs=8
+START rows:check-server:session-tty-gone
+FAIL session-tty-gone sshd: the child holding the slave: [('?', 'Z'), ('?', 'S')]
+  check-server: 1 rows, 1 failed, 0 SKIP
+  check-server: 3 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-gone exit=1 secs=4
+# at 28cfe69
+START build-native
+END build-native exit=0 secs=11
+START rows:check-server:session-tty-gone,session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-terminal-stop
+  PASS session-terminal-stop (no terminal for the program (/dev/tty refused), nothing stopped, the listener S, the second connection answered)
+  PASS session-tty-command (exit 3, stderr 'Connection to 127.0.0.1 closed.'; exit 3, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-size (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-full-screen (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-interrupt (exit 7, stderr 'Connection to 127.0.0.1 closed.'; exit 255, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-shell (exit 4, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-gone (exit 0, stderr 'Connection to 127.0.0.1 closed.'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-burst (exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS session-tty-eof (exit -999, stderr '[row: timed out]'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  PASS auth-no-pty (no-pty: exit 255, stderr 'PTY allocation request failed on channel 0'; restrict: exit 255, stderr 'PTY allocation request failed on channel 0'; restrict,pty: exit 0, stderr 'Connection to 127.0.0.1 closed.'; pty,restrict: exit 255, stderr 'PTY allocation request failed on channel 0')
+  PASS session-own-session (exit 0; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  check-server: 11 rows, 0 failed, 0 SKIP
+  check-server: 43 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-gone,session-tty-command,session-tty-size,session-tty-full-screen,session-tty-interrupt,session-tty-shell,session-tty-burst,session-tty-eof,auth-no-pty,session-own-session,session-terminal-stop exit=0 secs=31
+# at 28cfe69
+START rows:check-server:session-tty-gone
+  PASS session-tty-gone (exit 0, stderr 'Connection to 127.0.0.1 closed.'; exit 0, stderr 'Connection to 127.0.0.1 closed.')
+  check-server: 1 rows, 0 failed, 0 SKIP
+  check-server: 43 evidence files in target/evidence/server-native, readable, no key material
+END rows:check-server:session-tty-gone exit=0 secs=2
