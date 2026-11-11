@@ -1,5 +1,18 @@
 ## Unreleased
 
+- burrowd grants a terminal (RFC 4254 §6.2, §6.7, §8): a `pty-req` where
+  `PermitTTY` (now `yes` or `no`, `yes` by default as `sshd`) and the key
+  allow it (`no-pty` and `restrict` refuse it, `pty` after `restrict` grants
+  it). The pty takes the client's size and every terminal mode it sends that
+  the host has; the program runs on it as the leader of a session of its
+  own with the pty as its controlling terminal, with TERM and `SSH_TTY`;
+  `window-change` resizes it; the session ends with the program, and the pty
+  is closed. Malformed and late requests are refused by name, the
+  connection kept.
+- Every program burrowd runs leads a session of its own, as `sshd` gives
+  it: with no pty it has no controlling terminal, so nothing it does reaches
+  the terminal burrowd was started from (PAX's console).
+- Pin wolf 0.2.39, lupin 0.1.61 and wolf-std's sessions and ptys (sc81).
 - burrowd takes `SetEnv` (`sshd_config(5)`): `NAME=VALUE` variables set in
   every session, over burrowd's defaults and the accepted `GIT_PROTOCOL`,
   never over `SSH_CONNECTION` or a forced command's `SSH_ORIGINAL_COMMAND`;
