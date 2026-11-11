@@ -1541,11 +1541,14 @@ def session_tty_gone():
 IGNORING = ["sh", "-c", "trap '' INT QUIT; exec \"$@\"", "sh"]
 
 
-def ignored_mask(pid):
+def signal_masks(pid):
+    """(ignored, caught) of a process, from its /proc status (bit N-1 for
+    signal N: SIGINT 0x2, SIGQUIT 0x4)."""
+    got = {}
     for line in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines():
-        if line.startswith("SigIgn:"):
-            return int(line.split()[1], 16)
-    return 0
+        if line.startswith(("SigIgn:", "SigCgt:")):
+            got[line[:6]] = int(line.split()[1], 16)
+    return got.get("SigIgn", 0), got.get("SigCgt", 0)
 
 
 def killed_by_int(p, port):
@@ -1592,8 +1595,11 @@ def session_signals_default():
              (b"^\\", typed(b"echo q$((1+1))n $?\r", 0.3)),
              (b"q2n ", typed(b"exit 0\r", 0.3))]
     with tty_pair("session-signals-default", prefix=IGNORING) as p:
-        masks = {who: ignored_mask(pid) for who, pid in (("burrowd", p.burrowd.proc.pid), ("sshd", p.sshd.proc.pid))}
-        check(all(m & 0x6 == 0x6 for m in masks.values()),
+        # burrowd keeps both ignored; the pinned sshd keeps SIGINT ignored and
+        # catches SIGQUIT itself (measured), so for it either counts.
+        masks = {who: signal_masks(pid) for who, pid in (("burrowd", p.burrowd.proc.pid), ("sshd", p.sshd.proc.pid))}
+        check(masks["burrowd"][0] & 0x6 == 0x6 and masks["sshd"][0] & 0x2 == 0x2
+              and (masks["sshd"][0] | masks["sshd"][1]) & 0x4 == 0x4,
               f"the servers were not started with SIGINT and SIGQUIT ignored: {masks}")
         rb, rs = tty_both(p, [], steps, timeout=45)
         note = same(p, rb, rs, "Ctrl-C and Ctrl-\\ at a terminal, both servers started with INT and QUIT ignored")
@@ -1603,7 +1609,8 @@ def session_signals_default():
         note2 = same(p, kb, ks, "kill -INT to a command over ssh with no pty")
         got = p.burrowd.conn_lines()
         check(any(" signal INT" in x for x in got), f"burrowd's log has no signal INT: {got[-2:]}")
-        return f"masks {masks['burrowd']:#x} and {masks['sshd']:#x}; {note}, $? 130 then 131; kill -INT: {note2}"
+        return (f"ignored {masks['burrowd'][0]:#x} by burrowd, {masks['sshd'][0]:#x} by sshd; {note}, $? 130 then 131; "
+                f"kill -INT: {note2}")
 
 
 @row
