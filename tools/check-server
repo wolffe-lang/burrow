@@ -1535,6 +1535,77 @@ def session_tty_gone():
         return "; ".join(notes)
 
 
+# bw07 (burrow#25): both servers started as a shell without job control
+# starts a background command, SIGINT and SIGQUIT ignored; the program a
+# session runs gets the default dispositions all the same.
+IGNORING = ["sh", "-c", "trap '' INT QUIT; exec \"$@\"", "sh"]
+
+
+def ignored_mask(pid):
+    for line in pathlib.Path(f"/proc/{pid}/status").read_text().splitlines():
+        if line.startswith("SigIgn:"):
+            return int(line.split()[1], 16)
+    return 0
+
+
+def killed_by_int(p, port):
+    """`exec sleep 33` over ssh with no pty, its process found (live, started
+    during this turn) and sent SIGINT from outside: (exit, stdout, stderr),
+    the port written PORT; the client ended at 10 s if the sleep lives on."""
+    before = set(account_sleeps())
+    proc = subprocess.Popen(p.argv(port, ["exec sleep 33"]), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=p.env())
+    found = []
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and len(found) != 1:
+        found = [k for k in account_sleeps() if k not in before]
+        time.sleep(0.05)
+    for pid in found:
+        try:
+            os.kill(pid, signal_mod.SIGINT)
+        except OSError:
+            pass
+    try:
+        out, err = proc.communicate(timeout=10)
+        r = (proc.returncode, out, err)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        r = (-999, out, err + b"\n[row: timed out]")
+    end_and_reap([k for k in account_sleeps() if k not in before])
+    return serverlib.norm(r, port), len(found)
+
+
+@row
+def session_signals_default():
+    """A session's program starts with the default dispositions (bw07,
+    burrow#25): with both servers started with SIGINT and SIGQUIT ignored,
+    Ctrl-C ends a foreground `sleep` at a terminal ($? 130) and Ctrl-\\ ends
+    the next (131); with no pty, SIGINT sent to a command ends it
+    (exit-signal INT). Held byte for byte to the pinned sshd started the same
+    way."""
+    steps = [(b"$ ", typed(b"sleep 31\r", 0.3)),
+             (b"sleep 31", typed(b"\x03", 0.5)),
+             (b"^C", typed(b"echo i$((1+1))n $?\r", 0.3)),
+             (b"i2n ", typed(b"sleep 32\r", 0.3)),
+             (b"sleep 32", typed(b"\x1c", 0.5)),
+             (b"^\\", typed(b"echo q$((1+1))n $?\r", 0.3)),
+             (b"q2n ", typed(b"exit 0\r", 0.3))]
+    with tty_pair("session-signals-default", prefix=IGNORING) as p:
+        masks = {who: ignored_mask(pid) for who, pid in (("burrowd", p.burrowd.proc.pid), ("sshd", p.sshd.proc.pid))}
+        check(all(m & 0x6 == 0x6 for m in masks.values()),
+              f"the servers were not started with SIGINT and SIGQUIT ignored: {masks}")
+        rb, rs = tty_both(p, [], steps, timeout=45)
+        note = same(p, rb, rs, "Ctrl-C and Ctrl-\\ at a terminal, both servers started with INT and QUIT ignored")
+        check(b"i2n 130" in rb[1] and b"q2n 131" in rb[1], f"burrowd's session: {show(rb)}")
+        (kb, nb), (ks, ns) = killed_by_int(p, p.burrowd.port), killed_by_int(p, p.sshd.port)
+        check(nb == 1 and ns == 1, f"the command's process found: burrowd {nb}, sshd {ns}")
+        note2 = same(p, kb, ks, "kill -INT to a command over ssh with no pty")
+        got = p.burrowd.conn_lines()
+        check(any(" signal INT" in x for x in got), f"burrowd's log has no signal INT: {got[-2:]}")
+        return f"masks {masks['burrowd']:#x} and {masks['sshd']:#x}; {note}, $? 130 then 131; kill -INT: {note2}"
+
+
 @row
 def session_tty_burst():
     """20000 lines printed just before the program ends all arrive."""
