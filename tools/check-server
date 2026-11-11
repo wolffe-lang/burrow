@@ -1450,9 +1450,42 @@ def session_tty_shell():
 
 
 def account_sleeps():
-    """(pid, tty, stat) of each `sleep` the rows' account runs."""
+    """{pid: (tty, stat)} of each live `sleep` the rows' account runs. A zombie
+    (ended, not yet reaped: in a container whose process 1 is the row's own
+    program and never waits for it) is not live and holds no terminal."""
     out = subprocess.run(["ps", "-u", USER, "-o", "pid=,tty=,stat=,comm="], capture_output=True, text=True).stdout
-    return [tuple(l.split()[:3]) for l in out.splitlines() if l.split()[-1:] == ["sleep"]]
+    got = {}
+    for l in out.splitlines():
+        f = l.split()
+        if len(f) == 4 and f[3] == "sleep" and not f[2].startswith("Z"):
+            got[int(f[0])] = (f[1], f[2])
+    return got
+
+
+def end_and_reap(pids):
+    """SIGKILL to each of `pids`, then each reaped where the row is its parent
+    (its process 1 in the container), waiting up to 5 s until each is gone
+    or a zombie, so a later turn's sample never meets it."""
+    for pid in pids:
+        try:
+            os.kill(pid, signal_mod.SIGKILL)
+        except OSError:
+            pass
+    deadline = time.monotonic() + 5
+    left = set(pids)
+    while left and time.monotonic() < deadline:
+        for pid in sorted(left):
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except ChildProcessError:
+                pass
+            try:
+                state = stat_of(pid)[0]
+            except (OSError, IndexError):
+                state = "gone"
+            if state in ("gone", "Z", "X"):
+                left.discard(pid)
+        time.sleep(0.05)
 
 
 @row
@@ -1460,26 +1493,34 @@ def session_tty_gone():
     """The session ends with its program, not with the last holder of the
     slave: a child that ignores SIGHUP and holds the slave lives on with no
     terminal; a child that does not is gone (the hangup); the slave's name
-    is gone either way."""
+    is gone either way. Each turn counts only the live `sleep` processes
+    that started during it, and waits up to 3 s for the state it expects,
+    the same for both servers."""
     notes = []
     with tty_pair("session-tty-gone") as p:
         for script, lives in (("tty; (trap '' HUP; exec sleep 6) & sleep 0.3; echo started", True),
                               ("tty; sleep 6 & sleep 0.3; echo started", False)):
             results = {}
             for who, port in (("burrowd", p.burrowd.port), ("sshd", p.sshd.port)):
+                before = set(account_sleeps())
                 t0 = time.monotonic()
                 r = p.ssh(port, ["-tt", script], timeout=20)
                 took = time.monotonic() - t0
-                time.sleep(0.5)
-                left = account_sleeps()
+
+                def turn():
+                    return {k: v for k, v in account_sleeps().items() if k not in before}
+
+                deadline = time.monotonic() + 3
+                left = turn()
+                while time.monotonic() < deadline:
+                    if (lives and len(left) == 1 and list(left.values())[0][0] == "?") or (not lives and not left):
+                        break
+                    time.sleep(0.1)
+                    left = turn()
                 name = re.search(rb"/dev/pts/\d+", r[1])
                 gone = name is None or not os.path.exists(name.group().decode())
-                for pid, _, _ in left:
-                    try:
-                        os.kill(int(pid), signal_mod.SIGKILL)
-                    except OSError:
-                        pass
-                results[who] = (pts(serverlib.norm(r, port)), took, [(x[1], x[2]) for x in left], gone)
+                end_and_reap(list(left))
+                results[who] = (pts(serverlib.norm(r, port)), took, sorted(left.values()), gone)
             rb, rs = results["burrowd"][0], results["sshd"][0]
             notes.append(same(p, rb, rs, script))
             for who, (_, took, left, gone) in results.items():
@@ -1489,6 +1530,8 @@ def session_tty_gone():
                     check(len(left) == 1 and left[0][0] == "?", f"{who}: the child holding the slave: {left}")
                 else:
                     check(left == [], f"{who}: the child that did not ignore SIGHUP: {left}")
+            check(results["burrowd"][2] == results["sshd"][2],
+                  f"the children left differ: burrowd {results['burrowd'][2]}, sshd {results['sshd'][2]}")
         return "; ".join(notes)
 
 
