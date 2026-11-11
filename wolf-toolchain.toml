@@ -9,9 +9,10 @@
 
 # bw06 (2026-11-11): wolf release 441434977 (v0.2.39, tag commit 3fc86f77)
 # and lupin release 441174610 (v0.1.61), read twice from the release API,
-# agreeing on asset ids and digests; the std pin is wolf-std's sc81 head
-# 5263a1fc (wolf-std#143, not yet merged), for process.lead_session and
-# term's pseudo-terminal calls, until it merges and this moves to the merge.
+# agreeing on asset ids and digests. The std pin was wolf-std's sc81 head
+# 5263a1fc (wolf-std#143) for process.lead_session and term's
+# pseudo-terminal calls; it is now wolf-std trunk 77cf3210, which holds
+# that change merged (its std/ tree the same as 5263a1fc's).
 
 [wolf]
 version = "0.2.39"
@@ -33,4 +34,4 @@ aarch64-unknown-linux-gnu = "3a2b92423e53a6b539e30b8a4f055c09ccac30853f332da3305
 
 [std]
 repo = "wolffe-lang/wolf-std"
-rev = "5263a1fcab3c302a9d078bf20aa4d646146e5f64"
+rev = "77cf3210a82c93dc05ded987c249bb69e79b0a89"
