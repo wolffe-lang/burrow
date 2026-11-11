@@ -438,3 +438,44 @@ rows tip `a596082` (build, every unit test, the terminal rows and their neighbou
   channel 0`), so it reads the options left to right, as burrowd's `akeys` does; burrowd answers the same.
   The four cases now: `no-pty`, `restrict` and `pty,restrict` alike through both servers; `restrict,pty`
   red until the release (`sshd` grants, burrowd `pty_failed`).
+
+## Phase 2b: the pty half on wolf-std's calls
+
+wolf 0.2.39 and lupin 0.1.61 are released, and wolf-std's sc81 (wolf-std#143, head `5263a1fc`, not yet
+merged) carries the calls this branch waited for: `process.lead_session`, `term.open_pty`, `term.pty_name`,
+`term.set_size`, `term.set_attr` (RFC 4254 §8's opcodes as its vocabulary) and `term.open_controlling`. The
+branch is rebased onto trunk `16858a5` (px116's `SetEnv`; the commits before the rebase are kept on
+`bw06-before-rebase`), and its environment follows px116's order with TERM and `SSH_TTY` among the
+defaults.
+
+### What changes
+
+- **The pin:** wolf 0.2.39, lupin 0.1.61, wolf-std `5263a1fc` (`a787eac`); it moves to sc81's merge when
+  that lands.
+- **`src/ptyhost`** binds to those calls (`79947b8`): the holder opens the pty, names its slave, sets the
+  size and each of the client's modes on the master (one the host lacks, or a value outside its op's range,
+  passed over and counted; a special character's 255 is std's -1).
+- **`src/ssession`** (`aa0a0cf`): every program's child leads a session of its own
+  (`process.lead_session`, the child exiting 1 if it cannot), with a pty or without; on a pty the child takes
+  the slave by name as its controlling terminal (`term.open_controlling`) and the holder closes its slave
+  after the fork, keeping the master alone.
+- **`session-terminal-stop`** (`bac28eb`, before the code): a program with no controlling terminal is not
+  stopped; `/dev/tty` fails and it ends with status 0, while the listener runs and a second connection is
+  answered.
+
+### Predicted, before the takes (written 2026-11-11 at 12:19Z)
+
+At the rows tip `a787eac` (the new toolchain under the shim, no pty yet): the toolchain stages by digest;
+the build and every unit test green on all three machines; the terminal rows red as in phase 2a; and
+`session-terminal-stop` red by name (the program still in burrowd's session: its `stty` stopped).
+
+At the head `aa0a0cf`:
+
+- Green: `fmt`, the native build, every unit test on the three machines.
+- Green, held to `sshd`: `session-tty-command`, `-size` (the whole `stty -a`), `-full-screen`,
+  `-interrupt`, `-shell`, `-gone`, `-burst`, `-eof`, `auth-no-pty` (all four cases), `session-own-session`
+  (with no pty and on one); `hostile-pty-granted` and `hostile-pty-malformed`; `session-terminal-stop` in
+  its new shape; every neighbour as before.
+- The risks, named: a mode the client sends that std passes over on linux and `sshd` sets (`stty -a` would
+  differ by that line); the drain after the program's end (`session-tty-burst`'s last lines); the
+  hangup's timing in `session-tty-gone`.
