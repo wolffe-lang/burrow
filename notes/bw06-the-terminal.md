@@ -502,3 +502,31 @@ plant `97babf8` (`9b5b80e4…`); their steps and rows are `notes/bw06/evidence/p
   the pty as its controlling terminal, so it exits before its program).
 - **Not taken here:** the macOS rows (`local-tty` on the Air, which did not answer today) and PAX
   (burrowd's pty under QEMU on px111's kernel, now merged, is the pax lane's follow-on).
+
+### The hosted run's one red row, and the row's fix
+
+The full-matrix hosted run on the PR went red on one row, the same on both tiers:
+`FAIL session-tty-gone sshd: the child holding the slave: [('?', 'Z'), ('?', 'S')]`. It is the row's own
+fault, not burrowd's, and burrowd does not change for it.
+
+**The cause, read from the log and the row:** the row samples every `sleep` the account runs, with `ps`,
+after each server's session, and then ends what it found with SIGKILL before the next server's turn. The
+hosted job runs the rows in its container with the row's own program as process 1 and no init. A child the
+session left behind is reparented to process 1 when its session's processes end, and the row's program never
+waits for children it did not start, so the child the row killed after burrowd's turn stays a zombie
+(`Z`, no terminal: `?`). The sample after `sshd`'s turn then holds that zombie beside `sshd`'s own live child
+(`S`, `?`), two where the row expects one. The local takes run the container with an init as process 1,
+which reaps the zombie at once, so the row passed there. burrowd's turn comes first, so it saw only its own
+child.
+
+**The fix** (`tools/check-server` only): the row samples by identity and waits for the state it names. It
+counts only the `sleep` processes that started during the turn (not in the set it read before the turn) and
+that are alive (a zombie has ended; it holds no terminal), and it waits up to 3 seconds, sampling every
+0.1 s, for the state it expects: one such child with no terminal where the child ignores SIGHUP, none where it
+does not. It ends what it found and reaps it where it is the parent (a container whose process 1 is the row),
+waiting until each is gone or a zombie. Both servers are held to the same check with the same bound.
+
+Predicted, before the takes (written 2026-11-11 at 21:05Z): at `a92f2c4` with the container's init left out,
+as on the hosted runner, `session-tty-gone` red with the hosted run's line; at the fix's head green with the
+init and without it, and every other terminal row green as before; the record plant (`no-pty` ignored) red
+by name on `auth-no-pty` alone, as before.
