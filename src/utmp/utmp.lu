@@ -148,13 +148,14 @@ pub fn new(kind: int, pid: int, line: str, user: str, host: str) -> Rec {
     }
 }
 
+// `v` little-endian in `width` bytes; a negative value in two's complement, each
+// byte of -v - 1 inverted (no constant past 32 bits: lupin's int is 32 bits).
 fn put_word(mut b: List[byte], at: int, v: int, width: int) {
-    var x = v
-    if x < 0 {
-        x = x + (if width == 2 then 65536 else 4294967296)
-    }
+    let neg = v < 0
+    var x = if neg then -(v + 1) else v
     for k in 0..width {
-        b[at + k] = (x % 256) as byte
+        let d = x % 256
+        b[at + k] = (if neg then 255 - d else d) as byte
         x = x / 256
     }
 }
