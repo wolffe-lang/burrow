@@ -1,0 +1,73 @@
+//! member: false
+
+// px133: burrowd's login records (src/utmp): utmp(5)'s 384 bytes field by field, sshd's
+// `ut_id` rule, a pty's line, the address's bytes, and how a session's end is told from
+// burrowd's words for it.
+use utmp
+
+// The little-endian word at `at`, read from its top byte down (no power past the
+// word's own range: lupin's int is 32 bits).
+fn word(b: List[byte], at: int, width: int) -> int {
+    var n = 0
+    var k = width
+    while k > 0 {
+        k -= 1
+        n = n * 256 + (b[at + k] as int)
+    }
+    n
+}
+
+fn text(b: List[byte], at: int, width: int) -> str {
+    var end = at
+    while end < at + width && (b[end] as int) != 0 {
+        end += 1
+    }
+    str_from_utf8(b[at..end]) else ""
+}
+
+fn main() {
+    assert(utmp.id_of("pts/0") == "ts/0")
+    assert(utmp.id_of("pts/12") == "s/12")
+    assert(utmp.id_of("ssh") == "ssh")
+    assert(utmp.line_of("/dev/pts/3") == "pts/3")
+    assert(utmp.line_of("pts/3") == "pts/3")
+    let a = utmp.addr_of("192.168.89.1")
+    assert(a.len == 4 && a[0] == 192 && a[1] == 168 && a[2] == 89 && a[3] == 1)
+    assert(utmp.addr_of("::ffff:10.0.2.2").len == 4)
+    assert(utmp.addr_of("").len == 0)
+    assert(utmp.addr_of("UNKNOWN").len == 0)
+    assert(utmp.addr_of("1.2.3.256").len == 0)
+    assert(utmp.addr_of("fe80::1").len == 0)
+    var r = utmp.new(utmp.k_user_process(), 4242, "pts/7", "burrowtest", "192.168.89.1")
+    r.secs = 1794600000
+    r.usecs = 123456
+    let b = utmp.bytes(r)
+    assert(b.len == 384)
+    assert(word(b, 0, 2) == 7)
+    assert(word(b, 4, 4) == 4242)
+    assert(text(b, 8, 32) == "pts/7")
+    assert(text(b, 40, 4) == "ts/7")
+    assert(text(b, 44, 32) == "burrowtest")
+    assert(text(b, 76, 256) == "192.168.89.1")
+    assert(word(b, 332, 2) == 0 && word(b, 334, 2) == 0 && word(b, 336, 4) == 0)
+    assert(word(b, 340, 4) == 1794600000)
+    assert(word(b, 344, 4) == 123456)
+    assert((b[348] as int) == 192 && (b[351] as int) == 1 && (b[352] as int) == 0)
+    // A user name is cut to its 32 bytes, never past them.
+    var long = ""
+    while long.len < 40 {
+        long += "x"
+    }
+    let c = utmp.bytes(utmp.new(utmp.k_login_process(), 1, "ssh:notty", long, ""))
+    assert(text(c, 44, 32).len == 32 && (c[76] as int) == 0)
+    // How a session ended, from burrowd's words.
+    let (t1, s1) = utmp.ended("status 3")
+    assert(t1 == 0 && s1 == 3)
+    let (t2, s2) = utmp.ended("signal HUP")
+    assert(t2 == 1 && s2 == 0)
+    let (t3, s3) = utmp.ended("signal TERM")
+    assert(t3 == 15 && s3 == 0)
+    let (t4, s4) = utmp.ended("status -")
+    assert(t4 == 0 && s4 == 0)
+    print("utmp_test: ok")
+}
