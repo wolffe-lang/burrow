@@ -1,5 +1,15 @@
 ## Unreleased
 
+- burrowd writes the login records `last`, `lastb` and `who` read, as
+  `sshd` does (utmp(5)): a session with a pty is a USER_PROCESS in
+  `/var/run/utmp` and `/var/log/wtmp` when its program starts (the pty's
+  line, the user, the client's address) and a DEAD_PROCESS when it ends,
+  whose `ut_exit` says how the program ended (its status, or SIGHUP when
+  the connection went), which `sshd` leaves zero; a refused password is a
+  LOGIN_PROCESS on `ssh:notty` in `/var/log/btmp`. A command with no pty
+  writes none. The session's process tells the monitor its pty in one new
+  frame (`pty`); the monitor, root, writes. Held to the pinned `sshd`'s
+  records field by field (`tools/check-server`'s utmp and btmp rows).
 - A program in a burrowd session starts with the default disposition of
   every signal burrowd does not own, as `sshd` gives it (burrow#25). burrowd
   started by a shell without job control has SIGINT and SIGQUIT ignored, and
