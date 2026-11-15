@@ -37,27 +37,32 @@
 
 use std.time
 
-/// utmp(5)'s kinds.
+/// utmp(5)'s LOGIN_PROCESS: a refused login in btmp.
 pub fn k_login_process() -> int {
     6
 }
 
+/// utmp(5)'s USER_PROCESS: a session's start.
 pub fn k_user_process() -> int {
     7
 }
 
+/// utmp(5)'s DEAD_PROCESS: a session's end.
 pub fn k_dead_process() -> int {
     8
 }
 
+/// Who is on now: one slot a terminal.
 pub fn utmp_path() -> str {
     "/var/run/utmp"
 }
 
+/// Every login, logout, boot and shutdown, appended.
 pub fn wtmp_path() -> str {
     "/var/log/wtmp"
 }
 
+/// Refused logins, appended; root's, 0600.
 pub fn btmp_path() -> str {
     "/var/log/btmp"
 }
