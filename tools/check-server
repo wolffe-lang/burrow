@@ -1849,6 +1849,149 @@ def keep_evidence(tier):
     return len(bad)
 
 
+# ---- login records (px133) -------------------------------------------------------
+# burrowd writes a session with a pty to /var/run/utmp and /var/log/wtmp at its start and
+# its end, and a refused password to /var/log/btmp, as the pinned sshd does (utmp(5)). Each
+# row runs the same client through sshd and then through burrowd, and reads the records each
+# added: the kind, line, id, user, host and address held equal (the times, pids and pty
+# numbers written T, P and N); `ut_exit` is burrowd's own (sshd leaves it zero) and held to
+# what the session did.
+UT_FILES = ("/var/run/utmp", "/var/log/wtmp", "/var/log/btmp")
+
+
+def ut_size():
+    return {f: (os.path.getsize(f) if os.path.exists(f) else 0) for f in UT_FILES}
+
+
+def ut_records(path, since):
+    """The records of `path` from byte `since`: dicts of utmp(5)'s fields, normalized."""
+    if not os.path.exists(path):
+        return []
+    data = pathlib.Path(path).read_bytes()[since:]
+    out = []
+    for at in range(0, len(data) - 383, 384):
+        b = data[at:at + 384]
+        def txt(o, w):
+            return b[o:o + w].split(b"\0", 1)[0].decode("utf-8", "replace")
+        out.append({
+            "type": int.from_bytes(b[0:2], "little"),
+            "line": re.sub(r"\d+$", "N", txt(8, 32)),
+            "id": re.sub(r"\d+$", "N", txt(40, 4)),
+            "user": txt(44, 32),
+            "host": txt(76, 256),
+            "term": int.from_bytes(b[332:334], "little"),
+            "exit": int.from_bytes(b[334:336], "little"),
+            "addr": b[348:364].hex(),
+        })
+    return out
+
+
+def ut_slot(path):
+    """utmp's records whose line is a pty, normalized (the file is a set of slots)."""
+    return [r for r in ut_records(path, 0) if r["line"].startswith("pts/")]
+
+
+def ut_turn(p, port, action):
+    """`action(port)` run, then the records it added to wtmp and btmp, and utmp's pty slots."""
+    before = ut_size()
+    r = action(port)
+    time.sleep(1.5)
+    return r, {"wtmp": ut_records("/var/log/wtmp", before["/var/log/wtmp"]),
+               "btmp": ut_records("/var/log/btmp", before["/var/log/btmp"]),
+               "utmp": ut_slot("/var/run/utmp")}
+
+
+def ut_strip(recs, keep_exit=False):
+    return [{k: v for k, v in r.items() if keep_exit or k not in ("term", "exit")} for r in recs]
+
+
+@row
+def utmp_session():
+    """A shell at a terminal (`ssh -tt`, `exit 3`): a USER_PROCESS on its pty in wtmp at
+    the start (the user, the client's address as text and bytes) and a DEAD_PROCESS at
+    the end (the line alone), utmp's slot left DEAD with its line and id; held to sshd's
+    field by field; burrowd's end record says the program's status 3."""
+    with tty_pair("utmp-session") as p:
+        got = {}
+        for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port)):
+            for f in ("/var/run/utmp",):
+                if os.path.exists(f):
+                    pathlib.Path(f).write_bytes(b"")
+            got[who] = ut_turn(p, port, lambda port: p.ssh(port, ["-tt", "exit 3"], timeout=30))
+        rs, s = got["sshd"]
+        rb, b = got["burrowd"]
+        record(p, f"sshd: {s}\nburrowd: {b}\n")
+        check(rs[0] == 3 and rb[0] == 3, f"exits: sshd {rs[0]}, burrowd {rb[0]}")
+        check([r["type"] for r in s["wtmp"]] == [7, 8], f"sshd's wtmp records: {s['wtmp']}")
+        check(ut_strip(b["wtmp"]) == ut_strip(s["wtmp"]), f"wtmp: burrowd {b['wtmp']}, sshd {s['wtmp']}")
+        check(ut_strip(b["utmp"]) == ut_strip(s["utmp"]), f"utmp: burrowd {b['utmp']}, sshd {s['utmp']}")
+        check(b["wtmp"][1]["term"] == 0 and b["wtmp"][1]["exit"] == 3, f"burrowd's end record: {b['wtmp'][1]}")
+        check(b["btmp"] == [] and s["btmp"] == [], "a btmp record for a login that worked")
+        return f"{b['wtmp'][0]['line']} {b['wtmp'][0]['host']}, USER then DEAD, as sshd's"
+
+
+@row
+def utmp_command():
+    """A command with no pty writes no login record, through either server."""
+    with tty_pair("utmp-command") as p:
+        got = {who: ut_turn(p, port, lambda port: p.ssh(port, ["true"]))
+               for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port))}
+        check(got["sshd"][1]["wtmp"] == [] and got["burrowd"][1]["wtmp"] == [],
+              f"wtmp records for a command: sshd {got['sshd'][1]['wtmp']}, burrowd {got['burrowd'][1]['wtmp']}")
+        return "none from either"
+
+
+def dropped(p, port):
+    """A shell at a terminal running `sleep 60`, its client killed (the connection gone)."""
+    proc = subprocess.Popen(p.argv(port, ["-tt", "sleep 60"]), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, env=p.env())
+    time.sleep(2)
+    proc.kill()
+    proc.communicate()
+    time.sleep(2)
+    return (proc.returncode, b"", b"")
+
+
+@row
+def utmp_dropped():
+    """A session whose client is killed: both servers write its end; burrowd's end record
+    says SIGHUP (1), the hangup that ended its program."""
+    with tty_pair("utmp-dropped") as p:
+        got = {who: ut_turn(p, port, lambda port: dropped(p, port))
+               for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port))}
+        s, b = got["sshd"][1], got["burrowd"][1]
+        record(p, f"sshd: {s}\nburrowd: {b}\n")
+        check([r["type"] for r in s["wtmp"]] == [7, 8], f"sshd's records: {s['wtmp']}")
+        check(ut_strip(b["wtmp"]) == ut_strip(s["wtmp"]), f"wtmp: burrowd {b['wtmp']}, sshd {s['wtmp']}")
+        check(b["wtmp"][1]["term"] == 1, f"burrowd's end record: {b['wtmp'][1]}")
+        return "the end written by both, burrowd's with SIGHUP"
+
+
+@row
+def btmp_password():
+    """A wrong password for the account: a LOGIN_PROCESS on `ssh:notty` with the user and
+    the address in btmp, held to sshd's; an unknown user's wrong password is recorded under
+    the name the client sent (sshd records that name for its first method too: burrowd
+    once, sshd at least once)."""
+    pw, wrong = serverlib.new_password(), serverlib.new_password()
+    with serverlib.Shadow() as sh, Pair(BIN, rundir("btmp-password"), sshd=PW_SSHD, burrowd=PW_BURROWD) as p:
+        sh.set(serverlib.USER, serverlib.make_hash(mkpw(), pw))
+        got = {who: ut_turn(p, port, lambda port: p.ssh_pw(port, ["true"], [wrong], opts=["-o", "NumberOfPasswordPrompts=1"]))
+               for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port))}
+        s, b = got["sshd"][1]["btmp"], got["burrowd"][1]["btmp"]
+        record(p, f"sshd: {s}\nburrowd: {b}\n")
+        check(len(s) == 1 and s[0]["type"] == 6 and s[0]["line"] == "ssh:notty", f"sshd's btmp: {s}")
+        check(ut_strip(b) == ut_strip(s), f"btmp: burrowd {b}, sshd {s}")
+        unknown = {who: ut_turn(p, port, lambda port: p.ssh_pw(port, ["true"], [wrong], user="nosuchuser",
+                                                               opts=["-o", "NumberOfPasswordPrompts=1"]))
+                   for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port))}
+        us, ub = unknown["sshd"][1]["btmp"], unknown["burrowd"][1]["btmp"]
+        check(len(ub) == 1 and ub[0]["user"] == "nosuchuser" and len(us) >= 1 and us[-1]["user"] == "nosuchuser",
+              f"an unknown user: burrowd {ub}, sshd {us}")
+        no_leak(p, [pw, wrong], got["sshd"][0], got["burrowd"][0])
+        return f"btmp {b[0]['user']} on ssh:notty from {b[0]['host']}, as sshd's"
+
+
 def main():
     global BIN
     ap = argparse.ArgumentParser()
