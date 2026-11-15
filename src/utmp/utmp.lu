@@ -3,7 +3,7 @@
 //! burrow.utmp — burrowd's login records (px133): a session with a pty in
 //! /var/run/utmp and /var/log/wtmp when it starts and when it ends, and each
 //! refused password in /var/log/btmp, as OpenSSH's sshd writes them (utmp(5);
-//! sshd 9.6's records measured black box in a container: docs/SOURCES.md), so
+//! sshd's records measured black box: docs/SOURCES.md), so
 //! `last`, `lastb` and `who` show burrowd's logins beside the console's.
 //!
 //! **The record** is x86-64 glibc's `struct utmp`, 384 bytes, every number

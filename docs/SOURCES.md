@@ -336,9 +336,9 @@ OpenSSH or any other server or terminal program.
 ## px133: login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
-utmp's slots by `ut_id`, a logout in wtmp as DEAD_PROCESS with no user. The pinned `sshd` as a black box, in a
-container of Ubuntu 24.04.5 with OpenSSH 9.6p1: the records it wrote to `/var/run/utmp`, `/var/log/wtmp` and
-`/var/log/btmp` for a shell and a command at a terminal (`-tt`), a command with no pty, a session whose client
-was killed, a wrong password for an account and for a name no account has, read back with util-linux's
-`utmpdump` and byte by byte. No `.c` or `.h` file was opened, of OpenSSH, glibc's utmp code or any login
-program.
+utmp's slots by `ut_id`, a logout in wtmp as DEAD_PROCESS with no user. OpenSSH's `sshd` as a black box: 9.6p1
+in a container of Ubuntu 24.04.5 first, then the pinned `sshd` through the rows: the records it wrote to
+`/var/run/utmp`, `/var/log/wtmp` and `/var/log/btmp` for a shell and a command at a terminal (`-tt`), a command
+with no pty, a session whose client was killed, a wrong password for an account and for a name no account has,
+read back with util-linux's `utmpdump` and byte by byte. No `.c` or `.h` file was opened, of OpenSSH, glibc's
+utmp code or any login program.
