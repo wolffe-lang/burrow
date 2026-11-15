@@ -6,8 +6,9 @@
   line, the user, the client's address) and a DEAD_PROCESS when it ends,
   whose `ut_exit` says how the program ended (its status, or SIGHUP when
   the connection went), which `sshd` leaves zero; a refused password is a
-  LOGIN_PROCESS on `ssh:notty` in `/var/log/btmp`. A command with no pty
-  writes none. The session's process tells the monitor its pty in one new
+  USER_PROCESS on `ssh:notty` in `/var/log/btmp`. A command with no pty
+  writes none, and with no `/var/run/utmp` (the booted system makes it)
+  no utmp slot is written. The session's process tells the monitor its pty in one new
   frame (`pty`); the monitor, root, writes. Held to the pinned `sshd`'s
   records field by field (`tools/check-server`'s utmp and btmp rows).
 - A program in a burrowd session starts with the default disposition of

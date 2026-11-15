@@ -1855,7 +1855,8 @@ def keep_evidence(tier):
 # row runs the same client through sshd and then through burrowd, and reads the records each
 # added: the kind, line, id, user, host and address held equal (the times, pids and pty
 # numbers written T, P and N); `ut_exit` is burrowd's own (sshd leaves it zero) and held to
-# what the session did.
+# what the session did. Each turn starts with utmp present and empty, as a booted system's
+# (the system makes it; neither server does: sshd writes no slot and no end without it).
 UT_FILES = ("/var/run/utmp", "/var/log/wtmp", "/var/log/btmp")
 
 
@@ -1892,10 +1893,17 @@ def ut_slot(path):
 
 
 def ut_turn(p, port, action):
-    """`action(port)` run, then the records it added to wtmp and btmp, and utmp's pty slots."""
+    """utmp made empty, `action(port)` run, then the records it added to wtmp and btmp, and
+    utmp's pty slots."""
+    pathlib.Path("/var/run/utmp").write_bytes(b"")
     before = ut_size()
     r = action(port)
+    # A session's end is written when the server sees it close: waited for (an odd count of
+    # new wtmp records is a start with no end yet), at most ten seconds.
+    deadline = time.time() + 10
     time.sleep(1.5)
+    while time.time() < deadline and len(ut_records("/var/log/wtmp", before["/var/log/wtmp"])) % 2 == 1:
+        time.sleep(0.25)
     return r, {"wtmp": ut_records("/var/log/wtmp", before["/var/log/wtmp"]),
                "btmp": ut_records("/var/log/btmp", before["/var/log/btmp"]),
                "utmp": ut_slot("/var/run/utmp")}
@@ -1914,9 +1922,6 @@ def utmp_session():
     with tty_pair("utmp-session") as p:
         got = {}
         for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port)):
-            for f in ("/var/run/utmp",):
-                if os.path.exists(f):
-                    pathlib.Path(f).write_bytes(b"")
             got[who] = ut_turn(p, port, lambda port: p.ssh(port, ["-tt", "exit 3"], timeout=30))
         rs, s = got["sshd"]
         rb, b = got["burrowd"]
@@ -1969,8 +1974,8 @@ def utmp_dropped():
 
 @row
 def btmp_password():
-    """A wrong password for the account: a LOGIN_PROCESS on `ssh:notty` with the user and
-    the address in btmp, held to sshd's; an unknown user's wrong password is recorded under
+    """A wrong password for the account: a USER_PROCESS on `ssh:notty` with the user and
+    the address in btmp, held to the pinned sshd's (9.6p1 wrote LOGIN_PROCESS); an unknown user's wrong password is recorded under
     the name the client sent (sshd records that name for its first method too: burrowd
     once, sshd at least once)."""
     pw, wrong = serverlib.new_password(), serverlib.new_password()
@@ -1980,7 +1985,7 @@ def btmp_password():
                for who, port in (("sshd", p.sshd.port), ("burrowd", p.burrowd.port))}
         s, b = got["sshd"][1]["btmp"], got["burrowd"][1]["btmp"]
         record(p, f"sshd: {s}\nburrowd: {b}\n")
-        check(len(s) == 1 and s[0]["type"] == 6 and s[0]["line"] == "ssh:notty", f"sshd's btmp: {s}")
+        check(len(s) == 1 and s[0]["type"] == 7 and s[0]["line"] == "ssh:notty", f"sshd's btmp: {s}")
         check(ut_strip(b) == ut_strip(s), f"btmp: burrowd {b}, sshd {s}")
         unknown = {who: ut_turn(p, port, lambda port: p.ssh_pw(port, ["true"], [wrong], user="nosuchuser",
                                                                opts=["-o", "NumberOfPasswordPrompts=1"]))

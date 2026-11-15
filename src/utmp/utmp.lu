@@ -25,7 +25,8 @@
 //!   program ended, which sshd leaves zero: its signal in `e_termination`
 //!   (SIGHUP, 1, when the connection went and the pty hung up) and its
 //!   status in `e_exit`;
-//! - a refused password, LOGIN_PROCESS (6) in btmp (root's, 0600): line
+//! - a refused password, USER_PROCESS (7) in btmp (root's, 0600; the pinned
+//!   sshd's kind, where 9.6p1 wrote LOGIN_PROCESS, 6): line
 //!   `ssh:notty`, the user as the client sent it, the address, the time to
 //!   the second;
 //! - a command with no pty writes nothing, as sshd writes nothing for one.
@@ -248,9 +249,12 @@ fn text_at(b: List[byte], at: int, width: int) -> str {
 }
 
 /// `r` written into utmp's slot for its id (a record of a login kind with the
-/// same `ut_id`), else at the end, under the file's lock.
+/// same `ut_id`), else at the end, under the file's lock. utmp is the booted
+/// system's to make, as `sshd` leaves it: none, no slot written.
 pub fn put(path: str, r: Rec) -> bool {
-    ensure(path, 420)
+    if !fs_exists(path) {
+        return false
+    }
     let fd = fs_open_mode(path, 3) else |_| {
         return false
     }
@@ -310,9 +314,10 @@ pub fn logout(pid: int, line: str, host: str, term: int, status: int) -> bool {
     a && b
 }
 
-/// A refused password: LOGIN_PROCESS on `ssh:notty` in btmp, root's 0600.
+/// A refused password: USER_PROCESS on `ssh:notty` in btmp, root's 0600, the
+/// pinned `sshd`'s kind for it (9.6p1 wrote LOGIN_PROCESS).
 pub fn failed(pid: int, user: str, host: str) -> bool {
-    var r = new(k_login_process(), pid, "ssh:notty", user, host)
+    var r = new(k_user_process(), pid, "ssh:notty", user, host)
     r.id = ""
     r.usecs = 0
     append(btmp_path(), r, 384)
