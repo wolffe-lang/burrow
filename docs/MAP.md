@@ -65,6 +65,7 @@ clone, fetch and push byte for byte as the pinned `ssh` does
 | `src/ptyhost` | the one place burrowd reaches the host's ptys and new sessions, over wolf-std's: the pty opened, sized and set to the client's modes, the slave taken as a controlling terminal, a session led (bw06) |
 | `src/ssession` | the session's I/O: the command and its three pipes, or (bw06) its pty's master, the program's session of its own, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
 | `src/slog` | the one log line per connection: UTC time, escaped user, fingerprint, outcome, status |
+| `src/utmp` | the login records (px133): utmp(5)'s 384-byte record, a pty session's USER_PROCESS and DEAD_PROCESS in utmp and wtmp, a refused password's USER_PROCESS on `ssh:notty` in btmp, as the pinned sshd writes them |
 | `src/peer` | the client's address and port from `/proc/net/tcp` and `tcp6` by the socket's inode, RFC 5952 text; `UNKNOWN` where there is none (wolf-std#140) |
 
 ## What burrow speaks
