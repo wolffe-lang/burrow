@@ -166,7 +166,7 @@ fn put_text(mut b: List[byte], at: int, s: str, width: int) {
 /// The record's 384 bytes.
 pub fn bytes(r: Rec) -> List[byte] {
     var b = List[byte]()
-    for _k in 0..384 {
+    for _ in 0..384 {
         (mut b).push(0 as byte)
     }
     put_word(mut b, 0, r.kind, 2)
