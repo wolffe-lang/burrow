@@ -71,6 +71,7 @@ use refuse
 use schannel
 use sconfig
 use transport
+use wire
 
 /// What the session runs, and as whom.
 pub struct Plan {
@@ -91,6 +92,10 @@ pub struct Plan {
     uid: int,
     gid: int,
     groups: List[int],
+    /// px133: the pipe to the monitor (fd -1: none), told the pty's name and
+    /// the program's pid when the program starts on a pty (`pipe.k_pty`), so
+    /// the monitor writes the session's login record.
+    notify: fs.File,
 }
 
 /// How the session ended, for the log: `status N`, `signal NAME` or
@@ -123,6 +128,17 @@ struct Running {
     /// The slave the pty was opened with, until the program's fork.
     slave_fd: fs.File,
     slave: List[byte],
+}
+
+// px133: the monitor told that the program runs on a pty: its slave's path
+// and the program's pid (`pipe.k_pty`).
+fn tell_pty(p: Plan, r: Running) {
+    let pid = process.pid(r.child) else -1
+    var f = List[List[byte]]()
+    (mut f).push(copy r.slave)
+    (mut f).push(wire.bytes_of("{pid}"))
+    var n = copy p.notify
+    pipe.send(mut n, pipe.k_pty(), f) else {}
 }
 
 fn say(p: Plan, msg: str) {
@@ -477,6 +493,9 @@ fn on_message(
             transport.write(mut c, answer)?
         }
         if ok {
+            if got.pty && plan.notify.fd >= 0 {
+                tell_pty(plan, got)
+            }
             pr.child = copy got.child
             pr.running = true
             pr.stdin = copy got.stdin
