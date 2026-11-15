@@ -5,14 +5,14 @@
 // burrowd's words for it.
 use utmp
 
+// The little-endian word at `at`, read from its top byte down (no power past the
+// word's own range: lupin's int is 32 bits).
 fn word(b: List[byte], at: int, width: int) -> int {
     var n = 0
-    var power = 1
-    var k = 0
-    while k < width {
-        n += (b[at + k] as int) * power
-        power *= 256
-        k += 1
+    var k = width
+    while k > 0 {
+        k -= 1
+        n = n * 256 + (b[at + k] as int)
     }
     n
 }
