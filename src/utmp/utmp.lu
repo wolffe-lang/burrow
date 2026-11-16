@@ -1,0 +1,353 @@
+//! member: true
+//!
+//! burrow.utmp — burrowd's login records (px133): a session with a pty in
+//! /var/run/utmp and /var/log/wtmp when it starts and when it ends, and each
+//! refused password in /var/log/btmp, as OpenSSH's sshd writes them (utmp(5);
+//! sshd's records measured black box: docs/SOURCES.md), so
+//! `last`, `lastb` and `who` show burrowd's logins beside the console's.
+//!
+//! **The record** is x86-64 glibc's `struct utmp`, 384 bytes, every number
+//! little-endian: `ut_type` (short) at 0, `ut_pid` at 4, `ut_line[32]` at 8,
+//! `ut_id[4]` at 40, `ut_user[32]` at 44, `ut_host[256]` at 76, `ut_exit`
+//! (two shorts: the signal that ended the session's program, its exit
+//! status) at 332, `ut_session` at 336, `ut_tv` (int32 seconds, int32
+//! microseconds) at 340, `ut_addr_v6` (16 bytes: IPv4 in the first four) at
+//! 348, 20 bytes unused.
+//!
+//! **What burrowd writes**, sshd's shapes:
+//! - a session's start, USER_PROCESS (7): the pty's name less `/dev/`
+//!   (`pts/0`), `ut_id` its last four bytes (`ts/0`), the user, the client's
+//!   address as text in `ut_host` and as bytes in `ut_addr_v6` (empty and
+//!   zero when burrowd does not know it: src/peer), the session program's
+//!   pid; in utmp's slot for that id and appended to wtmp;
+//! - its end, DEAD_PROCESS (8): in utmp's slot, the line and id kept, the
+//!   user and host cleared; in wtmp the line alone. `ut_exit` says how the
+//!   program ended, which sshd leaves zero: its signal in `e_termination`
+//!   (SIGHUP, 1, when the connection went and the pty hung up) and its
+//!   status in `e_exit`;
+//! - a refused password, USER_PROCESS (7) in btmp (root's, 0600; the pinned
+//!   sshd's kind, where 9.6p1 wrote LOGIN_PROCESS, 6): line
+//!   `ssh:notty`, the user as the client sent it, the address, the time to
+//!   the second;
+//! - a command with no pty writes nothing, as sshd writes nothing for one.
+//!
+//! An append is one write(2) of the whole record on an `O_APPEND`
+//! descriptor; a utmp slot is written under the file's exclusive lock,
+//! tried every 10 ms for at most two seconds. A record that cannot be
+//! written never ends a session.
+
+use std.time
+
+/// utmp(5)'s LOGIN_PROCESS: a refused login in btmp.
+pub fn k_login_process() -> int {
+    6
+}
+
+/// utmp(5)'s USER_PROCESS: a session's start.
+pub fn k_user_process() -> int {
+    7
+}
+
+/// utmp(5)'s DEAD_PROCESS: a session's end.
+pub fn k_dead_process() -> int {
+    8
+}
+
+/// Who is on now: one slot a terminal.
+pub fn utmp_path() -> str {
+    "/var/run/utmp"
+}
+
+/// Every login, logout, boot and shutdown, appended.
+pub fn wtmp_path() -> str {
+    "/var/log/wtmp"
+}
+
+/// Refused logins, appended; root's, 0600.
+pub fn btmp_path() -> str {
+    "/var/log/btmp"
+}
+
+/// One record's fields.
+pub struct Rec {
+    kind: int,
+    pid: int,
+    line: str,
+    id: str,
+    user: str,
+    host: str,
+    term: int,
+    exit: int,
+    secs: int,
+    usecs: int,
+    addr: List[int],
+}
+
+/// `ut_id` for a terminal line: its last four bytes, sshd's rule.
+pub fn id_of(line: str) -> str {
+    if line.len <= 4 {
+        return line
+    }
+    line[line.len - 4..]
+}
+
+/// The record's line for a pty's path: `/dev/` taken off.
+pub fn line_of(path: str) -> str {
+    if path.starts_with("/dev/") {
+        return path[5..]
+    }
+    path
+}
+
+/// The address bytes of a dotted IPv4 address (or `::ffff:a.b.c.d`), none for
+/// anything else (an IPv6 address is left out: the record says only its text).
+pub fn addr_of(text: str) -> List[int] {
+    var t = text
+    if t.starts_with("::ffff:") {
+        t = t[7..]
+    }
+    var out = List[int]()
+    let parts = t.split(".")
+    if parts.len != 4 {
+        return out
+    }
+    for p in parts {
+        if p.len == 0 || p.len > 3 {
+            return List[int]()
+        }
+        var n = 0
+        for b in p.bytes() {
+            let c = b as int
+            if c < 48 || c > 57 {
+                return List[int]()
+            }
+            n = n * 10 + c - 48
+        }
+        if n > 255 {
+            return List[int]()
+        }
+        (mut out).push(n)
+    }
+    out
+}
+
+/// A record of `kind` for `line`, stamped now.
+pub fn new(kind: int, pid: int, line: str, user: str, host: str) -> Rec {
+    let ms = time.unix_ms()
+    Rec {
+        kind: kind,
+        pid: pid,
+        line: line,
+        id: id_of(line),
+        user: user,
+        host: host,
+        term: 0,
+        exit: 0,
+        secs: ms / 1000,
+        usecs: ms % 1000 * 1000,
+        addr: addr_of(host),
+    }
+}
+
+// `v` little-endian in `width` bytes; a negative value in two's complement, each
+// byte of -v - 1 inverted (no constant past 32 bits: lupin's int is 32 bits).
+fn put_word(mut b: List[byte], at: int, v: int, width: int) {
+    let neg = v < 0
+    var x = if neg then -(v + 1) else v
+    for k in 0..width {
+        let d = x % 256
+        b[at + k] = (if neg then 255 - d else d) as byte
+        x = x / 256
+    }
+}
+
+fn put_text(mut b: List[byte], at: int, s: str, width: int) {
+    let t = s.bytes()
+    var k = 0
+    while k < t.len && k < width {
+        b[at + k] = t[k]
+        k += 1
+    }
+}
+
+/// The record's 384 bytes.
+pub fn bytes(r: Rec) -> List[byte] {
+    var b = List[byte]()
+    for _ in 0..384 {
+        (mut b).push(0 as byte)
+    }
+    put_word(mut b, 0, r.kind, 2)
+    put_word(mut b, 4, r.pid, 4)
+    put_text(mut b, 8, r.line, 32)
+    put_text(mut b, 40, r.id, 4)
+    put_text(mut b, 44, r.user, 32)
+    put_text(mut b, 76, r.host, 256)
+    put_word(mut b, 332, r.term, 2)
+    put_word(mut b, 334, r.exit, 2)
+    put_word(mut b, 340, r.secs, 4)
+    put_word(mut b, 344, r.usecs, 4)
+    var k = 0
+    while k < r.addr.len && k < 16 {
+        b[348 + k] = r.addr[k] as byte
+        k += 1
+    }
+    b
+}
+
+fn ensure(path: str, perm: int) {
+    if fs_exists(path) {
+        return
+    }
+    let fd = fs_open_perm(path, 4, perm) else |_| {
+        return
+    }
+    fs_close(fd) else |_| {}
+}
+
+/// `r` appended to `path` (wtmp, btmp): one write; the file made with `perm`
+/// when missing. False when it could not be written.
+pub fn append(path: str, r: Rec, perm: int) -> bool {
+    ensure(path, perm)
+    let fd = fs_open_mode(path, 2) else |_| {
+        return false
+    }
+    var ok = true
+    fs_write_chunk(fd, bytes(r)) else |_| {
+        ok = false
+    }
+    fs_close(fd) else |_| {}
+    ok
+}
+
+fn lock(fd: int) -> bool {
+    var tries = 0
+    while tries < 200 {
+        var taken = false
+        fs_lock(fd, 2) else |e| match e {
+            busy => {
+                taken = true
+            },
+            _ => {
+                return false
+            },
+        }
+        if !taken {
+            return true
+        }
+        time_sleep_ms(10)
+        tries += 1
+    }
+    false
+}
+
+fn text_at(b: List[byte], at: int, width: int) -> str {
+    var end = at
+    while end < at + width && b[end] as int != 0 {
+        end += 1
+    }
+    str_from_utf8(b[at..end]) else ""
+}
+
+/// `r` written into utmp's slot for its id (a record of a login kind with the
+/// same `ut_id`), else at the end, under the file's lock. utmp is the booted
+/// system's to make, as `sshd` leaves it: none, no slot written.
+pub fn put(path: str, r: Rec) -> bool {
+    if !fs_exists(path) {
+        return false
+    }
+    let fd = fs_open_mode(path, 3) else |_| {
+        return false
+    }
+    if !lock(fd) {
+        fs_close(fd) else |_| {}
+        return false
+    }
+    let all = fs_read_bytes(path) else List[byte]()
+    var slot = all.len / 384
+    var i = 0
+    while (i + 1) * 384 <= all.len {
+        let at = i * 384
+        let kind = all[at] as int + all[at + 1] as int * 256
+        if kind >= 5 && kind <= 8 && text_at(all, at + 40, 4) == r.id {
+            slot = i
+            break
+        }
+        i += 1
+    }
+    var ok = true
+    let _at = fs_seek(fd, slot * 384, 0) else |_| {
+        ok = false
+        0
+    }
+    if ok {
+        fs_write_chunk(fd, bytes(r)) else |_| {
+            ok = false
+        }
+    }
+    fs_unlock(fd) else |_| {}
+    fs_close(fd) else |_| {}
+    ok
+}
+
+/// A pty session's start: USER_PROCESS in utmp and wtmp.
+pub fn login(pid: int, line: str, user: str, host: str) -> bool {
+    let r = new(k_user_process(), pid, line, user, host)
+    let a = put(utmp_path(), r)
+    let b = append(wtmp_path(), r, 420)
+    a && b
+}
+
+/// Its end: DEAD_PROCESS in utmp's slot (the line, the id and the address
+/// kept, the user and host cleared, as sshd leaves it) and in wtmp (the line
+/// alone), `term` the signal that ended the program (0 none), `status` its
+/// exit status.
+pub fn logout(pid: int, line: str, host: str, term: int, status: int) -> bool {
+    var r = new(k_dead_process(), pid, line, "", "")
+    r.term = term
+    r.exit = status
+    r.addr = addr_of(host)
+    let a = put(utmp_path(), r)
+    var w = copy r
+    w.id = ""
+    w.addr = List[int]()
+    let b = append(wtmp_path(), w, 420)
+    a && b
+}
+
+/// A refused password: USER_PROCESS on `ssh:notty` in btmp, root's 0600, the
+/// pinned `sshd`'s kind for it (9.6p1 wrote LOGIN_PROCESS).
+pub fn failed(pid: int, user: str, host: str) -> bool {
+    var r = new(k_user_process(), pid, "ssh:notty", user, host)
+    r.id = ""
+    r.usecs = 0
+    append(btmp_path(), r, 384)
+}
+
+/// `term` and `status` of a session's `status N` or `signal NAME` (burrowd's
+/// words for how its program ended): the signal's number for the names a
+/// session's end has, 0 and the status otherwise.
+pub fn ended(status: str) -> (int, int) {
+    if status.starts_with("status ") {
+        var n = 0
+        for b in status[7..].bytes() {
+            let c = b as int
+            if c < 48 || c > 57 {
+                return (0, 0)
+            }
+            n = n * 10 + c - 48
+        }
+        return (0, n)
+    }
+    if status.starts_with("signal ") {
+        let names = "HUP INT QUIT ILL TRAP ABRT BUS FPE KILL USR1 SEGV USR2 PIPE ALRM TERM"
+        var k = 1
+        for w in names.words() {
+            if w == status[7..] {
+                return (k, 0)
+            }
+            k += 1
+        }
+        return (1, 0)
+    }
+    (0, 0)
+}
