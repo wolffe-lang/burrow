@@ -1586,13 +1586,20 @@ def session_signals_default():
     Ctrl-C ends a foreground `sleep` at a terminal ($? 130) and Ctrl-\\ ends
     the next (131); with no pty, SIGINT sent to a command ends it
     (exit-signal INT). Held byte for byte to the pinned sshd started the same
-    way."""
+    way.
+
+    Each line is typed once the shell has answered the signal, never on the
+    terminal's own echo of it: the shell reports `Quit (core dumped)` only
+    when the core dump ends, which goes through the host's core handler
+    (systemd-coredump: 67-82 ms where it was measured, longer under load),
+    so typing a fixed pause after the `^\\` echo raced it and the next line's
+    echo could land before `Quit` through either server (px133)."""
     steps = [(b"$ ", typed(b"sleep 31\r", 0.3)),
              (b"sleep 31", typed(b"\x03", 0.5)),
-             (b"^C", typed(b"echo i$((1+1))n $?\r", 0.3)),
+             (b"^C\r\n$ ", typed(b"echo i$((1+1))n $?\r", 0.3)),
              (b"i2n ", typed(b"sleep 32\r", 0.3)),
              (b"sleep 32", typed(b"\x1c", 0.5)),
-             (b"^\\", typed(b"echo q$((1+1))n $?\r", 0.3)),
+             (b"Quit", typed(b"echo q$((1+1))n $?\r", 0.3)),
              (b"q2n ", typed(b"exit 0\r", 0.3))]
     with tty_pair("session-signals-default", prefix=IGNORING) as p:
         # burrowd keeps both ignored; the pinned sshd keeps SIGINT ignored and
