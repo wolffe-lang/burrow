@@ -30,6 +30,7 @@ use slog
 use spass
 use ssession
 use transport
+use utmp
 use wire
 use worker
 
@@ -59,6 +60,27 @@ fn log(l: Log, line: str) {
 
 fn stamp() -> str {
     slog.utc(time.unix_ms() / 1000)
+}
+
+// px133: the client's address for a login record, "" when burrowd does not know it.
+fn client_host(ends: peer.Ends) -> str {
+    if ends.client.addr == "UNKNOWN" then "" else ends.client.addr
+}
+
+// px133: a decimal's value, -1 for anything else.
+fn digits(s: str) -> int {
+    if s.len == 0 {
+        return -1
+    }
+    var n = 0
+    for b in s.bytes() {
+        let c = b as int
+        if c < 48 || c > 57 {
+            return -1
+        }
+        n = n * 10 + c - 48
+    }
+    n
 }
 
 fn fail(name: str, detail: str) -> int {
@@ -342,6 +364,7 @@ fn holder_main(
         uid: a.uid,
         gid: a.gid,
         groups: copy a.groups,
+        notify: copy tw,
     }
     var ch = schannel.new()
     let res = ssession.run(mut c, mut ch, plan)
@@ -700,6 +723,10 @@ fn monitor_main(
                 verdict_pty = true
             } else {
                 line.outcome = why
+                // px133: a refused password in btmp, the user as the client sent it.
+                if pre.root {
+                    let _b = utmp.failed(env.pid(), user, client_host(ends))
+                }
             }
             answer(mut to_w, why == "")
         } else if fr.kind == pipe.k_authed() {
@@ -744,12 +771,21 @@ fn monitor_main(
         line.outcome = "ok"
         line.user = authed_user
         line.key = if authed_blob.len == 0 then "password" else fingerprint(authed_blob)
+        // px133: a session on a pty is a login record (src/utmp), written here, as root.
+        var ut_line = ""
+        var ut_pid = -1
         loop {
             let fr = pipe.receive(mut from_h) else { break }
             if fr.kind == pipe.k_sign() {
                 var sf = List[List[byte]]()
                 (mut sf).push(hostkey.sign_blob(hk.seed, pipe.bytes_at(fr, 0)))
                 pipe.send(mut to_h, pipe.k_signed(), sf) else {}
+            } else if fr.kind == pipe.k_pty() {
+                if pre.root && ut_line == "" {
+                    ut_line = utmp.line_of(pipe.text(fr, 0))
+                    ut_pid = digits(pipe.text(fr, 1))
+                    let _l = utmp.login(ut_pid, ut_line, authed_user, client_host(ends))
+                }
             } else if fr.kind == pipe.k_ended() {
                 line.outcome = pipe.text(fr, 0)
                 line.status = pipe.text(fr, 1)
@@ -760,6 +796,18 @@ fn monitor_main(
                     }
                 }
             }
+        }
+        if ut_line != "" {
+            // How the session's program ended: its signal and status, or, when the
+            // connection went before burrowd saw it end, the hangup that ends it.
+            let (t0, status) = utmp.ended(line.status)
+            var term = t0
+            if term == 0 &&
+                line.status == "status -" &&
+                (line.outcome == "disconnected" || line.outcome == "io") {
+                term = 1
+            }
+            let _o = utmp.logout(ut_pid, ut_line, client_host(ends), term, status)
         }
     } else {
         var none = List[List[byte]]()
@@ -858,6 +906,7 @@ fn oneproc_main(
         uid: a.uid,
         gid: a.gid,
         groups: copy a.groups,
+        notify: fs.File { fd: -1 },
     }
     var ch = schannel.new()
     let res = ssession.run(mut c, mut ch, plan)
