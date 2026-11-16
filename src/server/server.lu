@@ -802,7 +802,8 @@ fn monitor_main(
             // connection went before burrowd saw it end, the hangup that ends it.
             let (t0, status) = utmp.ended(line.status)
             var term = t0
-            if term == 0 && line.status == "status -" &&
+            if term == 0 &&
+                line.status == "status -" &&
                 (line.outcome == "disconnected" || line.outcome == "io") {
                 term = 1
             }
