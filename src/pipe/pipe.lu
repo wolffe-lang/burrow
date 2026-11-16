@@ -89,6 +89,13 @@ pub fn k_password() -> int {
     13
 }
 
+/// The frame kind `pty` [the slave's path, the program's pid] (px133): the
+/// holder to the monitor, a session's program started on a pty; the monitor,
+/// root, writes the login record (src/utmp).
+pub fn k_pty() -> int {
+    14
+}
+
 /// How a pipe fails: its end (or a frame over `max_frame`), or a frame
 /// that does not parse.
 pub error Broken = {closed, malformed}
