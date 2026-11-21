@@ -104,6 +104,23 @@ def children(pid):
             if len(f) == 2 and f[1] == str(pid) and f[0] != str(ps.pid)]
 
 
+def rss_kib(pid):
+    """The resident size of `pid` in KiB: VmRSS from /proc/PID/status on
+    linux, ps's rss column elsewhere (macOS). The process measured is the
+    one named, never a child or the harness, so ru_maxrss's survival across
+    exec has no part in it."""
+    status = pathlib.Path(f"/proc/{pid}/status")
+    if status.exists():
+        for line in status.read_text().splitlines():
+            if line.startswith("VmRSS:"):
+                return int(line.split()[1])
+        raise RuntimeError(f"no VmRSS line for pid {pid}")
+    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    if not out:
+        raise RuntimeError(f"no process {pid}")
+    return int(out)
+
+
 def childless(pid, seconds=5.0):
     """Waits until `pid` has no child processes; False if some remain after
     `seconds`. A server's listener after the harness's readiness probe:
