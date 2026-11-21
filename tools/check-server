@@ -2037,6 +2037,40 @@ def server_idle_rss():
         return f"burrowd {grew['burrowd']:+d} KiB, sshd {grew['sshd']:+d} KiB over {secs:.0f} s idle"
 
 
+CONN_WARM = 10
+CONN_COUNT = 100
+CONN_BOUND_KIB = 64
+
+
+@row
+def server_conn_rss():
+    """#28: after CONN_WARM logins, CONN_COUNT more (`ssh host true`, one at a
+    time) leave the listener's resident size where it was (within
+    CONN_BOUND_KIB), each server measured over its own logins."""
+    with Pair(BIN, rundir("server-conn-rss")) as p:
+        got = {}
+        for name, port, pid in (("burrowd", p.burrowd.port, p.burrowd.proc.pid),
+                                ("sshd", p.sshd.port, p.sshd.proc.pid)):
+            for i in range(CONN_WARM):
+                r = p.ssh(port, ["true"], timeout=30)
+                check(r[0] == 0, f"{name}, warm-up login {i + 1}: {show(r)}")
+            check(serverlib.childless(pid, 10), f"{name}'s warm-up connections still running after 10 s")
+            before = serverlib.rss_kib(pid)
+            t0 = time.monotonic()
+            for i in range(CONN_COUNT):
+                r = p.ssh(port, ["true"], timeout=30)
+                check(r[0] == 0, f"{name}, login {i + 1} of {CONN_COUNT}: {show(r)}")
+            check(serverlib.childless(pid, 10), f"{name}'s connections still running 10 s after the last")
+            got[name] = (before, serverlib.rss_kib(pid), time.monotonic() - t0)
+        record(p, "".join(f"{name}: {b} KiB, then {a} KiB after {CONN_COUNT} logins in {s:.1f} s ({a - b:+d})\n"
+                          for name, (b, a, s) in got.items()))
+        (bb, ba, bs), (sb, sa, _) = got["burrowd"], got["sshd"]
+        check(ba - bb <= CONN_BOUND_KIB,
+              f"burrowd's listener grew {ba - bb} KiB over {CONN_COUNT} logins in {bs:.0f} s ({bb} to {ba} KiB), "
+              f"over the {CONN_BOUND_KIB} KiB bound; sshd's grew {sa - sb} KiB")
+        return f"burrowd {ba - bb:+d} KiB, sshd {sa - sb:+d} KiB over {CONN_COUNT} logins"
+
+
 def main():
     global BIN
     ap = argparse.ArgumentParser()
