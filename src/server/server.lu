@@ -1168,15 +1168,9 @@ pub fn run(args: List[str], one_process: bool) -> int {
                         conns[ci].status = fs.File { fd: -1 }
                         var gone = process.Child { slot: conns[ci].child.slot }
                         let _ = process.wait_status(take gone) else 0
-                        var kept = List[Live]()
-                        var k = 0
-                        while k < conns.len {
-                            if k != ci {
-                                (mut kept).push(copy conns[k])
-                            }
-                            k += 1
-                        }
-                        conns = copy kept
+                        // #28: the ended entry removed in place; a table rebuilt
+                        // and copied out cost the outer region a list a connection.
+                        let _ = (mut conns).remove(ci)
                         continue
                     }
                     let b = got[0] as int
