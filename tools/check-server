@@ -2091,7 +2091,7 @@ def server_idle_rss():
 
 
 CONN_WARM = 10
-CONN_COUNT = 100
+CONN_COUNT = 300
 CONN_BOUND_KIB = 64
 
 
