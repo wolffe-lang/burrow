@@ -2050,35 +2050,44 @@ def btmp_password():
 
 # ---- memory (#30, #28) -----------------------------------------------------------
 # The listener runs for as long as the machine does (PAX starts it at boot), so
-# its resident size must not grow with time or with connections. Each row reads
-# the listener's own VmRSS (serverlib.rss_kib), burrowd's and the pinned sshd's
-# side by side, and holds burrowd's growth under a bound; sshd's growth is
-# recorded beside it as the reference.
+# the memory it holds must not grow with time or with connections. Each row reads
+# the listener's own memory (serverlib.mem_kib), burrowd's and the pinned sshd's
+# side by side, and holds the growth of burrowd's anonymous resident memory
+# (RssAnon; footprint's dirty memory on macOS) under a bound. VmRSS is not held:
+# an idle sshd's fell 128 KiB in a minute on a Linux host, file-backed pages
+# reclaimed by the kernel, and a fall of that kind hid a growth of burrowd's.
+# VmRSS and RssFile, and sshd's numbers, are recorded beside it.
 IDLE_SECONDS = 60
 IDLE_BOUND_KIB = 64
 
 
+def mem_note(m0, m1):
+    """`A to B KiB` for the held measure, then resident and file-backed."""
+    t = f"{m0['held']} to {m1['held']} KiB held; resident {m0['rss']} to {m1['rss']} KiB"
+    return t + (f", file-backed {m0['file']} to {m1['file']} KiB" if m0["file"] is not None else "")
+
+
 @row
 def server_idle_rss():
-    """#30: a minute with no connection leaves the listener's resident size
-    where it was (within IDLE_BOUND_KIB)."""
+    """#30: a minute with no connection leaves the listener's anonymous
+    resident memory where it was (within IDLE_BOUND_KIB)."""
     with Pair(BIN, rundir("server-idle-rss")) as p:
         pids = (("burrowd", p.burrowd.proc.pid), ("sshd", p.sshd.proc.pid))
         for name, pid in pids:
             check(serverlib.childless(pid), f"{name}'s readiness probe still running after 5 s: {serverlib.children(pid)}")
         time.sleep(2)
-        start = {name: serverlib.rss_kib(pid) for name, pid in pids}
+        start = {name: serverlib.mem_kib(pid) for name, pid in pids}
         t0 = time.monotonic()
         time.sleep(IDLE_SECONDS)
-        end = {name: serverlib.rss_kib(pid) for name, pid in pids}
+        end = {name: serverlib.mem_kib(pid) for name, pid in pids}
         secs = time.monotonic() - t0
-        grew = {name: end[name] - start[name] for name, _ in pids}
-        record(p, "".join(f"{name}: {start[name]} KiB, then {end[name]} KiB after {secs:.1f} s idle ({grew[name]:+d})\n"
+        grew = {name: end[name]["held"] - start[name]["held"] for name, _ in pids}
+        record(p, "".join(f"{name}: {mem_note(start[name], end[name])} after {secs:.1f} s idle ({grew[name]:+d} held)\n"
                           for name, _ in pids))
         check(grew["burrowd"] <= IDLE_BOUND_KIB,
-              f"burrowd's listener grew {grew['burrowd']} KiB in {secs:.0f} s idle ({start['burrowd']} to {end['burrowd']} KiB), "
-              f"over the {IDLE_BOUND_KIB} KiB bound; sshd's grew {grew['sshd']} KiB")
-        return f"burrowd {grew['burrowd']:+d} KiB, sshd {grew['sshd']:+d} KiB over {secs:.0f} s idle"
+              f"burrowd's listener's anonymous memory grew {grew['burrowd']} KiB in {secs:.0f} s idle "
+              f"({mem_note(start['burrowd'], end['burrowd'])}), over the {IDLE_BOUND_KIB} KiB bound; sshd's grew {grew['sshd']} KiB")
+        return f"burrowd {grew['burrowd']:+d} KiB, sshd {grew['sshd']:+d} KiB held over {secs:.0f} s idle"
 
 
 CONN_WARM = 10
@@ -2089,7 +2098,7 @@ CONN_BOUND_KIB = 64
 @row
 def server_conn_rss():
     """#28: after CONN_WARM logins, CONN_COUNT more (`ssh host true`, one at a
-    time) leave the listener's resident size where it was (within
+    time) leave the listener's anonymous resident memory where it was (within
     CONN_BOUND_KIB), each server measured over its own logins."""
     with Pair(BIN, rundir("server-conn-rss")) as p:
         got = {}
@@ -2099,20 +2108,21 @@ def server_conn_rss():
                 r = p.ssh(port, ["true"], timeout=30)
                 check(r[0] == 0, f"{name}, warm-up login {i + 1}: {show(r)}")
             check(serverlib.childless(pid, 10), f"{name}'s warm-up connections still running after 10 s")
-            before = serverlib.rss_kib(pid)
+            before = serverlib.mem_kib(pid)
             t0 = time.monotonic()
             for i in range(CONN_COUNT):
                 r = p.ssh(port, ["true"], timeout=30)
                 check(r[0] == 0, f"{name}, login {i + 1} of {CONN_COUNT}: {show(r)}")
             check(serverlib.childless(pid, 10), f"{name}'s connections still running 10 s after the last")
-            got[name] = (before, serverlib.rss_kib(pid), time.monotonic() - t0)
-        record(p, "".join(f"{name}: {b} KiB, then {a} KiB after {CONN_COUNT} logins in {s:.1f} s ({a - b:+d})\n"
+            got[name] = (before, serverlib.mem_kib(pid), time.monotonic() - t0)
+        record(p, "".join(f"{name}: {mem_note(b, a)} after {CONN_COUNT} logins in {s:.1f} s ({a['held'] - b['held']:+d} held)\n"
                           for name, (b, a, s) in got.items()))
         (bb, ba, bs), (sb, sa, _) = got["burrowd"], got["sshd"]
-        check(ba - bb <= CONN_BOUND_KIB,
-              f"burrowd's listener grew {ba - bb} KiB over {CONN_COUNT} logins in {bs:.0f} s ({bb} to {ba} KiB), "
-              f"over the {CONN_BOUND_KIB} KiB bound; sshd's grew {sa - sb} KiB")
-        return f"burrowd {ba - bb:+d} KiB, sshd {sa - sb:+d} KiB over {CONN_COUNT} logins"
+        db, ds = ba["held"] - bb["held"], sa["held"] - sb["held"]
+        check(db <= CONN_BOUND_KIB,
+              f"burrowd's listener's anonymous memory grew {db} KiB over {CONN_COUNT} logins in {bs:.0f} s "
+              f"({mem_note(bb, ba)}), over the {CONN_BOUND_KIB} KiB bound; sshd's grew {ds} KiB")
+        return f"burrowd {db:+d} KiB, sshd {ds:+d} KiB held over {CONN_COUNT} logins"
 
 
 def main():
