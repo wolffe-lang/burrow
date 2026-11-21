@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import os
 import pathlib
+import re
 import shutil
 import socket
 import subprocess
@@ -300,23 +301,33 @@ def local_log():
 
 
 # The listener's memory (#30, #28): tools/check-server's server-idle-rss and
-# server-conn-rss, burrowd alone, with the same windows and bounds.
+# server-conn-rss, burrowd alone, with the same windows, bounds and measure: the
+# growth of the listener's anonymous resident memory (RssAnon on linux,
+# footprint(1)'s dirty "Footprint" on macOS), its resident size beside it.
 IDLE_SECONDS = 60
 IDLE_BOUND_KIB = 64
 CONN_COUNT = 100
 CONN_BOUND_KIB = 64
 
 
-def rss_kib(pid):
-    """VmRSS of `pid` in KiB from /proc on linux, ps's rss column elsewhere."""
+def mem_kib(pid):
+    """(held, resident) KiB of `pid`: RssAnon and VmRSS from /proc on linux,
+    footprint's Footprint and ps's rss elsewhere (tools/serverlib.mem_kib)."""
     status = pathlib.Path(f"/proc/{pid}/status")
     if status.exists():
+        got = {}
         for line in status.read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1])
-    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    check(out != "", f"no process {pid}")
-    return int(out)
+            k, _, v = line.partition(":")
+            if k in ("VmRSS", "RssAnon"):
+                got[k] = int(v.split()[0])
+        check(len(got) == 2, f"pid {pid}'s status lacks VmRSS or RssAnon: {got}")
+        return got["RssAnon"], got["VmRSS"]
+    rss = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    check(rss != "", f"no process {pid}")
+    fp = subprocess.run(["footprint", str(pid)], capture_output=True, text=True).stdout
+    m = re.search(r"Footprint: (\d+(?:\.\d+)?) (KB|MB|GB)", fp)
+    check(m is not None, f"footprint gave no Footprint line for pid {pid}: {fp[:200]!r}")
+    return int(float(m.group(1)) * {"KB": 1, "MB": 1024, "GB": 1024 * 1024}[m.group(2)]), int(rss)
 
 
 def settled(pid, seconds=10.0):
@@ -335,32 +346,33 @@ def local_idle_rss():
     pid = L.proc.pid
     settled(pid)
     time.sleep(2)
-    start = rss_kib(pid)
+    (h0, r0) = mem_kib(pid)
     t0 = time.monotonic()
     time.sleep(IDLE_SECONDS)
-    end = rss_kib(pid)
+    (h1, r1) = mem_kib(pid)
     secs = time.monotonic() - t0
-    check(end - start <= IDLE_BOUND_KIB,
-          f"burrowd's listener grew {end - start} KiB in {secs:.0f} s idle ({start} to {end} KiB), over the {IDLE_BOUND_KIB} KiB bound")
-    return f"{end - start:+d} KiB over {secs:.0f} s idle"
+    check(h1 - h0 <= IDLE_BOUND_KIB,
+          f"burrowd's listener's anonymous memory grew {h1 - h0} KiB in {secs:.0f} s idle ({h0} to {h1} KiB held; "
+          f"resident {r0} to {r1} KiB), over the {IDLE_BOUND_KIB} KiB bound")
+    return f"{h1 - h0:+d} KiB held, {r1 - r0:+d} KiB resident over {secs:.0f} s idle"
 
 
 @row
 def local_conn_rss():
     pid = L.proc.pid
     settled(pid)
-    before = rss_kib(pid)
+    (h0, r0) = mem_kib(pid)
     t0 = time.monotonic()
     for i in range(CONN_COUNT):
         r = L.ssh(["true"])
         check(r[0] == 0, f"login {i + 1} of {CONN_COUNT}: exit {r[0]}, stderr {r[2][-200:]!r}")
     settled(pid)
-    after = rss_kib(pid)
+    (h1, r1) = mem_kib(pid)
     secs = time.monotonic() - t0
-    check(after - before <= CONN_BOUND_KIB,
-          f"burrowd's listener grew {after - before} KiB over {CONN_COUNT} logins in {secs:.0f} s ({before} to {after} KiB), "
-          f"over the {CONN_BOUND_KIB} KiB bound")
-    return f"{after - before:+d} KiB over {CONN_COUNT} logins in {secs:.0f} s"
+    check(h1 - h0 <= CONN_BOUND_KIB,
+          f"burrowd's listener's anonymous memory grew {h1 - h0} KiB over {CONN_COUNT} logins in {secs:.0f} s "
+          f"({h0} to {h1} KiB held; resident {r0} to {r1} KiB), over the {CONN_BOUND_KIB} KiB bound")
+    return f"{h1 - h0:+d} KiB held, {r1 - r0:+d} KiB resident over {CONN_COUNT} logins in {secs:.0f} s"
 
 
 def main():
