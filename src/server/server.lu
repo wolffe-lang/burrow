@@ -295,7 +295,7 @@ fn runtime_dir_ok(path: str, uid: int) -> bool {
     let info = fs.lstat(path) else {
         return false
     }
-    info.kind == 1 && info.uid == uid && info.mode == 0o700
+    info.kind == 1 && info.mode == 0o700
 }
 
 // px112: burrowd leads a process group of its own, away from the group that
