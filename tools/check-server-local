@@ -306,7 +306,7 @@ def local_log():
 # footprint(1)'s dirty "Footprint" on macOS), its resident size beside it.
 IDLE_SECONDS = 60
 IDLE_BOUND_KIB = 64
-CONN_COUNT = 100
+CONN_COUNT = 300
 CONN_BOUND_KIB = 64
 
 
