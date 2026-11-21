@@ -13,6 +13,7 @@ directory: rows print fingerprints and public lines only.
 import os
 import pathlib
 import pwd
+import re
 import secrets
 import shutil
 import socket
@@ -104,21 +105,37 @@ def children(pid):
             if len(f) == 2 and f[1] == str(pid) and f[0] != str(ps.pid)]
 
 
-def rss_kib(pid):
-    """The resident size of `pid` in KiB: VmRSS from /proc/PID/status on
-    linux, ps's rss column elsewhere (macOS). The process measured is the
-    one named, never a child or the harness, so ru_maxrss's survival across
-    exec has no part in it."""
+def mem_kib(pid):
+    """The memory of `pid` in KiB, as a dict: `held`, what a memory row holds
+    (memory the process wrote and cannot give back without freeing it), and
+    `rss` and `file` for the record. On linux `held` is RssAnon from
+    /proc/PID/status, `rss` VmRSS and `file` RssFile: the kernel may reclaim
+    a file-backed page of an idle process at any time (the binary's text, a
+    library's), which lowers VmRSS by pages the process never freed, while
+    anonymous pages leave only when they are freed (the rows' containers have
+    no swap). Elsewhere (macOS) `held` is footprint(1)'s "Footprint" (dirty
+    memory) and `rss` ps's rss column; `file` is None. The process measured is
+    the one named, never a child or the harness, so ru_maxrss's survival
+    across exec has no part in it."""
     status = pathlib.Path(f"/proc/{pid}/status")
     if status.exists():
+        got = {}
         for line in status.read_text().splitlines():
-            if line.startswith("VmRSS:"):
-                return int(line.split()[1])
-        raise RuntimeError(f"no VmRSS line for pid {pid}")
-    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
-    if not out:
+            k, _, v = line.partition(":")
+            if k in ("VmRSS", "RssAnon", "RssFile"):
+                got[k] = int(v.split()[0])
+        if len(got) != 3:
+            raise RuntimeError(f"pid {pid}'s status lacks one of VmRSS, RssAnon, RssFile: {got}")
+        return {"held": got["RssAnon"], "rss": got["VmRSS"], "file": got["RssFile"]}
+    rss = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    if not rss:
         raise RuntimeError(f"no process {pid}")
-    return int(out)
+    fp = subprocess.run(["footprint", str(pid)], capture_output=True, text=True).stdout
+    m = re.search(r"Footprint: (\d+(?:\.\d+)?) (KB|MB|GB)", fp)
+    if not m:
+        raise RuntimeError(f"footprint gave no Footprint line for pid {pid}: {fp[:200]!r}")
+    held = float(m.group(1)) * {"KB": 1, "MB": 1024, "GB": 1024 * 1024}[m.group(2)]
+    return {"held": int(held), "rss": int(rss), "file": None}
 
 
 def childless(pid, seconds=5.0):
