@@ -280,7 +280,22 @@ fn session_env(a: mon.Account, ends: peer.Ends) -> List[str] {
     if tz != "" {
         (mut e).push("TZ={tz}")
     }
+    // #27, a named difference from the pinned sshd (which sets none without
+    // PAM): the account's runtime directory, as PAX's console login sets it.
+    let rd = "/run/user/{a.uid}"
+    if runtime_dir_ok(rd, a.uid) {
+        (mut e).push("XDG_RUNTIME_DIR={rd}")
+    }
     e
+}
+
+// A runtime directory a session may be pointed at: a directory itself (a
+// link is not followed), the account's, mode 0700 and nothing more.
+fn runtime_dir_ok(path: str, uid: int) -> bool {
+    let info = fs.lstat(path) else {
+        return false
+    }
+    info.kind == 1 && info.uid == uid && info.mode == 0o700
 }
 
 // px112: burrowd leads a process group of its own, away from the group that
