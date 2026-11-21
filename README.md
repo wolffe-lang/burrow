@@ -162,9 +162,10 @@ What it does, and what it refuses:
   (10:30:100), as `sshd` has them.
 - **Memory:** the listener keeps the memory it started with. Each pass of
   its loop runs in a region freed at the pass's end, and an ended connection
-  is taken out of its table in place, so neither hours idle nor thousands of
-  connections grow it (before, it grew about 3 KiB a second idle and about
-  2 KiB a connection, and every new session's processes started at its size).
+  is taken out of its table in place, so it does not grow with idle time or
+  with connections (rows hold it within 64 KiB over a minute idle and over three
+  hundred logins; before, it grew about 3 KiB a second idle and about 2 KiB
+  a connection, and every new session's processes started at its size).
 - **The log:** one line per connection: the time (UTC), the client's
   address and port, the user, the key's fingerprint (`key password` for a
   password login), the outcome by name and the exit status. Never a private
