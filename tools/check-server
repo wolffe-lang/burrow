@@ -831,6 +831,50 @@ def session_env():
         return f"equal but {sorted(diff)} and sshd's own bin directory on PATH" if diff else "equal"
 
 
+@row
+def session_xdg_runtime():
+    """#27, a named difference from the pinned sshd: when /run/user/UID is a
+    directory, the account's, mode 0700, a session's XDG_RUNTIME_DIR names it
+    (as PAX's console login sets it, and a Linux login's PAM stack); with the
+    mode or the owner wrong, or no directory, the variable is unset. The
+    pinned sshd, built with no PAM, leaves it unset in every case: its answers
+    are recorded beside burrowd's, not held."""
+    a = serverlib.account()
+    parent = pathlib.Path("/run/user")
+    made_parent = not parent.exists()
+    d = parent / str(a.pw_uid)
+    cmd = ['printf %s "${XDG_RUNTIME_DIR-unset}"']
+    cases = (("the account's, 0700", 0o700, a.pw_uid, str(d)),
+             ("the account's, 0755", 0o755, a.pw_uid, "unset"),
+             ("root's, 0700", 0o700, 0, "unset"),
+             ("absent", None, None, "unset"))
+    try:
+        if made_parent:
+            parent.mkdir(parents=True)
+            os.chmod(parent, 0o755)
+        with Pair(BIN, rundir("session-xdg-runtime")) as p:
+            seen = []
+            for label, mode, owner, want in cases:
+                if d.exists():
+                    shutil.rmtree(d)
+                if mode is not None:
+                    d.mkdir()
+                    os.chown(d, owner, a.pw_gid)
+                    os.chmod(d, mode)
+                rb, rs = p.both(cmd)
+                check(rb[0] == 0 and rs[0] == 0, f"{label}: burrowd {show(rb)}, sshd {show(rs)}")
+                seen.append(f"{label}: burrowd {rb[1].decode()!r}, sshd {rs[1].decode()!r}\n")
+                record(p, "".join(seen))
+                check(rb[1] == want.encode(), f"{label}: XDG_RUNTIME_DIR through burrowd {rb[1].decode()!r}, wanted {want!r} "
+                      f"(sshd {rs[1].decode()!r})")
+            return "set for the account's 0700 directory, unset otherwise; sshd unset in every case"
+    finally:
+        if d.exists():
+            shutil.rmtree(d)
+        if made_parent and parent.exists():
+            shutil.rmtree(parent)
+
+
 # ---- SetEnv (px116) -----------------------------------------------------------------
 # sshd_config(5)'s SetEnv, held to the pinned sshd's -T, -t and session
 # environment (measured black box first: notes/px116-setenv.md). The first
