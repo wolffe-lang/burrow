@@ -1,5 +1,27 @@
 ## Unreleased
 
+- burrowd's listener keeps the memory it started with (burrow#30,
+  burrow#28). Each 50 ms pass of its loop built its wait lists in the
+  daemon's own region, which ends only with the daemon, so an idle listener
+  grew about 3 KiB a second, and every ended connection rebuilt its table
+  there, about 2 KiB more each. A machine that ran burrowd for days carried
+  a listener of over a gigabyte, and every new session's processes, forks
+  of it, started that size. Each pass now runs in a region freed at its end,
+  and an ended connection is taken out of the table in place. Rows hold the
+  listener's anonymous resident memory, beside the pinned `sshd`'s, to
+  64 KiB over a minute idle and over three hundred logins (`server-idle-rss`,
+  `server-conn-rss`; `local-idle-rss` and `local-conn-rss` on macOS, by
+  footprint(1)).
+- A session's `XDG_RUNTIME_DIR` is `/run/user/UID` when that is a directory
+  (not a link) owned by the account with mode 0700, and unset otherwise
+  (burrow#27), as PAX's console login sets it, so a program that keeps a
+  per-user socket finds the same place over ssh as at the console. The
+  pinned `sshd`, built with no PAM, sets none: a named difference
+  (`docs/MAP.md`), held by `session-xdg-runtime`.
+- The README and MAP say that pty sessions are written to utmp and wtmp
+  (since the login records change), and that names resolve on PAX through
+  the C library's resolver (burrow#10).
+
 - burrowd writes the login records `last`, `lastb` and `who` read, as
   `sshd` does (utmp(5)): a session with a pty is a USER_PROCESS in
   `/var/run/utmp` and `/var/log/wtmp` when its program starts (the pty's
