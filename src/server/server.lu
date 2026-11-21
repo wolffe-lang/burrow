@@ -1084,7 +1084,7 @@ pub fn run(args: List[str], one_process: bool) -> int {
         // #30: each pass in a region of its own, freed at its end, so an idle
         // listener's 50 ms passes leave nothing behind; what a pass keeps is
         // written to the outer values as scalars, or copied out.
-        region pass {
+        if unauth >= 0 {
             var fds = List[int]()
             for l in listeners {
                 (mut fds).push(l.fd)
