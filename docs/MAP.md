@@ -93,6 +93,19 @@ is `SSH-2.0-burrowd_0.0.0`. A session channel is confirmed with window 0
 and maximum packet 32768, as the pinned `sshd` confirms it, and the window
 opens when the command starts.
 
+## Where burrowd differs from the pinned sshd, by name
+
+Each server row holds burrowd's client-visible outcome to the pinned `sshd`'s;
+these are the differences the rows name and allow, each recorded beside the
+answer it differs from:
+
+| what | burrowd | the pinned `sshd` | row |
+|---|---|---|---|
+| `SSH_CLIENT` | not set (`SSH_CONNECTION` is) | set | `session-env` |
+| `PATH` | `/usr/bin:/bin:/usr/sbin:/sbin` | the same, with its own install's `bin` directory added | `session-env` |
+| `XDG_RUNTIME_DIR` | `/run/user/UID` when that is a directory (not a link), the account's, mode 0700; otherwise unset | unset (built with no PAM, whose session module sets it on a Linux login) | `session-xdg-runtime` |
+| strict kex | required (`strict_kex_missing`) | offered | the hostile-client rows |
+
 ## What burrowd refuses, by name
 
 Each refusal is one log line's `outcome` (or, for one that does not end the
@@ -456,7 +469,7 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
 
 | need | state |
 |---|---|
-| a resolver | none on PAX (wolf-lang#831, wolf-std#4): `~/.ssh/config`'s `Host github.com` with `HostName` an address from `api.github.com/meta`'s `git` ranges and `HostKeyAlias github.com`, so den keeps `git@github.com:…` and the known_hosts line is GitHub's published one |
+| a resolver | names resolve through the C library's resolver as on Linux (PAX's README): the DHCP lease or `/etc/pax-net` writes `/etc/resolv.conf`, and `/etc/hosts` is read first, so a line there is the fallback when no DNS server answers; `~/.ssh/config`'s `HostName` with `HostKeyAlias github.com` still works where neither does |
 | entropy | burrow reads `/dev/urandom`, refused by name (`entropy_unavailable`) where absent |
 | the network | the console kernel's network is a PAX gap of its own |
 | `$HOME` | `~/.ssh` is read from `$HOME`: PAX needs no passwd database |
@@ -474,9 +487,8 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   a process's user there), and refuses to start as root.
 - burrowd runs one program, on a pty when the client asks for one (bw06):
   no subsystem, X11, agent or forwarding, each refused by name. A pty's
-  session writes no utmp, wtmp or lastlog entry (the session runs as the
-  user), so `who` and `last` do not list it, and prints no motd or
-  last-login line.
+  session is written to utmp and wtmp, as `sshd` writes it, but has no
+  lastlog entry, and burrowd prints no motd or last-login line.
 - Each program leads a session of its own (bw06; px112's process group
   before it). With no pty it has no controlling terminal, so a program
   over ssh never reaches the terminal burrowd was started from (PAX's
@@ -500,8 +512,5 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
 - burrow, the client, takes no pty (so no interactive shell at a terminal;
   `-T` runs the shell without one); no agent, forwarding, certificates, or
   RSA and ECDSA keys; each is refused by name.
-- No resolver on PAX (wolf-lang#831, wolf-std#4): `HostName` and
-  `HostKeyAlias` let den's `git@github.com:…` reach an address under
-  GitHub's own host key (above).
 - den's ssh rows run in the local gauntlet only: den's git oracle is built
   in den's own image, whose digest a CI runner is not held to reproduce.
