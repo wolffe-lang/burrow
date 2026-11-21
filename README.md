@@ -127,7 +127,11 @@ What it does, and what it refuses:
   first value of a name; a malformed line, the first or a later one, stops
   burrowd at start, `config_unsupported` by file and line. A subsystem,
   X11, the agent and every forwarding are refused by name, and the program
-  still runs where `sshd` runs it.
+  still runs where `sshd` runs it. `XDG_RUNTIME_DIR` is set to
+  `/run/user/UID` when that is a directory (not a link) owned by the
+  account with mode 0700, and left unset otherwise, as PAX's console login
+  and a Linux login's PAM session set it; the pinned `sshd`, built with no
+  PAM, sets none (one of the [named differences](docs/MAP.md#where-burrowd-differs-from-the-pinned-sshd-by-name)).
 - **A terminal** (RFC 4254 §6.2, §6.7, §8): a `pty-req` is granted where
   `PermitTTY` and the key allow it. The pty takes the client's size and
   every terminal mode it sends that the host has (the rest passed over, as
@@ -141,9 +145,10 @@ What it does, and what it refuses:
   pty is named (`pty_refused` by `PermitTTY no` or the key, `pty_failed`
   when the host gives none, `pty_malformed`, `pty_twice`, `pty_late`), and
   a shell after it says on its first line of stderr that it has no
-  terminal. Not done: no utmp, wtmp or lastlog entry (the session runs as
-  the user, who cannot write them), so `who` and `last` do not list
-  burrowd's sessions, and no motd or last-login line.
+  terminal. A pty's session is written to utmp and wtmp at its start and
+  end, and a refused password to btmp, as `sshd` writes them (the monitor,
+  root, writes them), so `who`, `last` and `lastb` list them; there is no
+  lastlog entry, motd or last-login line.
 - **A session of its own:** every program, on a pty or not, leads a session
   of its own, as `sshd` gives it; with no pty it has no controlling
   terminal (`/dev/tty` does not open), so nothing it does reaches the
@@ -155,6 +160,11 @@ What it does, and what it refuses:
   started with (a shell's `burrowd … &` ignores SIGINT and SIGQUIT).
 - **Limits:** `LoginGraceTime` (120 s), `MaxAuthTries` (6) and `MaxStartups`
   (10:30:100), as `sshd` has them.
+- **Memory:** the listener keeps the memory it started with. Each pass of
+  its loop runs in a region freed at the pass's end, and an ended connection
+  is taken out of its table in place, so neither hours idle nor thousands of
+  connections grow it (before, it grew about 3 KiB a second idle and about
+  2 KiB a connection, and every new session's processes started at its size).
 - **The log:** one line per connection: the time (UTC), the client's
   address and port, the user, the key's fingerprint (`key password` for a
   password login), the outcome by name and the exit status. Never a private
@@ -330,7 +340,12 @@ one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
 root's, a locked or expired account (by password and by key), an expired,
 empty or unset password, a `$y$` or over-cap string (refused where `sshd`
 admits them), the shipped cost, `PasswordAuthentication no`, and the start
-refused without root; no password in any log, output or record.
+refused without root; no password in any log, output or record. The
+listener's memory is measured beside `sshd`'s: its anonymous resident
+memory (RssAnon, which the kernel's reclaim of file-backed pages cannot
+lower) after a minute idle and across three hundred logins, each within 64 KiB;
+and `XDG_RUNTIME_DIR` from the account's runtime directory, set, unset for
+a wrong mode, a wrong owner and no directory.
 `tools/check-server-hostile` runs burrowd against a
 scripted client that never finishes the exchange, leaves out strict kex,
 sends an oversize packet, signs over another session or with another key,
@@ -348,7 +363,8 @@ the repositories. `tools/measure-server` times connect to first byte and
 program, never installed), and a password login at PAX's cost through
 burrowd and `sshd`, interleaved, against stated margins.
 `tools/check-server-local` runs burrowd as the invoking user with burrow as
-the client, on macOS and anywhere without the pinned container.
+the client, on macOS and anywhere without the pinned container, its
+memory rows included (footprint(1)'s dirty memory on macOS).
 
 ## CI
 
