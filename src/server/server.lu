@@ -1066,126 +1066,131 @@ pub fn run(args: List[str], one_process: bool) -> int {
     var conns = List[Live]()
     var unauth = 0
     loop {
-        var fds = List[int]()
-        for l in listeners {
-            (mut fds).push(l.fd)
-        }
-        let ready = net.wait(fds, 50) else List[int]()
-        var li = 0
-        while li < listeners.len {
-            var hit = false
-            for r in ready {
-                if r == listeners[li].fd {
-                    hit = true
-                }
+        // #30: each pass in a region of its own, freed at its end, so an idle
+        // listener's 50 ms passes leave nothing behind; what a pass keeps is
+        // written to the outer values as scalars, or copied out.
+        region pass {
+            var fds = List[int]()
+            for l in listeners {
+                (mut fds).push(l.fd)
             }
-            if hit {
-                var l = net.Listener { fd: listeners[li].fd }
-                let sock = net.accept(mut l) else {
-                    li += 1
-                    continue
+            let ready = net.wait(fds, 50) else List[int]()
+            var li = 0
+            while li < listeners.len {
+                var hit = false
+                for r in ready {
+                    if r == listeners[li].fd {
+                        hit = true
+                    }
                 }
-                if drop_it(s, unauth, mut pool) {
-                    let ends = peer.of_connection(ports[li])
-                    var dl = slog.start(stamp(), env.pid(), ends.client.addr, ends.client.port)
-                    dl.outcome = "startups_exceeded"
-                    log(lg, slog.format(dl))
-                    net.close(take sock) else {}
-                } else {
-                    let sp = process.pipe() else {
-                        net.close(take sock) else {}
+                if hit {
+                    var l = net.Listener { fd: listeners[li].fd }
+                    let sock = net.accept(mut l) else {
                         li += 1
                         continue
                     }
-                    let f = process.fork() else {
+                    if drop_it(s, unauth, mut pool) {
+                        let ends = peer.of_connection(ports[li])
+                        var dl = slog.start(stamp(), env.pid(), ends.client.addr, ends.client.port)
+                        dl.outcome = "startups_exceeded"
+                        log(lg, slog.format(dl))
                         net.close(take sock) else {}
-                        li += 1
-                        continue
+                    } else {
+                        let sp = process.pipe() else {
+                            net.close(take sock) else {}
+                            li += 1
+                            continue
+                        }
+                        let f = process.fork() else {
+                            net.close(take sock) else {}
+                            li += 1
+                            continue
+                        }
+                        if process.is_child(f) {
+                            var k = 0
+                            while k < listeners.len {
+                                var cl = net.Listener { fd: listeners[k].fd }
+                                net.close_listener(take cl) else {}
+                                k += 1
+                            }
+                            var r = sp.read
+                            fs.close(take r) else {}
+                            if one_process {
+                                oneproc_main(take sock, s, ports[li], pre, sp.write, lg)
+                            } else {
+                                monitor_main(take sock, s, ports[li], pre, sp.write, lg, tk)
+                            }
+                            process.exit(0)
+                            return 0
+                        }
+                        var w = sp.write
+                        fs.close(take w) else {}
+                        net.close(take sock) else {}
+                        (mut conns).push(Live {
+                            child: copy f.child,
+                            status: copy sp.read,
+                            authed: false,
+                            tokens: 0,
+                        })
+                        unauth += 1
                     }
-                    if process.is_child(f) {
+                }
+                li += 1
+            }
+            // The monitors' news: one byte at authentication, the end at theirs.
+            var ci = 0
+            while ci < conns.len {
+                var one = List[fs.File]()
+                (mut one).push(copy conns[ci].status)
+                let w = signal.wait_fds(one, signal.child(), 0) else signal.Wake {
+                    meaning: 0,
+                    ready: -1,
+                }
+                if w.ready == 0 {
+                    var sf = copy conns[ci].status
+                    var ended = false
+                    let got = fs.read_chunk(mut sf, 1) else {
+                        ended = true
+                        List[byte]()
+                    }
+                    if ended || got.len == 0 {
+                        if !conns[ci].authed {
+                            unauth -= 1
+                        }
+                        // A monitor that ended holding the password token: put it back.
+                        var back = conns[ci].tokens
+                        while back > 0 {
+                            var tw = copy tk.write
+                            status_byte(mut tw, 1)
+                            back -= 1
+                        }
+                        fs.close(take sf) else {}
+                        conns[ci].status = fs.File { fd: -1 }
+                        var gone = process.Child { slot: conns[ci].child.slot }
+                        let _ = process.wait_status(take gone) else 0
+                        var kept = List[Live]()
                         var k = 0
-                        while k < listeners.len {
-                            var cl = net.Listener { fd: listeners[k].fd }
-                            net.close_listener(take cl) else {}
+                        while k < conns.len {
+                            if k != ci {
+                                (mut kept).push(copy conns[k])
+                            }
                             k += 1
                         }
-                        var r = sp.read
-                        fs.close(take r) else {}
-                        if one_process {
-                            oneproc_main(take sock, s, ports[li], pre, sp.write, lg)
-                        } else {
-                            monitor_main(take sock, s, ports[li], pre, sp.write, lg, tk)
-                        }
-                        process.exit(0)
-                        return 0
+                        conns = copy kept
+                        continue
                     }
-                    var w = sp.write
-                    fs.close(take w) else {}
-                    net.close(take sock) else {}
-                    (mut conns).push(Live {
-                        child: copy f.child,
-                        status: copy sp.read,
-                        authed: false,
-                        tokens: 0,
-                    })
-                    unauth += 1
-                }
-            }
-            li += 1
-        }
-        // The monitors' news: one byte at authentication, the end at theirs.
-        var ci = 0
-        while ci < conns.len {
-            var one = List[fs.File]()
-            (mut one).push(copy conns[ci].status)
-            let w = signal.wait_fds(one, signal.child(), 0) else signal.Wake {
-                meaning: 0,
-                ready: -1,
-            }
-            if w.ready == 0 {
-                var sf = copy conns[ci].status
-                var ended = false
-                let got = fs.read_chunk(mut sf, 1) else {
-                    ended = true
-                    List[byte]()
-                }
-                if ended || got.len == 0 {
-                    if !conns[ci].authed {
+                    let b = got[0] as int
+                    if b == 80 {
+                        conns[ci].tokens += 1
+                    } else if b == 112 {
+                        conns[ci].tokens -= 1
+                    } else if !conns[ci].authed {
+                        conns[ci].authed = true
                         unauth -= 1
                     }
-                    // A monitor that ended holding the password token: put it back.
-                    var back = conns[ci].tokens
-                    while back > 0 {
-                        var tw = copy tk.write
-                        status_byte(mut tw, 1)
-                        back -= 1
-                    }
-                    fs.close(take sf) else {}
-                    conns[ci].status = fs.File { fd: -1 }
-                    var gone = process.Child { slot: conns[ci].child.slot }
-                    let _ = process.wait_status(take gone) else 0
-                    var kept = List[Live]()
-                    var k = 0
-                    while k < conns.len {
-                        if k != ci {
-                            (mut kept).push(copy conns[k])
-                        }
-                        k += 1
-                    }
-                    conns = kept
-                    continue
                 }
-                let b = got[0] as int
-                if b == 80 {
-                    conns[ci].tokens += 1
-                } else if b == 112 {
-                    conns[ci].tokens -= 1
-                } else if !conns[ci].authed {
-                    conns[ci].authed = true
-                    unauth -= 1
-                }
+                ci += 1
             }
-            ci += 1
         }
     }
     0
