@@ -2004,6 +2004,39 @@ def btmp_password():
         return f"btmp {b[0]['user']} on ssh:notty from {b[0]['host']}, as sshd's"
 
 
+# ---- memory (#30, #28) -----------------------------------------------------------
+# The listener runs for as long as the machine does (PAX starts it at boot), so
+# its resident size must not grow with time or with connections. Each row reads
+# the listener's own VmRSS (serverlib.rss_kib), burrowd's and the pinned sshd's
+# side by side, and holds burrowd's growth under a bound; sshd's growth is
+# recorded beside it as the reference.
+IDLE_SECONDS = 60
+IDLE_BOUND_KIB = 64
+
+
+@row
+def server_idle_rss():
+    """#30: a minute with no connection leaves the listener's resident size
+    where it was (within IDLE_BOUND_KIB)."""
+    with Pair(BIN, rundir("server-idle-rss")) as p:
+        pids = (("burrowd", p.burrowd.proc.pid), ("sshd", p.sshd.proc.pid))
+        for name, pid in pids:
+            check(serverlib.childless(pid), f"{name}'s readiness probe still running after 5 s: {serverlib.children(pid)}")
+        time.sleep(2)
+        start = {name: serverlib.rss_kib(pid) for name, pid in pids}
+        t0 = time.monotonic()
+        time.sleep(IDLE_SECONDS)
+        end = {name: serverlib.rss_kib(pid) for name, pid in pids}
+        secs = time.monotonic() - t0
+        grew = {name: end[name] - start[name] for name, _ in pids}
+        record(p, "".join(f"{name}: {start[name]} KiB, then {end[name]} KiB after {secs:.1f} s idle ({grew[name]:+d})\n"
+                          for name, _ in pids))
+        check(grew["burrowd"] <= IDLE_BOUND_KIB,
+              f"burrowd's listener grew {grew['burrowd']} KiB in {secs:.0f} s idle ({start['burrowd']} to {end['burrowd']} KiB), "
+              f"over the {IDLE_BOUND_KIB} KiB bound; sshd's grew {grew['sshd']} KiB")
+        return f"burrowd {grew['burrowd']:+d} KiB, sshd {grew['sshd']:+d} KiB over {secs:.0f} s idle"
+
+
 def main():
     global BIN
     ap = argparse.ArgumentParser()
