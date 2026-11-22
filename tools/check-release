@@ -1,0 +1,339 @@
+#!/usr/bin/env python3
+"""check-release — the draft release path, checked here: no upload, no tag, no token.
+
+    tools/in-container python3 -I tools/check-release --dry
+    python3 -I tools/check-release --self-test
+
+burrow's release is the formula repository's (wolffe-lang/homebrew-wolf)
+shared draft-only workflow at one pinned commit, as the other wolf tools
+take it: .github/workflows/release.yml runs the release gate
+(release-gate.yml, ci.yml copied by that commit's release-adapter) and then
+the shared tool-release.yml; release-public-smoke.yml checks a published
+release; release-wiring.yml checks the wiring on every pull request; and
+release-rehearsal.yml, dispatched on a branch, builds and runs the archives
+on both hosted systems with no draft. .github/release.json is the config.
+
+--dry runs these rows, each `PASS <row>` or `FAIL <row> <why>` at column 0:
+
+  release-pin        the four workflows that name the formula repository name
+                     one full commit and no other
+  release-infra      that commit, fetched by git (ci/fetch-retry) into
+                     target/release-infrastructure; its smoke job reads the draft
+                     with `contents: write`, the token only in the download step,
+                     never in the step that runs the archive (the 403 an older
+                     commit's smoke met reading a draft)
+  release-rehearsal  release-rehearsal.yml is dispatch only, `contents: read`,
+                     holds no token and touches no release
+  release-adapter    the pinned release-adapter: release-gate.yml is ci.yml's
+                     exact copy, both callers name the pin, and the manifest's
+                     tag validates (its CHANGELOG section, experimental notes)
+  release-archive    the pinned tool-release's build for this host: the config's
+                     build (tools/build --release), every -V line read against the
+                     tag, the archive packed twice byte for byte, its SHA-256
+  release-clean-smoke  the archive unpacked from its digest and run, with only the
+                     config beside it, from an empty directory with a scratch
+                     HOME, SHELL=/bin/sh and no token, as the clean runner does
+
+The build runs in a copy of the working tree without .git
+(target/release-dry/tree), so the archive's BUILD.json records the source
+commit as `test-fixture`, as the shared tool records any build outside git:
+a worktree's git directory is outside the container. The rehearsal on
+hosted runners builds from the commit and its smoke checks it.
+
+--self-test holds the static rows (pin, infra, rehearsal) to wrong files of
+their own, each refused by name; it needs no network.
+"""
+import argparse
+import os
+import pathlib
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+INFRA_REPO = "https://github.com/wolffe-lang/homebrew-wolf"
+PINNED = ("release.yml", "release-public-smoke.yml", "release-wiring.yml", "release-rehearsal.yml")
+HOSTS = {("Linux", "x86_64"): "x86_64-unknown-linux-gnu", ("Darwin", "arm64"): "aarch64-apple-darwin"}
+
+
+class Red(Exception):
+    """One row's failure: the row's name and why."""
+
+
+def say(line):
+    print(line, flush=True)
+
+
+def pin_of(root):
+    """release-pin: the one full commit the four workflows name."""
+    seen = {}
+    for name in PINNED:
+        p = root / ".github/workflows" / name
+        if not p.is_file():
+            raise Red(f"release-pin .github/workflows/{name} is missing")
+        found = set(re.findall(r"\b[0-9a-f]{40}\b", p.read_text()))
+        if len(found) != 1:
+            raise Red(f"release-pin {name} names {len(found)} commits, not one: {sorted(found)}")
+        seen[name] = found.pop()
+    if len(set(seen.values())) != 1:
+        raise Red("release-pin the workflows disagree: " + ", ".join(f"{k}={v[:12]}" for k, v in seen.items()))
+    pin = seen[PINNED[0]]
+    return pin
+
+
+def job(text, name):
+    """The text of one job of a workflow, from `  name:` to the next job."""
+    m = re.search(r"^  " + re.escape(name) + r":\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", text.split("\njobs:\n", 1)[-1],
+                  re.M | re.S)
+    return m[1] if m else None
+
+
+def steps(body):
+    """A job's steps, each the text from its `      - ` to the next."""
+    return re.split(r"^      - ", body.split("\n    steps:\n", 1)[-1], flags=re.M)[1:]
+
+
+def check_infra(workflow):
+    """release-infra: the shared smoke job reads the draft as the fixed commit does."""
+    smoke = job(workflow, "smoke")
+    if smoke is None:
+        raise Red("release-infra the pinned tool-release.yml has no smoke job")
+    if not re.search(r"^    permissions:\n      contents: write\n", smoke, re.M):
+        raise Red("release-infra the pinned smoke job is not given contents: write, so it cannot read a draft (403)")
+    download = [s for s in steps(smoke) if "tool-release draft-download" in s]
+    run = [s for s in steps(smoke) if re.search(r"tool-release (smoke|draft-smoke) ", s)]
+    if len(download) != 1 or "GH_TOKEN: ${{ github.token }}" not in download[0]:
+        raise Red("release-infra the pinned smoke job has no single download step holding the token")
+    if not run or any("GH_TOKEN" in s or "GITHUB_TOKEN" in s for s in run):
+        raise Red("release-infra the pinned step that runs the archive holds a token, or there is none")
+
+
+def check_rehearsal(text):
+    """release-rehearsal: dispatch only, contents: read, no token, no release."""
+    on = text.split("\non:\n", 1)[-1].split("\npermissions:\n", 1)[0]
+    if re.findall(r"^  ([a-z_]+):", on, re.M) != ["workflow_dispatch"]:
+        raise Red("release-rehearsal it is started by more than a dispatch")
+    if not re.search(r"^permissions:\n  contents: read\n", text, re.M):
+        raise Red("release-rehearsal it does not state permissions: contents: read")
+    if re.search(r"^ +permissions:", text, re.M) or re.search(r":\s*write\b", text.split("\njobs:\n", 1)[-1]):
+        raise Red("release-rehearsal a job asks for more permission")
+    for word in ("GH_TOKEN", "GITHUB_TOKEN", "secrets.", "github.token", "draft-download", "tool-release stage",
+                 "gh release", "/releases"):
+        if word in text:
+            raise Red(f"release-rehearsal it names {word}")
+    if "tool-release build " not in text or "tool-release smoke " not in text:
+        raise Red("release-rehearsal it does not run the pinned build and smoke")
+
+
+def fetch_infra(root, pin):
+    where = root / "target/release-infrastructure"
+    if (where / ".git").is_dir():
+        head = subprocess.run(["git", "-C", str(where), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+        clean = subprocess.run(["git", "-C", str(where), "status", "--porcelain"], capture_output=True, text=True)
+        if head.strip() == pin and clean.returncode == 0 and clean.stdout == "":
+            return where
+    shutil.rmtree(where, ignore_errors=True)
+    where.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(where)], check=True)
+    r = subprocess.run([sys.executable, "-I", str(root / "ci/fetch-retry"), "git", str(where), INFRA_REPO, pin])
+    if r.returncode != 0:
+        raise Red(f"release-infra the fetch of {INFRA_REPO} at {pin} failed (exit {r.returncode})")
+    subprocess.run(["git", "-C", str(where), "-c", "advice.detachedHead=false", "checkout", "-q", "--detach",
+                    "FETCH_HEAD"], check=True)
+    head = subprocess.run(["git", "-C", str(where), "rev-parse", "HEAD"], capture_output=True, text=True).stdout
+    if head.strip() != pin:
+        raise Red(f"release-infra fetched {head.strip()}, the pin is {pin}")
+    return where
+
+
+def manifest_version(root):
+    text = re.sub(r"//[^\n]*", "", (root / "src/wolf.pkg").read_text())
+    found = re.findall(r'\bversion\s*:\s*"([^"]+)"', text)
+    if len(found) != 1:
+        raise Red(f"release-adapter src/wolf.pkg names {len(found)} versions")
+    return found[0]
+
+
+def run(row, argv, cwd):
+    """Runs one of the pinned tools; its own lines are indented, a nonzero exit is the row's FAIL."""
+    say(f"  $ {' '.join(argv[2:])}")
+    p = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    for line in p.stdout.splitlines():
+        say("    " + line)
+    if p.returncode != 0:
+        last = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else ""
+        raise Red(f"{row} exit {p.returncode}: {last}")
+    return p.stdout
+
+
+def tree_copy(root, dest):
+    """The working tree without .git and without what builds make, .wolf-bin linked."""
+    shutil.rmtree(dest, ignore_errors=True)
+    skip = {".git", "target", ".lu-cache", ".oracle", ".den", ".wolf-bin", "__pycache__"}
+    shutil.copytree(root, dest, ignore=lambda d, names: [n for n in names if n in skip and pathlib.Path(d) == root]
+                    + [n for n in names if n == "__pycache__"])
+    (dest / ".wolf-bin").symlink_to(root / ".wolf-bin")
+
+
+def dry(root):
+    fails = 0
+    pin = None
+    try:
+        pin = pin_of(root)
+        say(f"PASS release-pin {pin} in {len(PINNED)} workflows")
+    except Red as e:
+        say(f"FAIL {e}")
+        return 1
+    try:
+        infra = fetch_infra(root, pin)
+        check_infra((infra / ".github/workflows/tool-release.yml").read_text())
+        say(f"PASS release-infra {pin[:12]}: the smoke job reads the draft with contents: write, the token in its "
+            "download step only")
+    except Red as e:
+        say(f"FAIL {e}")
+        return 1
+    try:
+        check_rehearsal((root / ".github/workflows/release-rehearsal.yml").read_text())
+        say("PASS release-rehearsal dispatch only, contents: read, no token, no release")
+    except Red as e:
+        say(f"FAIL {e}")
+        fails += 1
+    adapter = str(infra / "tools/release-adapter")
+    tool = str(infra / "tools/tool-release")
+    try:
+        out = run("release-adapter", [sys.executable, "-I", adapter, "--root", str(root), "--check-pin", pin], root)
+        if "PASS release-adapter burrow" not in out or "PASS release-version" not in out:
+            raise Red("release-adapter the pinned adapter did not pass the gate and the version")
+        say("PASS release-adapter release-gate.yml is ci.yml's exact copy; the callers name the pin; the tag validates")
+    except Red as e:
+        say(f"FAIL {e}")
+        fails += 1
+    host = HOSTS.get((platform.system(), platform.machine()))
+    if host is None:
+        say(f"FAIL release-archive no release host is {platform.system()} {platform.machine()}")
+        return 1
+    tag = "v" + manifest_version(root)
+    work = root / "target/release-dry"
+    tree = work / "tree"
+    try:
+        tree_copy(root, tree)
+        out = run("release-archive", [sys.executable, "-I", tool, "build", "--root", str(tree), "--config",
+                                      ".github/release.json", "--tag", tag, "--host", host], tree)
+        m = re.search(r"^PASS release-archive (\S+) sha256=([0-9a-f]{64})$", out, re.M)
+        if not m:
+            raise Red("release-archive the pinned build printed no archive and digest")
+        say(f"PASS release-archive {m[1]} sha256={m[2]}, packed twice byte for byte")
+    except Red as e:
+        say(f"FAIL {e}")
+        return 1
+    try:
+        smoke = work / "smoke-work"
+        shutil.rmtree(smoke, ignore_errors=True)
+        smoke.mkdir(parents=True)
+        shutil.copy2(root / ".github/release.json", smoke / "release.json")
+        env_out = run("release-clean-smoke", [sys.executable, "-I", tool, "smoke", "--root", str(smoke), "--config",
+                                              "release.json", "--tag", tag, "--artifacts", str(tree / "target/dist"),
+                                              "--host", host], smoke)
+        if f"PASS release-clean-smoke {host}" not in env_out:
+            raise Red("release-clean-smoke the pinned smoke did not pass")
+        say(f"PASS release-clean-smoke {host}: the archive from its digest, run with no token, no tree, no compiler")
+    except Red as e:
+        say(f"FAIL {e}")
+        fails += 1
+    return 1 if fails else 0
+
+
+FIXED_SMOKE = """jobs:
+  stage:
+    runs-on: ubuntu-24.04
+  smoke:
+    needs: [stage, build]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I x/tools/tool-release draft-download --root w
+      - name: run
+        env:
+          HOST: h
+        run: python3 -I x/tools/tool-release smoke --root w
+"""
+
+REHEARSAL = """name: release rehearsal
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    steps:
+      - run: python3 -I r/tools/tool-release build --config c
+  smoke:
+    steps:
+      - run: python3 -I r/tools/tool-release smoke --root w
+"""
+
+
+def self_test():
+    def refused(why, fn, *args):
+        try:
+            fn(*args)
+        except Red as e:
+            assert why in str(e), (why, str(e))
+            return
+        raise AssertionError("not refused: " + why)
+
+    check_infra(FIXED_SMOKE)
+    # The shape whose smoke met 403 reading its draft: no contents: write.
+    refused("cannot read a draft", check_infra, FIXED_SMOKE.replace("    permissions:\n      contents: write\n", ""))
+    refused("holds a token", check_infra, FIXED_SMOKE.replace("          HOST: h\n", "          GH_TOKEN: t\n"))
+    refused("single download step", check_infra, FIXED_SMOKE.replace("          GH_TOKEN: ${{ github.token }}\n", ""))
+    check_rehearsal(REHEARSAL)
+    refused("more than a dispatch", check_rehearsal, REHEARSAL.replace("  workflow_dispatch:\n",
+                                                                      "  workflow_dispatch:\n  push:\n"))
+    refused("contents: read", check_rehearsal, REHEARSAL.replace("  contents: read\n", "  contents: write\n"))
+    refused("more permission", check_rehearsal, REHEARSAL.replace("  smoke:\n", "  smoke:\n    permissions:\n"
+                                                                                "      contents: write\n"))
+    refused("names GH_TOKEN", check_rehearsal, REHEARSAL.replace("      - run: python3 -I r/tools/tool-release smoke",
+                                                                 "      - env:\n          GH_TOKEN: x\n"
+                                                                 "        run: python3 -I r/tools/tool-release smoke"))
+    refused("names tool-release stage", check_rehearsal, REHEARSAL + "      - run: x/tool-release stage --tag v\n")
+    with tempfile.TemporaryDirectory() as t:
+        base = pathlib.Path(t)
+        (base / ".github/workflows").mkdir(parents=True)
+        a, b = "a" * 40, "b" * 40
+        for name in PINNED:
+            (base / ".github/workflows" / name).write_text(f"uses: x@{a}\nref: {a}\n")
+        assert pin_of(base) == a
+        (base / ".github/workflows/release-rehearsal.yml").write_text(f"ref: {b}\n")
+        refused("disagree", pin_of, base)
+        (base / ".github/workflows/release-rehearsal.yml").write_text(f"ref: {a}\nref: {b}\n")
+        refused("names 2 commits", pin_of, base)
+        (base / ".github/workflows/release-rehearsal.yml").unlink()
+        refused("is missing", pin_of, base)
+    say("PASS release-self-test infra-403-shape infra-token-in-run infra-no-download rehearsal-push "
+        "rehearsal-write rehearsal-job-permission rehearsal-token rehearsal-stage pin-disagree pin-two pin-missing")
+
+
+def main():
+    p = argparse.ArgumentParser(description="the draft release path, checked here")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--dry", action="store_true", help="every row; no upload, no tag, no token")
+    g.add_argument("--self-test", action="store_true", help="the static rows against wrong files")
+    a = p.parse_args()
+    if a.self_test:
+        self_test()
+        return 0
+    os.environ.pop("GH_TOKEN", None)
+    os.environ.pop("GITHUB_TOKEN", None)
+    return dry(ROOT)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
