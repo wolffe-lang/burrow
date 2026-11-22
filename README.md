@@ -59,7 +59,12 @@ it. The escape character (`~` unless `-e` or `EscapeChar` say otherwise,
 `~?` lists the escapes, and `~~` sends one `~`. `ssh`'s other escapes are
 refused by name (`escape_unsupported`). A server that refuses the pty gets
 `ssh`'s line for it; where `-t` or `-tt` asked for it, burrow then gives up
-as `ssh` does, and a login shell goes on without one. There is no agent or forwarding
+as `ssh` does, and a login shell goes on without one. As `ssh` does by
+default (`ObscureKeystrokeTiming`), burrow sends what is typed on a fixed
+20 ms grid and, with nothing to send on a tick, a PING of the same size, for
+one to three seconds after the last key, so the packets do not give away
+when keys were pressed; `ObscureKeystrokeTiming no` turns it off, and
+`interval:N` sets the grid. There is no agent or forwarding
 ([MAP](docs/MAP.md)).
 
 ## burrowd, the server for commands
