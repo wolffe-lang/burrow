@@ -531,12 +531,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
     } else if k == "escapechar" {
         let e = escape_of(v)
         if e < -1 {
-            refuse_as(
-                mut s,
-                refusal,
-                "",
-                "EscapeChar {v}: one character, ^ and a letter, or none",
-            )
+            refuse_as(mut s, refusal, "", "EscapeChar {v}: one character, ^ and a letter, or none")
             return
         }
         s.escape = e
@@ -586,7 +581,7 @@ fn escape_of(v: str) -> int {
     }
     if b.len == 2 && b[0] as int == 94 {
         let c = b[1] as int
-        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+        if c >= 65 && c <= 90 || c >= 97 && c <= 122 {
             return c % 32
         }
     }
