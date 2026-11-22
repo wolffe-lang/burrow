@@ -356,7 +356,7 @@ the session leader of a pty of the row's own, against the pinned `sshd`, the tra
 after the terminal is restored, `closed.\r\r\n`, and after `~.` while still raw, `closed.\r\n`), and `~?`'s
 lines, of which burrow prints the ones for the escapes it takes.
 bw06's probes, for `-tt` when the pty is refused (`PTY allocation request failed on channel 0`, 255, the command
-never run). No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
+never run), and `tty-refused` for `-t`, `-tt`, `-t` with no command and a login shell by default. No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
 
 ## px133: login records
 
