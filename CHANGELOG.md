@@ -5,10 +5,12 @@
 
 - The version is 0.1.0 and comes from one place. The package manifest names
   it; the identification strings (`SSH-2.0-burrow_0.1.0`,
-  `SSH-2.0-burrowd_0.1.0`) and `burrowd -V` are built from one function; the
-  expected-version lines in the rows and the key-exchange vectors read the
-  manifest; and a row (`tools/check-version`, in the gate) fails if the
-  manifest and the function differ.
+  `SSH-2.0-burrowd_0.1.0`), `burrowd -V` and `burrow -V` are built from one
+  function; the expected-version lines in the rows and the key-exchange
+  vectors read the manifest; and a row (`tools/check-version`, in the gate)
+  fails if the manifest and the function differ. `burrow -V` prints
+  `burrow_0.1.0, burrow (wolf)` on stderr and exits 0, as `ssh -V` prints
+  its one line, before any file is read or connection made.
 - burrow, the client, takes a terminal (B8). At a terminal with no command,
   and for a command under `-t` (with stdin a terminal) or `-tt`, it asks for
   a pseudo-terminal, as `ssh` does (`RequestTTY` `auto`, `yes`, `force`,
