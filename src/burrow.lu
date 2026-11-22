@@ -2,9 +2,9 @@
 
 // burrow — an ssh client: the transport (B1), publickey authentication
 // with Ed25519 keys (B2), and one command on a session channel (B3), or,
-// with no command, the login shell with no pseudo-terminal.
+// with no command, the login shell; on a pseudo-terminal when asked (B8).
 //
-//   ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name]
+//   ssh [-Ttv] [-F configfile] [-i identity_file] [-l login_name]
 //       [-o option] [-p port] [--] destination [command [argument ...]]
 //
 // It is the command line den's ssh transport passes (src/config). The exit
@@ -12,11 +12,10 @@
 // ssh(1) says; a refusal prints the pinned ssh's line for it where it has
 // one, then `burrow: <name>: <detail>`.
 //
-// With no command, ssh(1) starts the login shell, with a pseudo-terminal
-// when stdin is one. burrow allocates none before B7: under -T, or when
-// stdin is not a terminal (after the pinned ssh's line saying so), it sends
-// RFC 4254's `shell` request with no `pty-req`; with stdin a terminal and
-// no -T it refuses by name (`pty_unsupported`) before connecting.
+// A pseudo-terminal is asked for as ssh_config(5)'s `RequestTTY` says
+// (`config.tty_request`): `force` (-tt) always; `yes` (-t), and `auto`
+// (the default) when there is no command, when stdin is a terminal, and
+// otherwise not, after the pinned ssh's line saying so; `no` (-T) never.
 //
 // Options for the rows, each load or size only and held inert for security
 // by a transport row (`test-*-inert`): --test-traffic=BYTES sends that many
@@ -150,7 +149,7 @@ fn local_user() -> str {
     env.get("LOGNAME") else ""
 }
 
-fn run(s: config.Settings) -> int {
+fn run(s: config.Settings, pty: bool) -> int {
     let ids = identities(s, s.ids_explicit)
     if ids.refused != "" {
         return 255
@@ -243,6 +242,8 @@ fn run(s: config.Settings) -> int {
             shell: s.command.len == 0,
             env: env_pairs,
             verbose: s.verbose,
+            pty: pty,
+            term: env.get("TERM") else "",
         }
         code = session.run(mut c, mut ch, plan) else |e| {
             ok = false
@@ -288,15 +289,15 @@ fn main() -> int {
         }
         return refusal(s.refusal, s.detail)
     }
-    if s.command.len == 0 && !s.no_tty {
-        let tty = io.is_terminal(fs.stdin()) else false
-        if tty {
-            return refusal(
-                "pty_unsupported",
-                "no command and stdin is a terminal: an interactive shell needs a pseudo-terminal, which burrow does not allocate yet; -T runs the shell without one",
-            )
+    let want = config.tty_request(s)
+    var pty = want == "force"
+    if want == "yes" || want == "auto" && s.command.len == 0 {
+        let tty_in = io.is_terminal(fs.stdin()) else false
+        if tty_in {
+            pty = true
+        } else {
+            eprint("Pseudo-terminal will not be allocated because stdin is not a terminal.\r")
         }
-        eprint("Pseudo-terminal will not be allocated because stdin is not a terminal.\r")
     }
-    run(s)
+    run(s, pty)
 }

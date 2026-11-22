@@ -1,8 +1,15 @@
 //! member: true
 //!
-//! burrow.session — one command, or the login shell with no
-//! pseudo-terminal (`-T`), on a session channel (`src/channel`), with
-//! stdin, stdout and stderr as raw bytes, until the channel closes.
+//! burrow.session — one command, or the login shell, on a session channel
+//! (`src/channel`), with stdin, stdout and stderr as raw bytes, until the
+//! channel closes.
+//!
+//! **A pseudo-terminal** (B8, RFC 4254 §6.2) when the plan asks for one:
+//! the `pty-req` carries `TERM`, the window's size and the modes the local
+//! terminal has (`src/ttymodes`), read from stdin; with stdin not a
+//! terminal (`-tt`), a size of 0 by 0 and no modes. A server that refuses
+//! it is told of on stderr, as the pinned `ssh` tells it, and the session
+//! goes on without one.
 //!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
@@ -24,19 +31,53 @@
 //! `disconnected by user`, as the pinned `sshd` logs for its own client.
 
 use std.fs
+use std.io
 use std.net
 use std.signal
+use std.term
 use channel
 use refuse
 use transport
+use ttymodes
 
 /// What the session runs: `command` by `exec`, or, when `shell`, the
-/// user's default shell by a `shell` request (RFC 4254 §6.5).
+/// user's default shell by a `shell` request (RFC 4254 §6.5); on a
+/// pseudo-terminal when `pty`, of the type `term`.
 pub struct Plan {
     command: List[byte],
     shell: bool,
     env: List[str],
     verbose: int,
+    pty: bool,
+    term: str,
+}
+
+/// The local terminal as a `pty-req` describes it: its size and its modes
+/// (§8's stream).
+pub struct Local {
+    cols: int,
+    rows: int,
+    modes: List[byte],
+}
+
+/// stdin's size and modes, each mode read on its own; a terminal that
+/// answers none of them (stdin not a terminal) is 0 by 0 with no modes.
+pub fn local_terminal() -> Local {
+    let tty = fs.stdin()
+    var l = Local { cols: 0, rows: 0, modes: ttymodes.encode(List[int]()) }
+    let is_tty = io.is_terminal(tty) else false
+    if !is_tty {
+        return l
+    }
+    let size = term.size(tty) else term.Size { rows: 0, columns: 0 }
+    l.cols = size.columns
+    l.rows = size.rows
+    var values = List[int]()
+    for op in ttymodes.client_ops() {
+        (mut values).push(term.attr(tty, op) else ttymodes.absent())
+    }
+    l.modes = ttymodes.encode(ttymodes.client_pairs(values))
+    l
 }
 
 fn say(p: Plan, msg: str) {
@@ -156,15 +197,32 @@ pub fn run(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> int ! ref
         transport.write(mut c, channel.env_msg(ch, kv[0..eq], kv[eq + 1..kv.len]))?
         say(plan, "Sending env {kv[0..eq]}")
     }
+    if plan.pty {
+        let l = local_terminal()
+        transport.write(mut c, channel.pty_msg(mut ch, plan.term, l.cols, l.rows, 0, 0, l.modes))?
+        say(plan, "Requesting a pseudo-terminal: {plan.term}, {l.cols} by {l.rows}")
+    }
     if plan.shell {
         transport.write(mut c, channel.shell_msg(mut ch))?
-        say(plan, "Requesting the shell, with no pseudo-terminal")
+        say(
+            plan,
+            if plan.pty {
+                "Requesting the shell"
+            } else {
+                "Requesting the shell, with no pseudo-terminal"
+            },
+        )
     } else {
         transport.write(mut c, channel.exec_msg(mut ch, plan.command))?
         say(plan, "Sending command: {str_from_utf8(plan.command) else "<not UTF-8>"}")
     }
+    var told = false
     while !ch.exec_ok && !ch.got_close {
         pump(mut c, mut ch, plan)?
+        if ch.pty_refused && !told {
+            eprint("PTY allocation request failed on channel 0")
+            told = true
+        }
     }
     var flow = Flow { stdin_open: true }
     while !channel.done(ch) {
