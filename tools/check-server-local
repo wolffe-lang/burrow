@@ -11,7 +11,9 @@ burrow is the client. There is no pinned sshd on such a host, so these rows
 hold burrowd to its own behaviour on Linux (tools/check-server holds that
 to sshd): a command and its exit codes, both streams byte for byte, 64 MiB
 through cat, an unlisted key, no command, root refused, git through it when
-git is on PATH, and the log line.
+git is on PATH, and the log line; and burrow's own client at a terminal (B8):
+the pty, its modes, the login shell, -t and -tt with stdin a pipe, the
+terminal put back, a window change, ^C and ^\, and the escape character.
 """
 import argparse
 import hashlib
@@ -301,6 +303,218 @@ def local_log():
     log = (WORK / "burrowd.log").read_text()
     check("PRIVATE KEY" not in log, "private key text in the log")
     return got[0].split(": ", 1)[1]
+
+
+# B8: burrow's own client at a terminal, through burrowd. As in tools/check-session, each client is started as a
+# terminal emulator starts a program: the session leader of a fresh pty, that pty its controlling terminal and its
+# stdin, stdout and stderr (stdin a pipe where a row says). The transcript is everything read from the master. Keys,
+# interrupts and escapes are bytes written into the master; a window change is the row setting the pty's size, the
+# kernel telling the foreground group. The pty's settings are read before the client starts and after it ends. There
+# is no pinned ssh on a host without the container, so these rows hold burrow to fixed facts, not to ssh's bytes:
+# the session's shell is /bin/sh with the scratch HOME (Local.env), and every command is given.
+CLOSED_COOKED = b"Connection to 127.0.0.1 closed.\r\r\n"
+
+
+def _ctty():
+    import fcntl
+    import termios
+    fcntl.ioctl(1, termios.TIOCSCTTY, 0)
+
+
+def winsize(fd, rows, cols):
+    import fcntl
+    import struct
+    import termios
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def odd_modes(fd):
+    """The terminal set as a client's might be: intr ^G, erase ^H, no IXON."""
+    import termios
+    a = termios.tcgetattr(fd)
+    a[6][termios.VINTR] = b"\x07"
+    a[6][termios.VERASE] = b"\x08"
+    a[0] &= ~termios.IXON
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+
+
+def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, key=None, timeout=30):
+    """burrow ARGS at a terminal of the row's own: (exit, transcript, settings before, settings after). `steps`
+    are (marker, action); once `marker` shows after the previous step's, action(master, slave) runs."""
+    import pty
+    import select
+    import termios
+    master, slave = pty.openpty()
+    winsize(slave, rows, cols)
+    if modes:
+        modes(slave)
+    before = termios.tcgetattr(slave)
+    argv = [str(L.bin / "burrow"), "-F", "none", "-p", str(L.port), "-l", L.user]
+    if key:
+        argv += ["-i", str(key)]
+    stdin = slave if stdin_data is None else subprocess.PIPE
+    proc = subprocess.Popen(argv + list(args), stdin=stdin, stdout=slave, stderr=slave,
+                            env=L.env({"TERM": "xterm"}), start_new_session=True, preexec_fn=_ctty)
+    if stdin_data is not None:
+        proc.stdin.write(stdin_data)
+        proc.stdin.close()
+    got, seen, i = b"", 0, 0
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    got += os.read(master, 65536)
+                except OSError:
+                    pass
+            if i < len(steps):
+                k = got.find(steps[i][0], seen)
+                if k >= 0:
+                    seen = k + len(steps[i][0])
+                    steps[i][1](master, slave)
+                    i += 1
+            if proc.poll() is not None:
+                end = time.monotonic() + 0.5
+                while time.monotonic() < end and select.select([master], [], [], 0.1)[0]:
+                    try:
+                        got += os.read(master, 65536)
+                    except OSError:
+                        break
+                break
+        else:
+            proc.kill()
+            proc.wait()
+            got += b"\n[row: timed out]"
+        after = termios.tcgetattr(slave)
+    finally:
+        os.close(master)
+        os.close(slave)
+    return proc.returncode, got, before, after
+
+
+def typed(data, pause=0.2):
+    def act(master, slave):
+        time.sleep(pause)
+        os.write(master, data)
+    return act
+
+
+def restored(name, r):
+    check(r[3] == r[2], f"{name}: the terminal was left changed: before {r[2]}, after {r[3]}; transcript {r[1][-200:]!r}")
+
+
+@row
+def local_tty_command():
+    """`burrow -t host CMD` at a terminal: a pty, TERM, the terminal's size, the exit, the closing line, the
+    terminal left as found."""
+    r = on_terminal(["-t", "127.0.0.1", 'tty; echo "TERM=$TERM"; stty size; exit 3'], rows=33, cols=97)
+    check(r[0] == 3, f"exit {r[0]}, transcript {r[1][-300:]!r}")
+    check(re.fullmatch(rb"/dev/tty\S+\r\nTERM=xterm\r\n33 97\r\n" + re.escape(CLOSED_COOKED), r[1]) is not None,
+          f"transcript {r[1][-300:]!r}")
+    restored("-t", r)
+    name = r[1].split(b"\r\n")[0].decode()
+    return f"{name}, TERM=xterm, 33 97, exit 3, closed CR CR LF"
+
+
+@row
+def local_tty_modes():
+    """The terminal's modes reach the remote pty: `stty -a` there, from a terminal set unusually."""
+    r = on_terminal(["-t", "127.0.0.1", "stty -a"], modes=odd_modes)
+    check(r[0] == 0, f"exit {r[0]}, transcript {r[1][-300:]!r}")
+    for want in (b"intr = ^G", b"erase = ^H", b"-ixon"):
+        check(want in r[1], f"no {want!r} in the remote stty -a: {r[1][:600]!r}")
+    restored("odd modes", r)
+    return "intr ^G, erase ^H, -ixon"
+
+
+@row
+def local_tty_shell():
+    """No command at a terminal: the login shell (/bin/sh) on a pty; a line typed, then `exit 4`."""
+    r = on_terminal(["127.0.0.1"], steps=[(b"$ ", typed(b"echo hi-$((1+2))\r")), (b"hi-3", typed(b"exit 4\r"))])
+    check(r[0] == 4 and b"hi-3\r\n" in r[1] and r[1].endswith(CLOSED_COOKED), f"exit {r[0]}, transcript {r[1][-300:]!r}")
+    restored("the login shell", r)
+    return "hi-3, exit 4"
+
+
+@row
+def local_tty_pipe():
+    """`-t` with stdin a pipe: ssh's line, no pty; `-tt`: a pty all the same."""
+    t = on_terminal(["-t", "127.0.0.1", "tty; exit 0"], stdin_data=b"")
+    check(t[0] == 0 and b"Pseudo-terminal will not be allocated because stdin is not a terminal." in t[1]
+          and b"not a tty" in t[1], f"-t: exit {t[0]}, transcript {t[1][-300:]!r}")
+    tt = on_terminal(["-tt", "127.0.0.1", "tty; exit 0"], stdin_data=b"")
+    check(tt[0] == 0 and re.search(rb"/dev/tty\S+", tt[1]) is not None and tt[1].endswith(CLOSED_COOKED),
+          f"-tt: exit {tt[0]}, transcript {tt[1][-300:]!r}")
+    return "-t: not a tty; -tt: a pty"
+
+
+@row
+def local_tty_restore():
+    """The terminal left as found after `~.` and after a pty the server refuses (a no-pty key)."""
+    e = on_terminal(["-t", "127.0.0.1", "echo ready; sleep 30"], steps=[(b"ready", typed(b"\r~.", 0.5))],
+                    modes=odd_modes)
+    check(e[0] == 255 and e[1].endswith(b"Connection to 127.0.0.1 closed.\r\n") and not e[1].endswith(CLOSED_COOKED),
+          f"~.: exit {e[0]}, transcript {e[1][-300:]!r}")
+    restored("~.", e)
+    k = WORK / "nopty"
+    if not k.exists():
+        L.keygen(k, "nopty")
+        pub = (WORK / "nopty.pub").read_text().strip()
+        with open(L.home / ".ssh" / "authorized_keys", "a") as f:
+            f.write(f"no-pty {pub}\n")
+    n = on_terminal(["-t", "127.0.0.1", "echo done"], key=k, modes=odd_modes)
+    check(n[0] == 0 and b"done" in n[1], f"refused pty: exit {n[0]}, transcript {n[1][-300:]!r}")
+    restored("a refused pty", n)
+    return "after ~. (exit 255, closed CR LF) and a refused pty"
+
+
+@row
+def local_tty_winch():
+    """The terminal resized mid-session: the remote pty follows."""
+    def resize(master, slave):
+        time.sleep(0.2)
+        winsize(slave, 41, 120)
+        time.sleep(0.3)
+        os.write(master, b"\r")
+    r = on_terminal(["-t", "127.0.0.1", "stty size; read x; stty size; exit 0"], steps=[(b"24 80", resize)])
+    check(r[0] == 0 and re.search(rb"24 80\r\n.*41 120\r\n", r[1], re.S) is not None,
+          f"exit {r[0]}, transcript {r[1][-300:]!r}")
+    return "24 80 then 41 120"
+
+
+@row
+def local_tty_keys():
+    """0x03 and 0x1c typed at a remote `sleep 30`: the remote program is interrupted (quit), not burrow."""
+    notes = []
+    for key, name in ((b"\x03", "^C"), (b"\x1c", "^\\")):
+        t0 = time.monotonic()
+        r = on_terminal(["-t", "127.0.0.1", "echo ready; sleep 30; echo after"], steps=[(b"ready", typed(key, 0.5))])
+        secs = time.monotonic() - t0
+        check(r[0] == 255 and b"after" not in r[1] and secs < 20, f"{name}: exit {r[0]} after {secs:.0f} s, transcript {r[1][-300:]!r}")
+        restored(name, r)
+        notes.append(f"{name} exit 255 in {secs:.0f} s")
+    return ", ".join(notes)
+
+
+@row
+def local_esc():
+    """The escape character: `~~` sends one `~`; `a~.b` mid-line is data; `-e none` passes `~.`; `~?` lists ~., ~?
+    and ~~."""
+    def cat_with(args, keys):
+        return on_terminal(args + ["127.0.0.1", "echo ready; cat; echo end"], steps=[(b"ready", typed(keys, 0.5))])
+    t = cat_with(["-t"], b"\r~~x\r\x04")
+    check(t[0] == 0 and b"\r\n~x\r\n" in t[1] and b"~~x" not in t[1], f"~~: exit {t[0]}, transcript {t[1][-300:]!r}")
+    m = cat_with(["-t"], b"a~.b\r\x04")
+    check(m[0] == 0 and b"a~.b\r\n" in m[1], f"a~.b: exit {m[0]}, transcript {m[1][-300:]!r}")
+    n = cat_with(["-e", "none", "-t"], b"\r~.\r\x04")
+    check(n[0] == 0 and b"~.\r\n" in n[1], f"-e none: exit {n[0]}, transcript {n[1][-300:]!r}")
+    h = on_terminal(["-t", "127.0.0.1", "echo ready; sleep 30"],
+                    steps=[(b"ready", typed(b"\r~?", 0.5)), (b"this message", typed(b"\r~.", 0.5))])
+    listed = [x.strip() for x in h[1].decode("utf-8", "replace").split("\r\n") if x.strip().startswith("~")]
+    for e in ("~.", "~?", "~~"):
+        check(any(x.startswith(e + " ") for x in listed), f"~? does not list {e}: {listed}; transcript {h[1][-400:]!r}")
+    check(h[0] == 255, f"~? then ~.: exit {h[0]}")
+    return f"~~, a~.b, -e none; ~? lists {len(listed)} lines"
 
 
 # The listener's memory (#30, #28): tools/check-server's server-idle-rss and
