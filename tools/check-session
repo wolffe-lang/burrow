@@ -18,16 +18,20 @@ text (`evidence`).
 """
 import argparse
 import base64
+import fcntl
 import hashlib
 import hmac
 import os
 import pathlib
 import pty
 import re
+import select
 import shutil
 import stat
+import struct
 import subprocess
 import sys
+import termios
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -1181,6 +1185,236 @@ def cli_t_refused():
     d = run_dir("cli-t-refused")
     rb = burrow(d, ["-t", "127.0.0.1"])
     refused(rb, "option_unsupported")
+
+
+# ---- a terminal (B8): burrow and the pinned ssh at a terminal of the row's own -------------------
+# Each client is started as a terminal emulator starts a program: the session leader of a fresh pty,
+# the pty its controlling terminal and its stdin, stdout and stderr (stdin a pipe where a row says).
+# Everything it writes, and everything the remote side's pty echoes, is one transcript read from the
+# master. A row's interrupts and escapes are bytes written into that master, never a signal sent by
+# the row; a window change is the row setting the pty's size, as a terminal does, and the kernel
+# telling the foreground group. The pty's own settings are read before the client starts and after
+# it ends, so a row can hold the client to leaving the terminal as it found it.
+CLOSED = re.compile(rb"Connection to 127\.0\.0\.1 closed\.\r?\n")
+
+
+def set_winsize(fd, rows, cols):
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+
+def odd_modes(fd):
+    """The terminal set as a client's might be: intr ^G, erase ^H, no IXON."""
+    a = termios.tcgetattr(fd)
+    a[6][termios.VINTR] = b"\x07"
+    a[6][termios.VERASE] = b"\x08"
+    a[0] &= ~termios.IXON
+    termios.tcsetattr(fd, termios.TCSANOW, a)
+
+
+def _ctty():
+    # In the child, after start_new_session's setsid: the pty (on fd 1) becomes the controlling terminal.
+    fcntl.ioctl(1, termios.TIOCSCTTY, 0)
+
+
+def term_client(argv, env, steps=(), rows=24, cols=80, modes=None, stdin_data=None, timeout=30):
+    """(exit, transcript, settings before, settings after). `steps` are (marker, action): once
+    `marker` shows in the transcript after the previous step's, action(master, slave) runs."""
+    master, slave = pty.openpty()
+    set_winsize(slave, rows, cols)
+    if modes:
+        modes(slave)
+    before = termios.tcgetattr(slave)
+    stdin = slave if stdin_data is None else subprocess.PIPE
+    proc = subprocess.Popen(argv, stdin=stdin, stdout=slave, stderr=slave, env=env, start_new_session=True,
+                            preexec_fn=_ctty)
+    if stdin_data is not None:
+        proc.stdin.write(stdin_data)
+        proc.stdin.close()
+    got, seen, i = b"", 0, 0
+    deadline = time.monotonic() + timeout
+    try:
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], 0.05)[0]:
+                try:
+                    data = os.read(master, 65536)
+                except OSError:
+                    data = b""
+                got += data
+            if i < len(steps):
+                k = got.find(steps[i][0], seen)
+                if k >= 0:
+                    seen = k + len(steps[i][0])
+                    steps[i][1](master, slave)
+                    i += 1
+            if proc.poll() is not None:
+                end = time.monotonic() + 0.5
+                while time.monotonic() < end and select.select([master], [], [], 0.1)[0]:
+                    try:
+                        got += os.read(master, 65536)
+                    except OSError:
+                        break
+                break
+        else:
+            proc.kill()
+            proc.wait()
+            got += b"\n[row: timed out]"
+        after = termios.tcgetattr(slave)
+    finally:
+        os.close(master)
+        os.close(slave)
+    return proc.returncode, got, before, after
+
+
+def type_(data, pause=0.2):
+    def act(master, slave):
+        time.sleep(pause)
+        os.write(master, data)
+    return act
+
+
+def resize(rows, cols, then=b""):
+    def act(master, slave):
+        time.sleep(0.2)
+        set_winsize(slave, rows, cols)
+        time.sleep(0.3)
+        if then:
+            os.write(master, then)
+    return act
+
+
+def term_argv(who, s, kh, d, args):
+    if who == "burrow":
+        return [str(BIN), "-F", "none"] + common(s, kh, d / "id_user") + args
+    return [SSH, "-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"] + common(s, kh, d / "id_user") + args
+
+
+def tnorm(b, keep_closed=False):
+    b = re.sub(rb"/dev/pts/\d+", b"/dev/pts/N", b)
+    return b if keep_closed else CLOSED.sub(b"", b)
+
+
+def term_both(d, s, args, **kw):
+    """The same terminal session through the pinned ssh, then burrow: {who: (exit, transcript, before, after)}."""
+    kh = known(d, s)
+    env = envfor(d, {"TERM": kw.pop("term", "xterm"), "SHELL": "/bin/sh"})
+    return {who: term_client(term_argv(who, s, kh, d, args), env, **kw) for who in ("ssh", "burrow")}
+
+
+def term_same(d, got, what, keep_closed=False):
+    """burrow's exit and transcript are ssh's (pts numbers written N; ssh's closing line left out unless kept)."""
+    (rs, ts, _, _), (rb, tb, _, _) = got["ssh"], got["burrow"]
+    ts, tb = tnorm(ts, keep_closed), tnorm(tb, keep_closed)
+    compare(d, f"{what}\nssh    exit {rs}\n{ts!r}\nburrow exit {rb}\n{tb!r}\n")
+    check(rb == rs and tb == ts, f"burrow exit {rb}, transcript {tb[-300:]!r}; ssh exit {rs}, transcript {ts[-300:]!r}")
+    return ts
+
+
+@row
+def tty_command():
+    """`-t host CMD` at a terminal: a pty, TERM, the terminal's size, the exit."""
+    d = run_dir("tty-command")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", 'tty; echo "TERM=$TERM"; stty size; exit 3'], rows=33, cols=97)
+    ts = term_same(d, got, "-t host CMD")
+    check(b"/dev/pts/N" in ts and b"TERM=xterm" in ts and b"33 97" in ts, f"harness: ssh's transcript {ts!r}")
+    return "pts, TERM, 33 97, exit 3, as ssh"
+
+
+@row
+def tty_stty():
+    """The terminal's modes reach the remote pty: `stty -a` there, from a terminal set unusually."""
+    d = run_dir("tty-stty")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "stty -a"], modes=odd_modes)
+    ts = term_same(d, got, "-t host 'stty -a', intr ^G, erase ^H, -ixon")
+    check(b"intr = ^G" in ts and b"-ixon" in ts, f"harness: ssh's transcript {ts!r}")
+    return "stty -a as through ssh"
+
+
+def pty_req_of(f):
+    got = [e for e in f.record["events"] if e[0] == "pty-req"]
+    if not got:
+        return None
+    _, term, cols, rows, wpx, hpx, modes = got[0]
+    pairs, i = [], 0
+    while i < len(modes) and modes[i] != 0:
+        op = modes[i]
+        if op >= 160:
+            break
+        pairs.append((op, struct.unpack(">I", modes[i + 1:i + 5])[0]))
+        i += 5
+    return term, cols, rows, wpx, hpx, pairs
+
+
+@row
+def pty_req_bytes():
+    """The pty-req a scripted server records, from the same terminal: TERM, the sizes, the modes."""
+    import fakeserver
+    d = run_dir("pty-req-bytes")
+    out = {}
+    for who in ("ssh", "burrow"):
+        with fakeserver.FakeServer(lambda f, w: f.finish(w, 0)) as f:
+            kh = d / f"known_hosts-{who}"
+            kh.write_text(f.host_line())
+            keypair(d / f"id_{who}")
+            args = ["-p", str(f.port), "-o", f"UserKnownHostsFile={kh}", "-i", str(d / f"id_{who}"), "-l", USER,
+                    "-t", "127.0.0.1", "true"]
+            argv = ([str(BIN), "-F", "none"] if who == "burrow" else
+                    [SSH, "-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"]) + args
+            rc, t, _, _ = term_client(argv, envfor(d, {"TERM": "xterm-256color", "SHELL": "/bin/sh"}), rows=33, cols=97,
+                                      modes=odd_modes)
+        out[who] = (rc, t, pty_req_of(f), f.record["error"])
+    compare(d, "".join(f"{who}: exit {r[0]} pty-req {r[2]} error {r[3]} transcript {r[1][-200:]!r}\n" for who, r in out.items()))
+    check(out["ssh"][2] is not None, f"harness: the pinned ssh sent no pty-req to the scripted server: {out['ssh']}")
+    check(out["burrow"][2] is not None, f"burrow sent no pty-req: exit {out['burrow'][0]}, {out['burrow'][1][-200:]!r}")
+    s_, b_ = out["ssh"][2], out["burrow"][2]
+    check(b_[:5] == s_[:5], f"TERM and sizes: burrow {b_[:5]}, ssh {s_[:5]}")
+    check(set(b_[5]) == set(s_[5]), f"modes: only burrow's {sorted(set(b_[5]) - set(s_[5]))}, only ssh's {sorted(set(s_[5]) - set(b_[5]))}")
+    return f"TERM {s_[0]}, {s_[1]}x{s_[2]}, {len(s_[5])} modes, as ssh (order recorded: ssh {[o for o, _ in s_[5]][:6]}…)"
+
+
+@row
+def tty_pipe_t():
+    """`-t` with stdin a pipe: the line ssh prints, and no pty."""
+    d = run_dir("tty-pipe-t")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "tty; exit 0"], stdin_data=b"")
+    ts = term_same(d, got, "-t, stdin a pipe")
+    check(b"not a tty" in ts, f"harness: ssh's transcript {ts!r}")
+
+
+@row
+def tty_pipe_tt():
+    """`-tt` with stdin a pipe: a pty all the same."""
+    d = run_dir("tty-pipe-tt")
+    with Server(d) as s:
+        got = term_both(d, s, ["-tt", "127.0.0.1", "tty; exit 0"], stdin_data=b"")
+    ts = term_same(d, got, "-tt, stdin a pipe")
+    check(b"/dev/pts/N" in ts, f"harness: ssh's transcript {ts!r}")
+
+
+@row
+def requesttty():
+    """RequestTTY yes, no, force and auto, at a terminal, with a command."""
+    d = run_dir("requesttty")
+    notes = []
+    with Server(d) as s:
+        for v in ("yes", "no", "force", "auto"):
+            got = term_both(d, s, ["-o", f"RequestTTY={v}", "127.0.0.1", "tty; exit 0"])
+            ts = term_same(d, got, f"RequestTTY={v}")
+            notes.append(f"{v}: {'pty' if b'/dev/pts/N' in ts else 'none'}")
+    return ", ".join(notes)
+
+
+@row
+def tty_shell():
+    """No command at a terminal: the login shell on a pty; a line typed, then `exit 4`."""
+    d = run_dir("tty-shell")
+    with Server(d) as s:
+        got = term_both(d, s, ["127.0.0.1"], steps=[(b"$ ", type_(b"echo hi-$((1+2))\r")),
+                                                    (b"hi-3", type_(b"exit 4\r"))])
+    ts = term_same(d, got, "no command at a terminal")
+    check(got["ssh"][0] == 4 and b"hi-3" in ts, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
 
 
 def keep_evidence(tier):
