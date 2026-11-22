@@ -1540,7 +1540,9 @@ def esc_help():
         got = term_both(d, s, ["-t", "127.0.0.1", "echo ready; sleep 30"],
                         steps=[(b"ready", type_(b"\r~?", 0.5)), (b"~?", type_(b"\r~.", 0.5))])
     listed = {who: [l.strip() for l in lines(tnorm(got[who][1])) if re.match(r"^\s*~", l)] for who in got}
-    compare(d, f"ssh lists {listed['ssh']}\nburrow lists {listed['burrow']}\n")
+    compare(d, f"ssh lists {listed['ssh']}\nburrow lists {listed['burrow']}\n"
+               f"ssh    exit {got['ssh'][0]}\n{tnorm(got['ssh'][1], True)!r}\n"
+               f"burrow exit {got['burrow'][0]}\n{tnorm(got['burrow'][1], True)!r}\n")
     check(listed["ssh"], f"harness: ssh's ~? printed no escape lines: {got['ssh'][1][-300:]!r}")
     check(listed["burrow"] and set(listed["burrow"]) <= set(listed["ssh"]),
           f"burrow's ~? lines {listed['burrow']} are not all ssh's {listed['ssh']}")
