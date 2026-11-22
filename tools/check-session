@@ -1417,6 +1417,27 @@ def tty_shell():
     check(got["ssh"][0] == 4 and b"hi-3" in ts, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
 
 
+
+@row
+def tty_restore():
+    """The terminal left as it was found: after a normal end, after `~.`, and when the server refuses the pty."""
+    notes = []
+    cases = (("end", [], ["-t", "127.0.0.1", "exit 0"], ()),
+             ("escape", [], ["-t", "127.0.0.1", "echo ready; sleep 30"], [(b"ready", type_(b"\r~."))]),
+             ("refused", ["PermitTTY no"], ["-t", "127.0.0.1", "echo done"], ()))
+    for name, extra, args, steps in cases:
+        d = run_dir(f"tty-restore-{name}")
+        with Server(d, extra) as s:
+            got = term_both(d, s, args, steps=list(steps), modes=odd_modes)
+        for who in ("ssh", "burrow"):
+            rc, t, before, after = got[who]
+            check(rc is not None, f"{name}: {who} did not end: {t[-200:]!r}")
+            check(after == before, f"{name}: {who} left the terminal changed: before {before}, after {after}; transcript {t[-200:]!r}")
+        term_same(d, got, f"restore, {name}", keep_closed=True)
+        notes.append(name)
+    return "restored after " + ", ".join(notes) + ", as ssh"
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"session-{tier}"
     if out.exists():
