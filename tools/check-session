@@ -1417,6 +1417,30 @@ def tty_restore():
 
 
 @row
+def tty_refused():
+    """A server that refuses the pty (PermitTTY no), at a terminal: `-t` and `-tt` with a command, `-t` with none,
+    and no command at all (RequestTTY auto): the line, the exit, whether anything runs, the terminal left as found."""
+    notes = []
+    typed = [(b"PTY allocation request failed", type_(b"echo typed; exit 4\n", 0.5))]
+    cases = (("t-command", ["-t", "127.0.0.1", "echo done"], ()),
+             ("tt-command", ["-tt", "127.0.0.1", "echo done"], ()),
+             ("t-shell", ["-t", "127.0.0.1"], typed),
+             ("auto-shell", ["127.0.0.1"], typed))
+    for name, args, steps in cases:
+        d = run_dir(f"tty-refused-{name}")
+        with Server(d, ["PermitTTY no"]) as s:
+            got = term_both(d, s, args, steps=list(steps))
+        for who in ("ssh", "burrow"):
+            rc, t, before, after = got[who]
+            check(rc is not None, f"{name}: {who} did not end: {t[-200:]!r}")
+            check(after == before, f"{name}: {who} left the terminal changed; transcript {t[-200:]!r}")
+        ts = term_same(d, got, f"a refused pty, {name}", keep_closed=True)
+        check(b"PTY allocation request failed" in ts, f"harness: {name}: ssh's transcript {ts!r}")
+        notes.append(f"{name}: {got['ssh'][0]}")
+    return "exits " + ", ".join(notes) + ", as ssh"
+
+
+@row
 def tty_winch():
     """The terminal resized mid-session: the remote pty follows (window-change)."""
     d = run_dir("tty-winch")
