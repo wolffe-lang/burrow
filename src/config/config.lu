@@ -382,7 +382,8 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
         return
     }
     let v = words[0]
-    if has_token(value) {
+    // An escape character is taken as written: `%` is one.
+    if k != "escapechar" && has_token(value) {
         refuse_as(
             mut s,
             refusal,
