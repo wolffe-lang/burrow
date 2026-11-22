@@ -183,7 +183,7 @@ def version_unsupported():
     with mitm.FakeServer(b"SSH-1.5-ancient\r\n") as f:
         r = burrow(f.port, WORK / "no-known-hosts")
     refused(r, "version_unsupported")
-    check(f.got.startswith(b"SSH-2.0-burrow_0.0.0\r\n"), f"burrow's version line was {bytes(f.got[:40])!r}")
+    check(f.got.startswith(b"SSH-2.0-burrow_%s\r\n" % oraclelib.package_version().encode()), f"burrow's version line was {bytes(f.got[:40])!r}")
 
 
 # ---- host keys ------------------------------------------------------------------
@@ -566,7 +566,7 @@ def transcript():
     ol, op = mitm.plaintext_packets(b.c2s)
     (d / "burrow-c2s.hex").write_text(bytes(a.c2s[:4096]).hex())
     (d / "ssh-c2s.hex").write_text(bytes(b.c2s[:4096]).hex())
-    check(bl == b"SSH-2.0-burrow_0.0.0\r\n", f"burrow's version line {bl!r}")
+    check(bl == b"SSH-2.0-burrow_%s\r\n" % oraclelib.package_version().encode(), f"burrow's version line {bl!r}")
     check(re.fullmatch(rb"SSH-2\.0-OpenSSH_[^ \r\n]+\r\n", ol), f"ssh's version line {ol!r}")
     check([p[2][0] for p in bp] == [20, 30, 21], f"burrow's plaintext packets {[p[2][0] for p in bp]}")
     check([p[2][0] for p in op] == [20, 30, 21], f"ssh's plaintext packets {[p[2][0] for p in op]}")

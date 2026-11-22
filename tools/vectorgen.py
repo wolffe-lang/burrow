@@ -17,10 +17,22 @@ Every input is fixed, so the output is the same bytes on every run; the
 generated module is checked in, and the gate regenerates and compares it.
 """
 import hashlib
+import pathlib
+import re
 import struct
 import sys
 
 P = 2**255 - 19
+
+
+def package_version():
+    """The version src/wolf.pkg names: the identification strings carry it."""
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = re.sub(r"//[^\n]*", "", (root / "src/wolf.pkg").read_text())
+    fields = re.findall(r'\bversion\s*:\s*"([^"]*)"', text)
+    if len(fields) != 1:
+        raise SystemExit("FAIL version-manifest-field-count %d" % len(fields))
+    return fields[0]
 
 
 # ---- RFC 7748 §5: X25519 ---------------------------------------------------
@@ -243,7 +255,7 @@ SERVER_MACS = ["umac-64-etm@openssh.com", "umac-128-etm@openssh.com", "hmac-sha2
 
 def vectors():
     v = {}
-    V_C = b"SSH-2.0-burrow_0.0.0"
+    V_C = b"SSH-2.0-burrow_" + package_version().encode()
     V_S = b"SSH-2.0-OpenSSH_10.0p2"
     I_C = kexinit(bytes(range(16)), BURROW_KEX, ["ssh-ed25519"], ["chacha20-poly1305@openssh.com"],
                   ["hmac-sha2-256"], ["none"])
@@ -373,7 +385,7 @@ def vectors():
     # ping); RFC 4252's FAILURE and SUCCESS; RFC 4254's confirmation (window
     # 0, as the pinned sshd confirms), exit-status, exit-signal and an open
     # failure.
-    V_D = b"SSH-2.0-burrowd_0.0.0"
+    V_D = b"SSH-2.0-burrowd_" + package_version().encode()
     I_D = kexinit(bytes(range(0xF0, 0x100)), BURROWD_KEX, ["ssh-ed25519"], ["chacha20-poly1305@openssh.com"],
                   ["hmac-sha2-256"], ["none"])
     H_D = hashlib.sha256(string(V_C) + string(V_D) + string(I_C) + string(I_D) + string(K_S)

@@ -17,6 +17,16 @@ import time
 import tomllib
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+
+def package_version():
+    """The version src/wolf.pkg names: the one number the rows expect."""
+    import re
+    text = re.sub(r"//[^\n]*", "", (ROOT / "src/wolf.pkg").read_text())
+    fields = re.findall(r'\bversion\s*:\s*"([^"]*)"', text)
+    if len(fields) != 1:
+        raise SystemExit("FAIL version-manifest-field-count %d" % len(fields))
+    return fields[0]
 PIN = tomllib.loads((ROOT / "burrow-oracle.toml").read_text())["oracle"]
 PREFIX = pathlib.Path(PIN["prefix"])
 SSH = PREFIX / "bin" / "ssh"
