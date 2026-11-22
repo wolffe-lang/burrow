@@ -356,7 +356,11 @@ the session leader of a pty of the row's own, against the pinned `sshd`, the tra
 after the terminal is restored, `closed.\r\r\n`, and after `~.` while still raw, `closed.\r\n`), and `~?`'s
 lines, of which burrow prints the ones for the escapes it takes.
 bw06's probes, for `-tt` when the pty is refused (`PTY allocation request failed on channel 0`, 255, the command
-never run), and `tty-refused` for `-t`, `-tt`, `-t` with no command and a login shell by default. No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
+never run), and `tty-refused` for `-t`, `-tt`, `-t` with no command and a login shell by default. The pinned
+`ssh`'s keystroke timing, through a relay that timestamps every chunk the client writes, ten keys at fixed gaps,
+five runs each of the default, `no` and `interval:80`: a 36-byte packet every 20 ms (or 80) from the first key, which
+goes at once, PINGs of the same size on ticks with no key, for 1.3 to 3.1 s after the last; with `no`, each key at
+once and nothing after. No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
 
 ## px133: login records
 
