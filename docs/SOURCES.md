@@ -333,6 +333,31 @@ with and without SIGHUP ignored, 20000 lines before the end, the client's end of
 `pty,restrict`, and `PermitTTY no`; `sshd`'s own debug log beside them. No `.c` or `.h` file was opened, of
 OpenSSH or any other server or terminal program.
 
+## bw08: the interactive client (B8)
+
+RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`), from the
+client's side: §6.2 `pty-req`, §6.7 `window-change`, §8 the encoded terminal modes. RFC 8160, the same text, §3.
+
+The man pages, extracted by name from the same signed `openssh-10.0p2.tar.gz` (their digests checked again, unchanged:
+`ssh.1` `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea`, `ssh_config.5`
+`5b196bcd9b4f49f94ee903fede196e02035521fb21f9060a51030d1fd2d4eb34`):
+
+| page | read |
+|---|---|
+| `ssh.1` | ESCAPE CHARACTERS; `-e`, `-t`, `-T` |
+| `ssh_config.5` | `EscapeChar`, `RequestTTY`, `ObscureKeystrokeTiming` |
+
+Organisation code: wolf-std's `std/term` (`mode`, `set_mode`, `raw_bytes`, `restore_at_exit`, `size`, `attr`) and
+`std/signal` (`listen`, `poll`, `wait_fds`, `resize`), each read as the toolchain's documentation.
+
+The pinned `ssh` as a black box, in the oracle container, through `tools/check-session`'s terminal rows: each client
+the session leader of a pty of the row's own, against the pinned `sshd`, the transcripts compared byte for byte (the
+`pty-req` a scripted server records, from the same terminal, for the modes and their order; the closing line written
+after the terminal is restored, `closed.\r\r\n`, and after `~.` while still raw, `closed.\r\n`), and `~?`'s
+lines, of which burrow prints the ones for the escapes it takes.
+bw06's probes, for `-tt` when the pty is refused (`PTY allocation request failed on channel 0`, 255, the command
+never run). No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
+
 ## px133: login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
