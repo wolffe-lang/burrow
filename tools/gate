@@ -24,6 +24,9 @@
 #   session     the auth, key, known_hosts, session and CLI rows against the
 #               pinned sshd, ssh and ssh-keygen, native
 #   session-release     the same rows, release
+#   session-timing      the keystroke timing rows (check-session --timing), native:
+#               a timing step, never in the whole gauntlet; named alone, on quiet cores
+#   session-timing-release  the same rows, release
 #   hostile     a scripted server that misbehaves (tools/fakeserver.py), native
 #   hostile-release     the same rows, release
 #   server      burrowd held to the pinned sshd (tools/check-server): the
@@ -89,6 +92,8 @@ run() {
     transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;
     session) tools/in-container python3 -I tools/check-session --bin target/native/burrow ;;
     session-release) tools/in-container python3 -I tools/check-session --bin target/release/burrow ;;
+    session-timing) tools/in-container python3 -I tools/check-session --bin target/native/burrow --timing ;;
+    session-timing-release) tools/in-container python3 -I tools/check-session --bin target/release/burrow --timing ;;
     hostile) tools/in-container python3 -I tools/check-hostile --bin target/native/burrow ;;
     hostile-release) tools/in-container python3 -I tools/check-hostile --bin target/release/burrow ;;
     server) tools/in-container python3 -I tools/check-server --bin target/native/burrowd ;;
