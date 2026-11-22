@@ -1,0 +1,20 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  gate:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-gate.yml
+  draft:
+    needs: gate
+    permissions:
+      contents: write
+    uses: wolffe-lang/homebrew-wolf/.github/workflows/tool-release.yml@183a4e18e63bb1f21cd41a74ff63cb848bc89094
+    with:
+      config: .github/release.json
+      infrastructure-revision: 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+      tested-sha: ${{ needs.gate.outputs.tested-sha }}
