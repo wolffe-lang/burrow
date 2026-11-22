@@ -179,7 +179,7 @@ What it does, and what it refuses:
   its loop runs in a region freed at the pass's end, and an ended connection
   is taken out of its table in place, so it does not grow with idle time or
   with connections (rows hold it within 64 KiB over a minute idle and 32 KiB
-  over three hundred logins; before, it grew about 3 KiB a second idle and about 2 KiB
+  over three hundred logins, 64 KiB on macOS; before, it grew about 3 KiB a second idle and about 2 KiB
   a connection, and every new session's processes started at its size).
 - **The log:** one line per connection: the time (UTC), the client's
   address and port, the user, the key's fingerprint (`key password` for a
