@@ -21,11 +21,14 @@ does, and a static build is ready for PAX. It takes the command line den
 passes:
 
 ```sh
-ssh [-Ttv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]
+ssh [-TtVv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]
 burrow-keygen -t ed25519 [-q] [-f path] [-C comment] [-N ""]
 burrow-keygen -y -f path        # the public line
 burrow-keygen -l -f path        # the fingerprint
 ```
+
+`-V` prints `burrow_<version>, burrow (wolf)` on stderr and exits 0, as
+`ssh -V` prints its one line, before any file is read or connection made.
 
 `-o` and `~/.ssh/config` (`Host` and `Match host` blocks) take `BatchMode`,
 `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster no`, `ControlPath
