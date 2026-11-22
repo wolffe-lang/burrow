@@ -143,7 +143,7 @@ def handshake():
         check("kex: host key algorithm: ssh-ed25519" in log, "sshd did not log host key ssh-ed25519")
         check(re.search(r"kex: client->server cipher: chacha20-poly1305@openssh.com", log), "sshd did not log chacha20 c2s")
         check(re.search(r"kex: server->client cipher: chacha20-poly1305@openssh.com", log), "sshd did not log chacha20 s2c")
-        check(re.search(r"Remote protocol version 2\.0, remote software version burrow_0\.0\.0", log), "sshd did not see burrow's version")
+        check(re.search(r"Remote protocol version 2\.0, remote software version burrow_" + re.escape(oraclelib.package_version()) + r"\b", log), "sshd did not see burrow's version")
         check(client_disconnect(s, 11), "sshd did not log burrow's disconnect, reason 11")
         check("strict KEX" in log or "strict kex" in log.lower(), "sshd did not log strict kex")
         check("debug1: SSH2_MSG_EXT_INFO received: server-sig-algs" in r.stderr, "burrow did not read EXT_INFO")
