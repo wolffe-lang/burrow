@@ -517,7 +517,6 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   waits up to 5 ms on each in turn when idle (`src/session`).
 - burrow, the client, has no agent, forwarding, certificates, or RSA and
   ECDSA keys; each is refused by name. Its pty request sends 0 for the
-  window's pixel sizes (wolf-std reads rows and columns only), and it keeps
-  no `ObscureKeystrokeTiming` yet (refused by name until it does).
+  window's pixel sizes (wolf-std reads rows and columns only).
 - den's ssh rows run in the local gauntlet only: den's git oracle is built
   in den's own image, whose digest a CI runner is not held to reproduce.
