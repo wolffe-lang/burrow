@@ -143,6 +143,12 @@ jobs:
       - run: tools/fetch-toolchain
       - run: tools/build --all
       - run: tools/check-test
+      - name: burrowd and burrow's terminal rows as the runner's user, native
+        if: ${{ !cancelled() }}
+        run: python3 -I tools/check-server-local --bin target/native/burrowd
+      - name: burrowd and burrow's terminal rows as the runner's user, release
+        if: ${{ !cancelled() }}
+        run: python3 -I tools/check-server-local --bin target/release/burrowd
   tier:
     name: tier ${{ needs.plan.outputs.tier || 'unplanned' }}
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (!cancelled()) }}
