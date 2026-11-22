@@ -1451,6 +1451,42 @@ def tty_winch():
     return "24 80 then 41 120, as ssh"
 
 
+
+def keys_row(name, key, what):
+    d = run_dir(name)
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "echo ready; sleep 30; echo after"],
+                        steps=[(b"ready", type_(key, 0.5))])
+    ts = term_same(d, got, what)
+    check(b"after" not in ts and got["ssh"][0] != 0, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return f"exit {got['ssh'][0]}, as ssh"
+
+
+@row
+def tty_ctrl_c():
+    """0x03 typed: the remote foreground program is interrupted, not the client."""
+    return keys_row("tty-ctrl-c", b"\x03", "^C at a remote sleep")
+
+
+@row
+def tty_ctrl_backslash():
+    """0x1c typed: quit for the remote foreground program."""
+    return keys_row("tty-ctrl-backslash", b"\x1c", "^\\ at a remote sleep")
+
+
+@row
+def tty_ctrl_z():
+    """0x1a typed at the login shell's `sleep 30`: stopped there, `fg`, then ^C, then `exit 5`."""
+    d = run_dir("tty-ctrl-z")
+    with Server(d) as s:
+        got = term_both(d, s, ["127.0.0.1"], steps=[(b"$ ", type_(b"sleep 30\r")), (b"sleep 30", type_(b"\x1a", 0.7)),
+                                                    (b"top", type_(b"fg\r")), (b"sleep 30", type_(b"\x03", 0.7)),
+                                                    (b"$ ", type_(b"exit 5\r"))])
+    ts = term_same(d, got, "^Z, fg, ^C, exit 5")
+    check(got["ssh"][0] == 5 and b"top" in ts, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return "stopped, resumed, interrupted, exit 5, as ssh"
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"session-{tier}"
     if out.exists():
