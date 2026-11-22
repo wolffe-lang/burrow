@@ -18,6 +18,10 @@
 #   fmt         `wolf fmt --check`
 #   build       the native and release tiers, warnings denied
 #   version-printed  `burrowd -V` and `burrow -V` print the manifest's version
+#   release-dry the draft release path here (tools/check-release): its self-test,
+#               then the pinned shared release tool's wiring checks, its build
+#               of this host's archive (packed twice) and the clean smoke; no
+#               upload, no tag, no token
 #   unit        every src/*_test.lu: the checked machine, native and lupin
 #   transport   the transport rows against the pinned sshd, native
 #   transport-release   the same rows, release
@@ -64,7 +68,7 @@
 #               2x and its wall time reported (a perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors version fmt build version-printed unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
+ALL="toolchain oracle planner vectors version fmt build version-printed release-dry unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -87,6 +91,7 @@ run() {
     fmt) tools/in-container tools/check-fmt ;;
     build) tools/in-container tools/build --all ;;
     version-printed) tools/in-container python3 -I tools/check-version --burrowd target/native/burrowd --burrow target/native/burrow ;;
+    release-dry) tools/in-container sh -c 'python3 -I tools/check-release --self-test && python3 -I tools/check-release --dry' ;;
     unit) tools/in-container tools/check-test ;;
     transport) tools/in-container python3 -I tools/check-transport --bin target/native/burrow ;;
     transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;
