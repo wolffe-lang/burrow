@@ -8,9 +8,14 @@
 //! `env` requests (want reply FALSE, §6.4) and one `exec` with want reply
 //! TRUE (§6.5), whose `CHANNEL_SUCCESS` or `CHANNEL_FAILURE`
 //! (`exec_refused`) is awaited before any input is sent. With no command,
-//! one `shell` request instead (§6.5, want reply TRUE, no `pty-req` before
-//! it: burrow allocates no pseudo-terminal), awaited the same way
-//! (`shell_refused`).
+//! one `shell` request instead (§6.5, want reply TRUE), awaited the same
+//! way (`shell_refused`).
+//!
+//! **A pseudo-terminal** (§6.2, B8): a `pty-req` with want reply TRUE goes
+//! before the `exec` or `shell`. Its answer comes first, the server
+//! answering in order (§5.4); a `CHANNEL_FAILURE` is not a refusal of the
+//! session: the command runs without one (`pty_refused`), as the pinned
+//! `ssh` goes on.
 //!
 //! **Windows** (§5.2): burrow sends no more than the server's window and
 //! maximum packet allow, and adjusts its own window by what it has written
@@ -66,6 +71,9 @@ pub struct Chan {
     exec_wanted: bool,
     exec_ok: bool,
     shell: bool,
+    pty_wanted: bool,
+    pty_ok: bool,
+    pty_refused: bool,
     sent_eof: bool,
     got_eof: bool,
     sent_close: bool,
@@ -98,6 +106,9 @@ pub fn sized(window: int, max: int) -> Chan {
         exec_wanted: false,
         exec_ok: false,
         shell: false,
+        pty_wanted: false,
+        pty_ok: false,
+        pty_refused: false,
         sent_eof: false,
         got_eof: false,
         sent_close: false,
@@ -149,6 +160,30 @@ pub fn env_msg(ch: Chan, name: str, value: str) -> List[byte] {
     var p = request_head(ch, "env", false)
     wire.put_text(mut p, name)
     wire.put_text(mut p, value)
+    p
+}
+
+/// The `pty-req` request (§6.2), want reply TRUE: `term` (the `TERM`
+/// variable's value), the window's `cols` and `rows`, its width and height
+/// in pixels (0 for unknown), and `modes`, an encoded mode stream (§8,
+/// `src/ttymodes`).
+pub fn pty_msg(
+    mut ch: Chan,
+    term: str,
+    cols: int,
+    rows: int,
+    wpx: int,
+    hpx: int,
+    modes: List[byte],
+) -> List[byte] {
+    ch.pty_wanted = true
+    var p = request_head(ch, "pty-req", true)
+    wire.put_text(mut p, term)
+    wire.put_u32(mut p, cols)
+    wire.put_u32(mut p, rows)
+    wire.put_u32(mut p, wpx)
+    wire.put_u32(mut p, hpx)
+    wire.put_string(mut p, modes)
     p
 }
 
@@ -393,8 +428,19 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
         }
         return s
     }
-    // CHANNEL_SUCCESS or CHANNEL_FAILURE: only burrow's exec or shell
-    // asked for one.
+    // CHANNEL_SUCCESS or CHANNEL_FAILURE: only burrow's pty-req, exec or
+    // shell asked for one, and the pty-req's comes first.
+    if ch.pty_wanted {
+        ch.pty_wanted = false
+        if t == refuse.msg_channel_failure() {
+            ch.pty_refused = true
+            s.info = "the server refused the pty-req; the session goes on without a pseudo-terminal"
+        } else {
+            ch.pty_ok = true
+            s.info = "channel 0: pty-req accepted"
+        }
+        return s
+    }
     if !ch.exec_wanted {
         note(mut ch, "message {t} with no request outstanding")
         return message_unexpected

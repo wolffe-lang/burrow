@@ -216,7 +216,26 @@ fn main() {
     var x3 = opened()
     let _ = channel.shell_msg(mut x3)
     assert(why(mut x3, msg(100, 0)) == "shell_refused")
+    // RFC 4254 §6.2's pty-req (the bytes laid out by hand from the RFC):
+    // TERM, 80 columns, 24 rows, 640 by 480 pixels, modes ECHO 1 then END.
+    // Its answer comes first; a refusal of it is not a refusal of the
+    // session, and the exec's answer is awaited after it.
+    var pt = opened()
+    let modes = x("350000000100")
+    let pr = channel.pty_msg(mut pt, "xterm", 80, 24, 640, 480, modes)
+    assert(
+        wire.hex(pr) ==
+            "6200000007000000077074792d7265710100000005787465726d000000500000001800000280000001e000000006350000000100",
+    )
+    let _ = channel.exec_msg(mut pt, wire.bytes_of("true"))
+    assert(why(mut pt, msg(99, 0)) == "ok" && pt.pty_ok && !pt.exec_ok)
+    assert(why(mut pt, msg(99, 0)) == "ok" && pt.exec_ok)
+    var pn = opened()
+    let _ = channel.pty_msg(mut pn, "", 0, 0, 0, 0, x("00"))
+    let _ = channel.shell_msg(mut pn)
+    assert(why(mut pn, msg(100, 0)) == "ok" && pn.pty_refused && !pn.pty_ok)
+    assert(why(mut pn, msg(99, 0)) == "ok" && pn.exec_ok)
     print(
-        "channel: vectorgen's messages, the shell request, both windows, both close orders, exits, 10 refusals",
+        "channel: vectorgen's messages, the shell request, the pty request, both windows, both close orders, exits, 10 refusals",
     )
 }
