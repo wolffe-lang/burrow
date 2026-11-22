@@ -145,9 +145,12 @@ def local_signal():
 @row
 def local_env():
     r = run([str(L.bin / "burrow"), "-o", "SendEnv=GIT_PROTOCOL", "-p", str(L.port), "-l", L.user, "127.0.0.1",
-             "echo $GIT_PROTOCOL:$HOME:$USER"], env=L.env({"GIT_PROTOCOL": "version=2"}))
-    check(r[1] == f"version=2:{L.home}:{L.user}\n".encode(), f"{r[1]!r}")
-    return "GIT_PROTOCOL, HOME and USER"
+             "echo $GIT_PROTOCOL:$HOME:$USER:$SHELL"], env=L.env({"GIT_PROTOCOL": "version=2"}))
+    check(r[1] == f"version=2:{L.home}:{L.user}:/bin/sh\n".encode(), f"{r[1]!r}")
+    # The session runs in the scratch HOME with /bin/sh, never the invoking
+    # user's own HOME or login shell.
+    check(str(L.home) != os.environ.get("HOME"), f"the scratch HOME {L.home} is the invoking user's")
+    return "GIT_PROTOCOL, HOME, USER and SHELL=/bin/sh"
 
 
 @row
