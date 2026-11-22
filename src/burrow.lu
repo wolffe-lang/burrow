@@ -4,8 +4,13 @@
 // with Ed25519 keys (B2), and one command on a session channel (B3), or,
 // with no command, the login shell; on a pseudo-terminal when asked (B8).
 //
-//   ssh [-Ttv] [-F configfile] [-i identity_file] [-l login_name]
-//       [-o option] [-p port] [--] destination [command [argument ...]]
+//   ssh [-TtVv] [-e escape_char] [-F configfile] [-i identity_file]
+//       [-l login_name] [-o option] [-p port] [--] destination
+//       [command [argument ...]]
+//
+// `-V` prints `burrow_<version>, burrow (wolf)` on stderr and exits 0, before
+// any file is read or connection made; the version is src/version's, the one
+// the identification string and `burrowd -V` carry.
 //
 // It is the command line den's ssh transport passes (src/config). The exit
 // status is the remote command's (or shell's), or 255 for every refusal, as
@@ -38,6 +43,7 @@ use keyfile
 use refuse
 use session
 use transport
+use version
 use wire
 
 fn program() -> str {
@@ -277,6 +283,10 @@ fn run(s: config.Settings, pty: bool) -> int {
 
 fn main() -> int {
     var s = config.parse_args(env.args())
+    if s.print_version {
+        eprint("burrow_{version.version()}, burrow (wolf)")
+        return 0
+    }
     let home = env.get("HOME") else ""
     if s.refusal == "" {
         let file = if s.config_file != "" then s.config_file else home + "/.ssh/config"
