@@ -89,7 +89,7 @@ the server's indicators: kex `curve25519-sha256`,
 compression lists. Negotiation takes the client's lists first (RFC 4253
 §7.1). EXT_INFO follows the first NEWKEYS when the client offered
 `ext-info-c`, with `server-sig-algs` `ssh-ed25519` alone. Its identification
-is `SSH-2.0-burrowd_0.0.0`. A session channel is confirmed with window 0
+is `SSH-2.0-burrowd_<version>`. A session channel is confirmed with window 0
 and maximum packet 32768, as the pinned `sshd` confirms it, and the window
 opens when the command starts.
 

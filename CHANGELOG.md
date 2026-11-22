@@ -1,5 +1,11 @@
 ## Unreleased
 
+- The version is 0.1.0 and comes from one place. The package manifest names
+  it; the identification strings (`SSH-2.0-burrow_0.1.0`,
+  `SSH-2.0-burrowd_0.1.0`) and `burrowd -V` are built from one function; the
+  expected-version lines in the rows and the key-exchange vectors read the
+  manifest; and a row (`tools/check-version`, in the gate) fails if the
+  manifest and the function differ.
 - burrowd's listener keeps the memory it started with (burrow#30,
   burrow#28). Each 50 ms pass of its loop built its wait lists in the
   daemon's own region, which ends only with the daemon, so an idle listener
