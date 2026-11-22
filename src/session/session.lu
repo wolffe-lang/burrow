@@ -44,9 +44,11 @@
 //! by default, `no`, `interval:N`): while the terminal is raw on a granted
 //! pty and the server takes PING (`ping@openssh.com`, `PROTOCOL` §1.9),
 //! what is typed is held and sent on a fixed grid of that interval, the
-//! grid starting at the first key after a pause; a tick with nothing held
-//! sends a PING of a key packet's size instead, until a while after the
-//! last key. The server's PONGs are passed over (`src/channel`).
+//! grid starting at the first key after a pause, which goes at once; a
+//! tick with nothing held sends a PING of a key packet's size (36 bytes on
+//! the wire, as ssh's) instead, until a span after the last key drawn for
+//! each burst from one to three seconds (the pinned ssh: 1.3 to 3.1 s).
+//! The server's PONGs are passed over (`src/channel`).
 //!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
@@ -74,6 +76,7 @@ use std.signal
 use std.term
 use std.time
 use channel
+use entropy
 use refuse
 use transport
 use ttymodes
@@ -277,13 +280,17 @@ pub struct Flow {
     ks_ns: int,
     ks_next: int,
     ks_until: int,
+    ks_span: int,
     held: List[byte],
 }
 
-// How long chaff goes on after the last key, in milliseconds. [U11: set
-// from the black-box measurement of the pinned ssh.]
-fn chaff_ms() -> int {
-    1000
+// How long chaff goes on after the last key, in milliseconds: a span
+// drawn afresh for each burst of typing, uniformly from one to three
+// seconds. The pinned ssh, measured black box (ten runs at 20 and 80 ms),
+// went on for 1.3 to 3.1 s, a different span each run.
+fn chaff_ms(mut c: transport.Conn) -> int ! refuse.Refusal {
+    let r = entropy.draw(mut c.pool, 2)?
+    1000 + (r[0] as int * 256 + r[1] as int) % 2001
 }
 
 // Whether the server takes PING (`ping@openssh.com` in its EXT_INFO,
@@ -501,10 +508,13 @@ fn turn_once(
                 (mut flow.held).push(b)
             }
             let now = time.monotonic_ns()
-            flow.ks_until = now + chaff_ms() * 1000000
             if flow.ks_next == 0 {
+                // A burst begins: its first key goes at once, the grid
+                // starts there, and the chaff's span is drawn.
                 flow.ks_next = now
+                flow.ks_span = chaff_ms(mut c)? * 1000000
             }
+            flow.ks_until = now + flow.ks_span
         } else if flow.escapes {
             let out = unescape(plan.escape, mut flow, got)
             if out.len > 0 {
@@ -601,6 +611,7 @@ pub fn run(
         ks_ns: plan.obscure_ms * 1000000,
         ks_next: 0,
         ks_until: 0,
+        ks_span: 0,
         held: List[byte](),
     }
     while !channel.done(ch) && !flow.quit && flow.ended == 0 {
