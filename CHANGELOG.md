@@ -2,6 +2,14 @@
 
 - Experimental: the first release, a preview. burrow has no post-quantum key
   exchange yet, and burrowd, the server, is young.
+- A release path to a draft. A `vX.Y.Z` tag runs the release gate (the
+  whole of CI) and then the shared draft-only release workflow the other
+  wolf tools use: the release tier built on Linux x86-64 and macOS arm64,
+  each archive packed twice and compared, its SHA-256 beside it, both on one
+  draft, then downloaded and run on clean runners. Publishing stays a step
+  by hand. Before a tag: `release-wiring` on every pull request,
+  `release-rehearsal` started by hand on a branch, and `tools/check-release
+  --dry` in the gauntlet.
 
 - The version is 0.1.0 and comes from one place. The package manifest names
   it; the identification strings (`SSH-2.0-burrow_0.1.0`,
