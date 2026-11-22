@@ -974,6 +974,26 @@ def cli_unsupported_keyword():
 
 
 @row
+def cli_version():
+    """`-V` (ssh(1): "Display the version number and exit"): one line on stderr, nothing on stdout, exit 0, before
+    any connection, as the pinned ssh does; burrow's line is `burrow_<the manifest's version>, burrow (wolf)`, the
+    shape of burrowd's `-V`."""
+    d = run_dir("cli-version")
+    port = oraclelib.free_port()
+    notes = []
+    for args in (["-V"], ["-V", "-p", str(port), "127.0.0.1"]):
+        rb = burrow(d, args)
+        rs = ssh(d, args)
+        compare(d, f"{args}\nburrow {rb[0]} {rb[1]!r} {rb[2]!r}\nssh {rs[0]} {rs[1]!r} {rs[2]!r}\n")
+        check(rs[0] == 0 and rs[1] == b"" and len(lines(rs[2])) == 1, f"harness: the pinned ssh {args}: {rs[:3]}")
+        want = f"burrow_{oraclelib.package_version()}, burrow (wolf)"
+        check(rb[0] == 0 and rb[1] == b"" and lines(rb[2]) == [want],
+              f"burrow {args}: exit {rb[0]}, stdout {rb[1]!r}, stderr {rb[2]!r} (wanted {want!r} alone, exit 0)")
+        notes.append(lines(rb[2])[0])
+    return f"{notes[0]!r}, and with a destination nothing listens on, as ssh"
+
+
+@row
 def cli_connect_refused():
     d = run_dir("cli-connect-refused")
     port = oraclelib.free_port()
