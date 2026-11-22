@@ -22,6 +22,16 @@
 //! host's `signal.resize()` to the foreground group) is sent as a
 //! `window-change` while the pty is held.
 //!
+//! **The escape character** (`ssh(1)` ESCAPE CHARACTERS; `~` unless `-e` or
+//! `EscapeChar` say otherwise, none for `none`) is read only while the pty
+//! is held and only at the start of a line (the session's first byte, or
+//! the one after a CR or LF typed). After it: `.` ends the connection
+//! (`Connection to HOST closed.`, exit 255); `?` lists the escapes burrow
+//! takes, in the pinned `ssh`'s words; the escape character again sends it
+//! once. Every other escape `ssh` has (`B`, `R`, `V`, `v`, `^Z`, `#`, `&`,
+//! `C`) is refused by name (`escape_unsupported`) and sends nothing; any
+//! other byte is sent after the escape character, both as typed.
+//!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
 //! `signal.wait_fds` takes files. So an idle turn waits up to 5 ms on the
@@ -61,6 +71,8 @@ pub struct Plan {
     verbose: int,
     pty: bool,
     term: str,
+    escape: int,
+    host: str,
 }
 
 /// The local terminal as a `pty-req` describes it: its size and its modes
@@ -71,16 +83,18 @@ pub struct Local {
     modes: List[byte],
 }
 
-/// The local terminal while a session runs: whether it is raw now, and
-/// the mode it had before.
+/// The local terminal while a session runs: whether it is raw now, the
+/// mode it had before, and whether the session's closing line is written
+/// (`~.` writes its own).
 pub struct Tty {
     raw: bool,
     saved: term.Mode,
+    closed: bool,
 }
 
 /// A terminal not yet touched.
 pub fn untouched() -> Tty {
-    Tty { raw: false, saved: term.unpack(0) }
+    Tty { raw: false, saved: term.unpack(0), closed: false }
 }
 
 // The mode the local terminal is held in while a session runs on a pty:
@@ -211,11 +225,89 @@ fn stdin_ready(ms: int, mut flow: Flow) -> bool ! refuse.Refusal {
 }
 
 /// What a session's turns carry between them: whether stdin is still open,
-/// whether it is a terminal, and a window change not yet sent.
+/// whether it is a terminal, a window change not yet sent; whether escapes
+/// are read, whether the next byte starts a line, whether the escape
+/// character was the last byte, and whether `~.` ended the session.
 pub struct Flow {
     stdin_open: bool,
     tty_in: bool,
     winch: bool,
+    escapes: bool,
+    at_bol: bool,
+    esc_pending: bool,
+    quit: bool,
+}
+
+// The escape character as the help writes it: itself, or ^ and a letter.
+fn esc_name(e: int) -> str {
+    var b = List[byte]()
+    if e < 32 {
+        (mut b).push(94 as byte)
+        (mut b).push((e + 64) as byte)
+    } else {
+        (mut b).push(e as byte)
+    }
+    str_from_utf8(b) else "?"
+}
+
+fn to_stderr(text: str) {
+    var e = fs.stderr()
+    fs.write_chunk(mut e, text.bytes()) else {}
+}
+
+// `~?`: the escapes burrow takes, each line one of the pinned ssh's (the
+// local terminal is raw: CR LF ends each line).
+fn esc_help(e: int) {
+    let n = esc_name(e)
+    to_stderr(
+        "{n}?\r\nSupported escape sequences:\r\n" +
+            " {n}.   - terminate connection (and any multiplexed sessions)\r\n" +
+            " {n}?   - this message\r\n" +
+            " {n}{n}   - send the escape character by typing it twice\r\n" +
+            "(Note that escapes are only recognized immediately after newline.)\r\n",
+    )
+}
+
+// Whether `c` after the escape character is one of ssh's escapes that
+// burrow does not take.
+fn esc_refused(c: int) -> bool {
+    c == 66 || c == 82 || c == 86 || c == 118 || c == 26 || c == 35 || c == 38 || c == 67
+}
+
+// What `got` sends once its escapes are taken out and done; `~.` stops it
+// there, with what came before still sent.
+fn unescape(e: int, mut flow: Flow, got: List[byte]) -> List[byte] {
+    var out = List[byte]()
+    for b in got {
+        let v = b as int
+        if flow.esc_pending {
+            flow.esc_pending = false
+            if v == 46 {
+                flow.quit = true
+                return out
+            }
+            if v == 63 {
+                esc_help(e)
+            } else if v == e {
+                (mut out).push(b)
+                flow.at_bol = false
+            } else if esc_refused(v) {
+                to_stderr(
+                    "burrow: escape_unsupported: {esc_name(e)}{esc_name(v)}: an escape burrow does not take ({esc_name(e)}? lists the ones it does)\r\n",
+                )
+            } else {
+                (mut out).push(e as byte)
+                (mut out).push(b)
+                flow.at_bol = v == 13 || v == 10
+            }
+        } else if flow.at_bol && v == e {
+            flow.esc_pending = true
+        } else {
+            (mut out).push(b)
+            flow.at_bol = v == 13 || v == 10
+        }
+    }
+    out
 }
 
 // One turn: a message from the server if one is there, else input if the
@@ -241,7 +333,9 @@ fn turn_once(
         return
     }
     let want_in = flow.stdin_open && !ch.sent_eof && !ch.eow && !ch.got_close
-    let room = channel.room(ch)
+    // A pending escape character may come out with the next byte: one
+    // byte of room kept for it.
+    let room = if flow.esc_pending then channel.room(ch) - 1 else channel.room(ch)
     if want_in && room > 0 && stdin_ready(0, mut flow)? {
         var inp = fs.stdin()
         var eof = false
@@ -252,6 +346,11 @@ fn turn_once(
         if eof || got.len == 0 {
             flow.stdin_open = false
             transport.write(mut c, channel.eof_msg(mut ch))?
+        } else if flow.escapes {
+            let out = unescape(plan.escape, mut flow, got)
+            if out.len > 0 {
+                transport.write(mut c, channel.data_msg(mut ch, out))?
+            }
         } else {
             transport.write(mut c, channel.data_msg(mut ch, got))?
         }
@@ -314,11 +413,28 @@ pub fn run(
     if ch.pty_ok && tty_in {
         go_raw(mut t)
     }
-    var flow = Flow { stdin_open: true, tty_in: tty_in, winch: false }
-    while !channel.done(ch) {
+    var flow = Flow {
+        stdin_open: true,
+        tty_in: tty_in,
+        winch: false,
+        escapes: t.raw && plan.escape >= 0,
+        at_bol: true,
+        esc_pending: false,
+        quit: false,
+    }
+    while !channel.done(ch) && !flow.quit {
         region turn {
             turn_once(mut c, mut ch, plan, mut flow)?
         }
+    }
+    if flow.quit {
+        // `~.`: the line written while the terminal is still raw, then
+        // the terminal put back; nothing more is read.
+        eprint("Connection to {plan.host} closed.\r")
+        t.closed = true
+        restore(mut t)
+        transport.disconnect(mut c, 11, "disconnected by user")
+        return 255
     }
     // Packets already whole in the buffer after both CLOSEs are still read.
     loop {
