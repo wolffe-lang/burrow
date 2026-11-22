@@ -15,7 +15,8 @@
 //! before the `exec` or `shell`. Its answer comes first, the server
 //! answering in order (§5.4); a `CHANNEL_FAILURE` is not a refusal of the
 //! session: the command runs without one (`pty_refused`), as the pinned
-//! `ssh` goes on.
+//! `ssh` goes on. A `window-change` (§6.7, want reply FALSE) tells the
+//! server each new size of the local window.
 //!
 //! **Windows** (§5.2): burrow sends no more than the server's window and
 //! maximum packet allow, and adjusts its own window by what it has written
@@ -184,6 +185,17 @@ pub fn pty_msg(
     wire.put_u32(mut p, wpx)
     wire.put_u32(mut p, hpx)
     wire.put_string(mut p, modes)
+    p
+}
+
+/// A `window-change` request (§6.7), want reply FALSE: the window's new
+/// `cols` and `rows`, and its pixel sizes (0 for unknown).
+pub fn window_msg(ch: Chan, cols: int, rows: int, wpx: int, hpx: int) -> List[byte] {
+    var p = request_head(ch, "window-change", false)
+    wire.put_u32(mut p, cols)
+    wire.put_u32(mut p, rows)
+    wire.put_u32(mut p, wpx)
+    wire.put_u32(mut p, hpx)
     p
 }
 
