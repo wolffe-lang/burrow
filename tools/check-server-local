@@ -395,8 +395,19 @@ def typed(data, pause=0.2):
     return act
 
 
+def settings(a):
+    """A terminal's settings as tcgetattr gives them, less PENDIN: on macOS that flag is the kernel's state, not a
+    setting a program leaves; the kernel sets it when canonical input comes back on and clears it at the next input
+    (wolf-std's term.set_attr notes that macOS keeps it set)."""
+    import termios
+    out = list(a)
+    out[3] &= ~getattr(termios, "PENDIN", 0)
+    return out
+
+
 def restored(name, r):
-    check(r[3] == r[2], f"{name}: the terminal was left changed: before {r[2]}, after {r[3]}; transcript {r[1][-200:]!r}")
+    check(settings(r[3]) == settings(r[2]),
+          f"{name}: the terminal was left changed: before {r[2]}, after {r[3]}; transcript {r[1][-200:]!r}")
 
 
 @row
