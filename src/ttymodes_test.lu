@@ -66,4 +66,44 @@ fn main() {
     )
     assert(ttymodes.is_char(1) && ttymodes.is_char(18) && !ttymodes.is_char(30))
     assert(ttymodes.none_char() == 255)
+    // What a client sends (B8): ssh's order, 16 left out, 55 opcodes.
+    let ops = ttymodes.client_ops()
+    assert(ops.len == 55 && ops[0] == 129 && ops[1] == 128 && ops[2] == 1 && ops[54] == 93)
+    for op in ops {
+        assert(op != 16 && ttymodes.name(op) != "")
+    }
+    // From an eight-bit terminal (CS7 read 0, CS8 read 1): both sent 1; a
+    // disabled character is 255; an opcode the terminal lacks is not sent.
+    var vals = List[int]()
+    for op in ops {
+        if op == 11 {
+            (mut vals).push(ttymodes.absent())
+        } else if op == 6 {
+            (mut vals).push(-1)
+        } else if op == 1 {
+            (mut vals).push(7)
+        } else if op == 90 {
+            (mut vals).push(0)
+        } else if op == 128 || op == 129 {
+            (mut vals).push(38400)
+        } else {
+            (mut vals).push(1)
+        }
+    }
+    let pairs = ttymodes.client_pairs(vals)
+    assert(pairs.len == 108 && pairs[0] == 129 && pairs[1] == 38400)
+    let m = ttymodes.decode(ttymodes.encode(pairs))
+    assert(m.ok && ttymodes.value(m, 1) == 7 && ttymodes.value(m, 6) == 255)
+    assert(ttymodes.value(m, 11) == -1 && ttymodes.value(m, 90) == 1 && ttymodes.value(m, 91) == 1)
+    // Neither size bit read 1 (a five- or six-bit terminal): both sent 0.
+    var narrow = List[int]()
+    for op in ops {
+        if op == 90 || op == 91 {
+            (mut narrow).push(0)
+        } else {
+            (mut narrow).push(1)
+        }
+    }
+    let n = ttymodes.decode(ttymodes.encode(ttymodes.client_pairs(narrow)))
+    assert(ttymodes.value(n, 90) == 0 && ttymodes.value(n, 91) == 0)
 }

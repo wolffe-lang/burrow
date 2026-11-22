@@ -15,6 +15,17 @@
 //! 75 the output flags, 90 to 93 the control flags, 128 and 129 the speeds.
 //! Applying them to a pty is `src/ptyhost`'s; a mode the host lacks is
 //! skipped there, as §8 allows.
+//!
+//! **What a client sends** (B8): every opcode its terminal answers, read
+//! one by one (wolf-std's `term.attr`, whose vocabulary is §8's), in the
+//! order the pinned `ssh` sends them (`client_ops`, measured by the
+//! `pty-req-bytes` row): the output speed, the input speed, the special
+//! characters, then the flags in opcode order. Two departures from reading
+//! the terminal word for word, both measured against the pinned `ssh` from
+//! the same terminal: VSWTCH (16) is never sent (a Linux terminal has the
+//! character and `ssh` does not send it), and CS7 and CS8 are each sent 1
+//! when the terminal's characters are seven or eight bits wide (`ssh` sends
+//! both as 1 from an eight-bit terminal).
 
 use wire
 
@@ -136,6 +147,70 @@ pub fn value(m: Modes, op: int) -> int {
         i += 2
     }
     v
+}
+
+/// The opcodes a client reads from its terminal for a `pty-req`, in the
+/// order it sends them.
+pub fn client_ops() -> List[int] {
+    var ops = List[int]()
+    (mut ops).push(129)
+    (mut ops).push(128)
+    run(mut ops, 1, 15)
+    run(mut ops, 17, 18)
+    run(mut ops, 30, 42)
+    run(mut ops, 50, 62)
+    run(mut ops, 70, 75)
+    run(mut ops, 90, 93)
+    ops
+}
+
+fn run(mut ops: List[int], first: int, last: int) {
+    var op = first
+    while op <= last {
+        (mut ops).push(op)
+        op += 1
+    }
+}
+
+/// The word for an opcode the terminal does not have, in `client_pairs`'
+/// list of values.
+pub fn absent() -> int {
+    -2
+}
+
+/// The pairs (opcode, value, …) a client sends, from `values`, which holds
+/// for each of `client_ops()` in turn what the terminal answered (wolf-std's
+/// word: a disabled character -1, a flag 0 or 1, a speed in bits per
+/// second), or `absent()`. A disabled character is §8's 255; CS7 and CS8
+/// are each 1 when either was.
+pub fn client_pairs(values: List[int]) -> List[int] {
+    let ops = client_ops()
+    var wide = 0
+    var i = 0
+    while i < ops.len && i < values.len {
+        if (ops[i] == 90 || ops[i] == 91) && values[i] == 1 {
+            wide = 1
+        }
+        i += 1
+    }
+    var pairs = List[int]()
+    i = 0
+    while i < ops.len && i < values.len {
+        let op = ops[i]
+        let v = values[i]
+        if v != absent() {
+            (mut pairs).push(op)
+            if op == 90 || op == 91 {
+                (mut pairs).push(wide)
+            } else if is_char(op) && v < 0 {
+                (mut pairs).push(none_char())
+            } else {
+                (mut pairs).push(v)
+            }
+        }
+        i += 1
+    }
+    pairs
 }
 
 /// `pairs` (opcode, value, …) as a §8 stream ending in `TTY_OP_END`.
