@@ -87,7 +87,7 @@ class Local:
 
     def env(self, extra=None):
         e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "USER": self.user,
-             "LOGNAME": self.user, "SHELL": "/bin/sh", "LC_ALL": "C"}
+             "LOGNAME": self.user, "SHELL": "/bin/bash", "LC_ALL": "C"}
         e.update(extra or {})
         return e
 
