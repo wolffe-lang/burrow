@@ -163,8 +163,8 @@ What it does, and what it refuses:
 - **Memory:** the listener keeps the memory it started with. Each pass of
   its loop runs in a region freed at the pass's end, and an ended connection
   is taken out of its table in place, so it does not grow with idle time or
-  with connections (rows hold it within 64 KiB over a minute idle and over three
-  hundred logins; before, it grew about 3 KiB a second idle and about 2 KiB
+  with connections (rows hold it within 64 KiB over a minute idle and 32 KiB
+  over three hundred logins; before, it grew about 3 KiB a second idle and about 2 KiB
   a connection, and every new session's processes started at its size).
 - **The log:** one line per connection: the time (UTC), the client's
   address and port, the user, the key's fingerprint (`key password` for a
@@ -344,7 +344,7 @@ admits them), the shipped cost, `PasswordAuthentication no`, and the start
 refused without root; no password in any log, output or record. The
 listener's memory is measured beside `sshd`'s: its anonymous resident
 memory (RssAnon, which the kernel's reclaim of file-backed pages cannot
-lower) after a minute idle and across three hundred logins, each within 64 KiB;
+lower) within 64 KiB after a minute idle and 32 KiB across three hundred logins;
 and `XDG_RUNTIME_DIR` from the account's runtime directory, set, unset for
 a wrong mode, a wrong owner and no directory.
 `tools/check-server-hostile` runs burrowd against a
