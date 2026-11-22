@@ -156,9 +156,11 @@ pub fn local_terminal() -> Local {
     l
 }
 
+// A debug line; with a pty asked for it ends in CR LF, as the local
+// terminal may be raw.
 fn say(p: Plan, msg: str) {
     if p.verbose > 0 && msg.len > 0 {
-        eprint("debug1: {msg}")
+        eprint(if p.pty then "debug1: {msg}\r" else "debug1: {msg}")
     }
 }
 
