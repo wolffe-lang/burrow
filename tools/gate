@@ -17,7 +17,7 @@
 #               literals agree (and its own plants)
 #   fmt         `wolf fmt --check`
 #   build       the native and release tiers, warnings denied
-#   version-printed  `burrowd -V` prints the manifest's version
+#   version-printed  `burrowd -V` and `burrow -V` print the manifest's version
 #   unit        every src/*_test.lu: the checked machine, native and lupin
 #   transport   the transport rows against the pinned sshd, native
 #   transport-release   the same rows, release
@@ -86,7 +86,7 @@ run() {
     version) tools/in-container sh -c 'python3 -I tools/check-version --self-test && python3 -I tools/check-version' ;;
     fmt) tools/in-container tools/check-fmt ;;
     build) tools/in-container tools/build --all ;;
-    version-printed) tools/in-container python3 -I tools/check-version --burrowd target/native/burrowd ;;
+    version-printed) tools/in-container python3 -I tools/check-version --burrowd target/native/burrowd --burrow target/native/burrow ;;
     unit) tools/in-container tools/check-test ;;
     transport) tools/in-container python3 -I tools/check-transport --bin target/native/burrow ;;
     transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;
