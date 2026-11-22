@@ -1545,6 +1545,18 @@ def esc_help():
     return f"burrow lists {len(listed['burrow'])} of ssh's {len(listed['ssh'])} escapes"
 
 
+
+@row
+def tty_closed_line():
+    """The bytes after the remote program ends at a terminal: ssh's closing line, CR LF."""
+    d = run_dir("tty-closed-line")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "exit 0"])
+    ts = term_same(d, got, "the closing line", keep_closed=True)
+    check(CLOSED.search(ts), f"harness: ssh's transcript has no closing line: {ts!r}")
+    return f"{CLOSED.search(ts).group(0)!r}, as ssh"
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"session-{tier}"
     if out.exists():
