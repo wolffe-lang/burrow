@@ -15,8 +15,9 @@
 //! 255 and the command is never asked for, as `ssh` does; for a login
 //! session that asked by default (`auto`) the session goes on without one.
 //!
-//! **The local terminal** (B8): from the pty request on, granted or not, a
-//! stdin that is a terminal is set raw for the session (`term.raw_bytes`: a key
+//! **The local terminal** (B8): from the pty request on, a stdin that is a
+//! terminal is set raw for the session (put back if the server refuses
+//! the pty) (`term.raw_bytes`: a key
 //! at a time, no echo, no flow control, CR and LF passed through both ways
 //! untranslated) with its signal keys off, so the remote pty does the
 //! echoing, the line editing and the interrupt, quit and suspend keys.
@@ -142,11 +143,13 @@ fn go_raw(mut t: Tty) {
 }
 
 /// The local terminal put back as it was found, once: after the session's
-/// end, before anything is written about it.
+/// end, before anything is written about it, or when the server refuses
+/// the pty. TERM, HUP and QUIT have their defaults again.
 pub fn restore(mut t: Tty) {
     if t.raw {
         t.raw = false
         term.set_mode(fs.stdin(), t.saved) else {}
+        signal.reset(enders()) else {}
     }
 }
 
@@ -424,11 +427,14 @@ pub fn run(
             pump(mut c, mut ch, plan)?
         }
         if ch.pty_refused {
+            // ssh's line, written raw; then, as ssh, the terminal is put
+            // back: a session that goes on without a pty has the local
+            // terminal's own echo and line editing (tty-refused).
             eprint("PTY allocation request failed on channel 0\r")
+            restore(mut t)
             if plan.explicit {
                 // -t, -tt, RequestTTY yes or force: ssh gives up there,
                 // the command never asked for (dev4's tty-restore, bw06).
-                restore(mut t)
                 t.closed = true
                 transport.disconnect(mut c, 11, "disconnected by user")
                 return 255
