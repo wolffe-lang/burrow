@@ -13,7 +13,8 @@ to sshd): a command and its exit codes, both streams byte for byte, 64 MiB
 through cat, an unlisted key, no command, root refused, git through it when
 git is on PATH, and the log line; and burrow's own client at a terminal (B8):
 the pty, its modes, the login shell, -t and -tt with stdin a pipe, the
-terminal put back, a window change, ^C and ^\, and the escape character.
+terminal put back, a window change, ^C and ^\, the escape character, and
+keystroke timing (counts of packets only).
 """
 import argparse
 import hashlib
@@ -516,6 +517,80 @@ def local_esc():
         check(any(x.startswith(e + " ") for x in listed), f"~? does not list {e}: {listed}; transcript {h[1][-400:]!r}")
     check(h[0] == 255, f"~? then ~.: exit {h[0]}")
     return f"~~, a~.b, -e none; ~? lists {len(listed)} lines"
+
+
+class Relay:
+    """127.0.0.1 between burrow and burrowd: the time of every chunk burrow writes (monotonic)."""
+
+    def __init__(self, up):
+        import socket
+        import threading
+        self.up = up
+        self.ls = socket.socket()
+        self.ls.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.ls.bind(("127.0.0.1", 0))
+        self.ls.listen(1)
+        self.port = self.ls.getsockname()[1]
+        self.c2s = []
+        self.t = threading.Thread(target=self.run, daemon=True)
+        self.t.start()
+
+    def run(self):
+        import select
+        import socket
+        c, _ = self.ls.accept()
+        s = socket.create_connection(("127.0.0.1", self.up))
+        for x in (c, s):
+            x.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        live = True
+        while live:
+            for x in select.select([c, s], [], [], 1.0)[0]:
+                d = x.recv(65536)
+                if not d:
+                    live = False
+                    break
+                if x is c:
+                    self.c2s.append(time.monotonic())
+                    s.sendall(d)
+                else:
+                    c.sendall(d)
+        c.close()
+        s.close()
+
+
+@row
+def local_keystroke():
+    """Keystroke timing through burrowd (tools/check-session's keystroke rows hold it to the pinned ssh): ten keys
+    typed; by default packets go on after the last key (ten or more from a tenth of a second after it), with
+    `ObscureKeystrokeTiming no` none do. Counts only, two runs of each, never a gap's length."""
+    notes = []
+    for setting, opts in (("default", []), ("no", ["-o", "ObscureKeystrokeTiming=no"])):
+        for run in range(2):
+            relay = Relay(L.port)
+            kh = WORK / f"known_hosts-ks-{setting}-{run}"
+            line = (L.home / ".ssh" / "known_hosts").read_text()
+            kh.write_text(line.replace(f"]:{L.port} ", f"]:{relay.port} ", 1))
+            keys = []
+
+            def typing(master, slave):
+                for gap, k in zip([0, 37, 113, 61, 250, 89, 17, 340, 45, 160], b"abcdefghij"):
+                    time.sleep(gap / 1000)
+                    os.write(master, bytes([k]))
+                    keys.append(time.monotonic())
+
+            argv = [str(L.bin / "burrow"), "-F", "none", "-p", str(relay.port), "-l", L.user,
+                    "-o", f"UserKnownHostsFile={kh}"] + opts
+            r = on_terminal(["-t", "127.0.0.1", "echo ready; sleep 5"], steps=[(b"ready", typing)], argv=argv)
+            relay.t.join(5)
+            check(r[0] == 0 and keys and relay.c2s, f"{setting} run {run}: exit {r[0]}, transcript {r[1][-200:]!r}")
+            last, end = keys[-1], relay.c2s[-1]
+            after = [x for x in relay.c2s if last + 0.1 < x < end - 0.5]
+            if setting == "default":
+                check(len(after) >= 10, f"default run {run}: {len(after)} packets after the last key (10 or more wanted)")
+            else:
+                check(not after, f"no run {run}: {len(after)} packets after the last key (none wanted)")
+            notes.append(f"{setting} {len(after)}")
+    return "after the last key: " + ", ".join(notes)
 
 
 # The listener's memory (#30, #28): tools/check-server's server-idle-rss and
