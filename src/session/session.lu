@@ -18,7 +18,9 @@
 //! echoing, the line editing and the interrupt, quit and suspend keys.
 //! The mode it had is registered with the runtime first
 //! (`term.restore_at_exit`) and put back by `restore` when the session
-//! ends, however it ends. Each change of the local window's size (the
+//! ends, however it ends: TERM, HUP and QUIT, whose default would end the
+//! process with no code run, are listened for while the terminal is raw
+//! and end the session (exit 255) after the terminal is put back. Each change of the local window's size (the
 //! host's `signal.resize()` to the foreground group) is sent as a
 //! `window-change` while the pty is held.
 //!
@@ -116,12 +118,18 @@ fn session_mode(m: term.Mode) -> term.Mode {
     }
 }
 
+// The signals that end a session while the terminal is raw.
+fn enders() -> int {
+    signal.terminate() | signal.reload() | signal.quit()
+}
+
 // stdin raw, its mode before registered to be put back at any exit the
 // runtime owns; a terminal that refuses either is left as it is.
 fn go_raw(mut t: Tty) {
     let tty = fs.stdin()
     let saved = term.mode(tty) else { return }
     term.restore_at_exit(tty, saved, List[byte]()) else {}
+    signal.listen(enders()) else { return }
     term.set_mode(tty, session_mode(saved)) else { return }
     t.saved = saved
     t.raw = true
@@ -219,9 +227,12 @@ fn sock_ready(c: transport.Conn, ms: int) -> bool ! refuse.Refusal {
 fn stdin_ready(ms: int, mut flow: Flow) -> bool ! refuse.Refusal {
     var files = List[fs.File]()
     (mut files).push(fs.stdin())
-    let w = signal.wait_fds(files, signal.resize(), ms) else { return io }
+    let set = if flow.raw then signal.resize() | enders() else signal.resize()
+    let w = signal.wait_fds(files, set, ms) else { return io }
     if w.meaning == signal.resize() {
         flow.winch = true
+    } else if w.meaning != 0 {
+        flow.ended = w.meaning
     }
     w.ready == 0
 }
@@ -233,6 +244,8 @@ fn stdin_ready(ms: int, mut flow: Flow) -> bool ! refuse.Refusal {
 pub struct Flow {
     stdin_open: bool,
     tty_in: bool,
+    raw: bool,
+    ended: int,
     winch: bool,
     escapes: bool,
     at_bol: bool,
@@ -320,6 +333,13 @@ fn turn_once(
     plan: Plan,
     mut flow: Flow,
 ) -> () ! refuse.Refusal {
+    if flow.raw {
+        let m = signal.poll(enders()) else 0
+        if m != 0 {
+            flow.ended = m
+            return
+        }
+    }
     if ch.pty_ok && flow.tty_in {
         let heard = signal.poll(signal.resize()) else 0
         if flow.winch || heard != 0 {
@@ -418,13 +438,15 @@ pub fn run(
     var flow = Flow {
         stdin_open: true,
         tty_in: tty_in,
+        raw: t.raw,
+        ended: 0,
         winch: false,
         escapes: t.raw && plan.escape >= 0,
         at_bol: true,
         esc_pending: false,
         quit: false,
     }
-    while !channel.done(ch) && !flow.quit {
+    while !channel.done(ch) && !flow.quit && flow.ended == 0 {
         region turn {
             turn_once(mut c, mut ch, plan, mut flow)?
         }
@@ -435,6 +457,13 @@ pub fn run(
         eprint("Connection to {plan.host} closed.\r")
         t.closed = true
         restore(mut t)
+        transport.disconnect(mut c, 11, "disconnected by user")
+        return 255
+    }
+    if flow.ended != 0 {
+        restore(mut t)
+        t.closed = true
+        eprint("burrow: ended by signal {signal.number(flow.ended) else 0}")
         transport.disconnect(mut c, 11, "disconnected by user")
         return 255
     }
