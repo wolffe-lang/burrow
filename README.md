@@ -58,8 +58,8 @@ it. The escape character (`~` unless `-e` or `EscapeChar` say otherwise,
 `none` for none) is read at the start of a line: `~.` ends the connection,
 `~?` lists the escapes, and `~~` sends one `~`. `ssh`'s other escapes are
 refused by name (`escape_unsupported`). A server that refuses the pty gets
-`ssh`'s line for it, and the session goes on without one, except under
-`-tt`, where burrow gives up as `ssh` does. There is no agent or forwarding
+`ssh`'s line for it; where `-t` or `-tt` asked for it, burrow then gives up
+as `ssh` does, and a login shell goes on without one. There is no agent or forwarding
 ([MAP](docs/MAP.md)).
 
 ## burrowd, the server for commands
