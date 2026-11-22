@@ -1272,7 +1272,7 @@ def tnorm(b, keep_closed=False):
 
 def term_both(d, s, args, **kw):
     """The same terminal session through the pinned ssh, then burrow: {who: (exit, transcript, before, after)}."""
-    kh = known(d, s)
+    kh = known(d, s, kw.pop("known_text", None))
     env = envfor(d, {"TERM": kw.pop("term", "xterm"), "SHELL": "/bin/sh"})
     return {who: term_client(term_argv(who, s, kh, d, args), env, **kw) for who in ("ssh", "burrow")}
 
@@ -1551,13 +1551,22 @@ def esc_help():
 
 @row
 def tty_closed_line():
-    """The bytes after the remote program ends at a terminal: ssh's closing line, CR LF."""
+    """The bytes after the remote program ends at a terminal: ssh's closing line, CR LF; and the host it names when
+    the destination is an alias whose HostName is the address."""
     d = run_dir("tty-closed-line")
     with Server(d) as s:
         got = term_both(d, s, ["-t", "127.0.0.1", "exit 0"])
     ts = term_same(d, got, "the closing line", keep_closed=True)
     check(CLOSED.search(ts), f"harness: ssh's transcript has no closing line: {ts!r}")
-    return f"{CLOSED.search(ts).group(0)!r}, as ssh"
+    a = run_dir("tty-closed-line-alias")
+    with Server(a) as s:
+        line = s.known_hosts_line()
+        both = line + line.replace("[127.0.0.1]", "[burrow-alias]", 1)
+        got = term_both(a, s, ["-o", "HostName=127.0.0.1", "-t", "burrow-alias", "exit 0"], known_text=both)
+    ta = term_same(a, got, "the closing line, destination burrow-alias, HostName 127.0.0.1", keep_closed=True)
+    named = re.search(rb"Connection to (\S+) closed", ta)
+    check(named is not None, f"harness: ssh's transcript has no closing line: {ta!r}")
+    return f"{CLOSED.search(ts).group(0)!r}; an alias's line names {named.group(1).decode()}, as ssh"
 
 
 def keep_evidence(tier):
