@@ -10,12 +10,13 @@
 //! terminal (`-tt`), a size of 0 by 0 and no modes. Its answer is awaited
 //! before the command or shell is asked for. A server that refuses it is
 //! told of on stderr in the pinned `ssh`'s line (`PTY allocation request
-//! failed on channel 0`); the session goes on without one, except under
-//! `-tt` (`force`), where, as `ssh` does (measured in bw06), burrow gives up
-//! with 255 and the command never runs.
+//! failed on channel 0`). Where the pty was asked for by `-t`, `-tt` or
+//! `RequestTTY` `yes` or `force` (`explicit`), burrow gives up there with
+//! 255 and the command is never asked for, as `ssh` does; for a login
+//! session that asked by default (`auto`) the session goes on without one.
 //!
-//! **The local terminal** (B8): once the server has given the pty, a stdin
-//! that is a terminal is set raw for the session (`term.raw_bytes`: a key
+//! **The local terminal** (B8): from the pty request on, granted or not, a
+//! stdin that is a terminal is set raw for the session (`term.raw_bytes`: a key
 //! at a time, no echo, no flow control, CR and LF passed through both ways
 //! untranslated) with its signal keys off, so the remote pty does the
 //! echoing, the line editing and the interrupt, quit and suspend keys.
@@ -76,7 +77,7 @@ pub struct Plan {
     env: List[str],
     verbose: int,
     pty: bool,
-    force: bool,
+    explicit: bool,
     term: str,
     escape: int,
     host: str,
@@ -409,8 +410,14 @@ pub fn run(
         transport.write(mut c, channel.env_msg(ch, kv[0..eq], kv[eq + 1..kv.len]))?
         say(plan, "Sending env {kv[0..eq]}")
     }
+    let tty_in = io.is_terminal(fs.stdin()) else false
     if plan.pty {
+        // The modes are read first; then, as `ssh`, the terminal is raw
+        // from the request on, granted or not.
         let l = local_terminal()
+        if tty_in {
+            go_raw(mut t)
+        }
         transport.write(mut c, channel.pty_msg(mut ch, plan.term, l.cols, l.rows, 0, 0, l.modes))?
         say(plan, "Requesting a pseudo-terminal: {plan.term}, {l.cols} by {l.rows}")
         while !ch.pty_ok && !ch.pty_refused && !ch.got_close {
@@ -418,7 +425,10 @@ pub fn run(
         }
         if ch.pty_refused {
             eprint("PTY allocation request failed on channel 0\r")
-            if plan.force {
+            if plan.explicit {
+                // -t, -tt, RequestTTY yes or force: ssh gives up there,
+                // the command never asked for (dev4's tty-restore, bw06).
+                restore(mut t)
                 t.closed = true
                 transport.disconnect(mut c, 11, "disconnected by user")
                 return 255
@@ -441,10 +451,6 @@ pub fn run(
     }
     while !ch.exec_ok && !ch.got_close {
         pump(mut c, mut ch, plan)?
-    }
-    let tty_in = io.is_terminal(fs.stdin()) else false
-    if ch.pty_ok && tty_in {
-        go_raw(mut t)
     }
     var flow = Flow {
         stdin_open: true,
