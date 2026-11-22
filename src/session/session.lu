@@ -479,7 +479,11 @@ fn turn_once(
     let want_in = flow.stdin_open && !ch.sent_eof && !ch.eow && !ch.got_close
     // A pending escape character may come out with the next byte: one
     // byte of room kept for it.
-    let room = if flow.esc_pending then channel.room(ch) - 1 - flow.held.len else channel.room(ch) - flow.held.len
+    let room = if flow.esc_pending {
+        channel.room(ch) - 1 - flow.held.len
+    } else {
+        channel.room(ch) - flow.held.len
+    }
     if want_in && room > 0 && stdin_ready(0, mut flow)? {
         var inp = fs.stdin()
         var eof = false
