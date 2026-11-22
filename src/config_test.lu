@@ -195,6 +195,15 @@ fn main() {
         ),
     )
     assert(refused(["h"], "Host *\n  RequestTTY sometimes\n", "config_unsupported", ""))
+    // -V (ssh(1): "Display the version number and exit") is acted on where
+    // it stands: nothing after it is read, a destination is not needed, and
+    // a refusal before it (flags are read in order) still stands.
+    let v = config.parse_args(["-V"])
+    assert(v.refusal == "" && v.print_version)
+    let vv = config.parse_args(["-vV", "-p", "0", "h"])
+    assert(vv.refusal == "" && vv.print_version && vv.verbose == 1 && vv.host == "")
+    assert(!ready(["h"], "").print_version)
+    assert(refused(["-p", "0", "-V"], "", "usage", "Bad port '0'"))
     // The escape character: ~ by default; -e (over -o and the file), then
     // EscapeChar; one character, ^ and a letter, or none.
     assert(ready(["h"], "").escape == 126)
