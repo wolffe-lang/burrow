@@ -264,7 +264,8 @@ tools/gate                            # the whole gauntlet, in the container
 digests, the CI planner's tests, the vectors (`tools/vectorgen.py`
 regenerates `src/kexvec` byte for byte from the RFCs, `tools/nistvec.py`
 `src/sha1vec` from NIST's vectors), formatting, both compiler tiers, the
-unit rows, the transport, session and hostile-peer rows on both tiers, the
+version each program prints, the release path's dry run
+(`tools/check-release --dry`, below), the unit rows, the transport, session and hostile-peer rows on both tiers, the
 server's rows and its hostile-client rows on both tiers, git through
 burrowd, den over burrow on both tiers, GitHub read only, the live push,
 the static build, and the three measurements against the pinned `ssh` and
@@ -410,6 +411,43 @@ total time limit (`ci/fetch-retry`, and the same policy inline in
 `ci/oracle.Containerfile`). A fetch that still fails ends its step with
 `FAIL fetch of … failed after N tries`, and the Linux job's rows do not run
 after it.
+
+## Releases
+
+A release starts from a `vX.Y.Z` tag on trunk, pushed by hand, and ends
+as a draft; publishing the draft is a separate step, also by hand. burrow
+takes the release path the other wolf tools take: the shared draft-only
+workflow of [homebrew-wolf](https://github.com/wolffe-lang/homebrew-wolf),
+at one pinned commit. `.github/workflows/release.yml` first runs the
+release gate, `release-gate.yml`: the whole of `ci.yml`, copied by that
+commit's release adapter and bound to the tag's commit. Then the shared
+workflow builds the release tier (`tools/build --release`) on Linux x86-64
+and macOS arm64, checks that `burrow -V` and `burrowd -V` print the tag's
+version, packs each archive twice and compares the bytes, writes its
+SHA-256, and puts both archives on one draft release. Clean runners with
+no checkout and no compiler then download the draft's archives, compare
+their digests and run them. Each archive holds burrow, burrowd and
+burrow-keygen, the licence, this README, the CHANGELOG and the toolchain
+pins, with a `BUILD.json` naming the commit and the compiler.
+`.github/release.json` names the build, the binaries, the version line and
+the smoke commands; 0.1.0 is marked experimental, so its draft is a
+prerelease.
+
+Three more workflows check the path before a tag. `release-wiring.yml`
+runs on every pull request: the release gate must still be `ci.yml`'s exact
+copy, both callers must name the same pinned commit, and the manifest's
+version must have its CHANGELOG section. `release-rehearsal.yml`, started
+by hand on a branch, runs the same build and the clean-runner smoke from
+that branch, with no tag, no draft, no token and only read permission.
+`release-public-smoke.yml`, started by hand after publishing, downloads the
+public release with no token and runs it again. And `tools/check-release
+--dry`, a step of the gauntlet, does the same work on the machine at
+hand: it checks that the workflows name one commit and that the commit's
+smoke job reads a draft the way that works (write permission for the job,
+the token only in the download step), fetches that commit, runs its
+adapter check, builds and packs this host's archive and runs the clean
+smoke, with no upload. It builds from a copy of the tree without `.git`,
+so its `BUILD.json` names no commit; the rehearsal does.
 
 ## Clean room
 
