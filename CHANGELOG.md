@@ -1,4 +1,7 @@
-## Unreleased
+## 0.1.0
+
+- Experimental: the first release, a preview. burrow has no post-quantum key
+  exchange yet, and burrowd, the server, is young.
 
 - The version is 0.1.0 and comes from one place. The package manifest names
   it; the identification strings (`SSH-2.0-burrow_0.1.0`,
