@@ -14,7 +14,8 @@
 //! **The local terminal** (B8): once the server has given the pty, a stdin
 //! that is a terminal is set raw for the session (`term.raw_bytes`: a key
 //! at a time, no echo, no flow control, CR and LF passed through both ways
-//! untranslated), so the remote pty does the echoing and the line editing.
+//! untranslated) with its signal keys off, so the remote pty does the
+//! echoing, the line editing and the interrupt, quit and suspend keys.
 //! The mode it had is registered with the runtime first
 //! (`term.restore_at_exit`) and put back by `restore` when the session
 //! ends, however it ends. Each change of the local window's size (the
@@ -82,9 +83,23 @@ pub fn untouched() -> Tty {
     Tty { raw: false, saved: term.unpack(0) }
 }
 
-// The mode the local terminal is held in while a session runs on a pty.
+// The mode the local terminal is held in while a session runs on a pty:
+// raw_bytes, with the signal keys off too, so ^C, ^\ and ^Z are bytes
+// for the remote pty, whose line discipline makes them signals there.
 fn session_mode(m: term.Mode) -> term.Mode {
-    term.raw_bytes(m)
+    let r = term.raw_bytes(m)
+    term.Mode {
+        canonical: r.canonical,
+        echo: r.echo,
+        signals: false,
+        flow: r.flow,
+        extended: r.extended,
+        raw_cr: r.raw_cr,
+        raw_output: r.raw_output,
+        strip8: r.strip8,
+        min: r.min,
+        time: r.time,
+    }
 }
 
 // stdin raw, its mode before registered to be put back at any exit the
