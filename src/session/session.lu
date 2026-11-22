@@ -11,6 +11,14 @@
 //! it is told of on stderr, as the pinned `ssh` tells it, and the session
 //! goes on without one.
 //!
+//! **The local terminal** (B8): once the server has given the pty, a stdin
+//! that is a terminal is set raw for the session (`term.raw_bytes`: a key
+//! at a time, no echo, no flow control, CR and LF passed through both ways
+//! untranslated), so the remote pty does the echoing and the line editing.
+//! The mode it had is registered with the runtime first
+//! (`term.restore_at_exit`) and put back by `restore` when the session
+//! ends, however it ends.
+//!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
 //! `signal.wait_fds` takes files. So an idle turn waits up to 5 ms on the
@@ -58,6 +66,43 @@ pub struct Local {
     cols: int,
     rows: int,
     modes: List[byte],
+}
+
+/// The local terminal while a session runs: whether it is raw now, and
+/// the mode it had before.
+pub struct Tty {
+    raw: bool,
+    saved: term.Mode,
+}
+
+/// A terminal not yet touched.
+pub fn untouched() -> Tty {
+    Tty { raw: false, saved: term.unpack(0) }
+}
+
+// The mode the local terminal is held in while a session runs on a pty.
+fn session_mode(m: term.Mode) -> term.Mode {
+    term.raw_bytes(m)
+}
+
+// stdin raw, its mode before registered to be put back at any exit the
+// runtime owns; a terminal that refuses either is left as it is.
+fn go_raw(mut t: Tty) {
+    let tty = fs.stdin()
+    let saved = term.mode(tty) else { return }
+    term.restore_at_exit(tty, saved, List[byte]()) else {}
+    term.set_mode(tty, session_mode(saved)) else { return }
+    t.saved = saved
+    t.raw = true
+}
+
+/// The local terminal put back as it was found, once: after the session's
+/// end, before anything is written about it.
+pub fn restore(mut t: Tty) {
+    if t.raw {
+        t.raw = false
+        term.set_mode(fs.stdin(), t.saved) else {}
+    }
 }
 
 /// stdin's size and modes, each mode read on its own; a terminal that
@@ -185,8 +230,14 @@ fn turn_once(
 /// Opens the session on `ch` (a `channel.new()` the caller keeps, so its
 /// detail can explain a refusal), sends the environment and the command,
 /// and moves bytes until the channel closes. Returns the exit code `ssh`
-/// would give.
-pub fn run(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> int ! refuse.Refusal {
+/// would give. The local terminal is raw in `t` while a pty is held; the
+/// caller puts it back (`restore`).
+pub fn run(
+    mut c: transport.Conn,
+    mut ch: channel.Chan,
+    plan: Plan,
+    mut t: Tty,
+) -> int ! refuse.Refusal {
     signal.listen(signal.resize()) else { return io }
     transport.write(mut c, channel.open_msg(ch))?
     while !ch.opened {
@@ -223,6 +274,10 @@ pub fn run(mut c: transport.Conn, mut ch: channel.Chan, plan: Plan) -> int ! ref
             eprint("PTY allocation request failed on channel 0")
             told = true
         }
+    }
+    let tty_in = io.is_terminal(fs.stdin()) else false
+    if ch.pty_ok && tty_in {
+        go_raw(mut t)
     }
     var flow = Flow { stdin_open: true }
     while !channel.done(ch) {

@@ -245,11 +245,13 @@ fn run(s: config.Settings, pty: bool) -> int {
             pty: pty,
             term: env.get("TERM") else "",
         }
-        code = session.run(mut c, mut ch, plan) else |e| {
+        var tty = session.untouched()
+        code = session.run(mut c, mut ch, plan, mut tty) else |e| {
             ok = false
             why = "{e}"
             255
         }
+        session.restore(mut tty)
     }
     if !ok {
         if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
