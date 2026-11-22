@@ -17,7 +17,9 @@
 //! untranslated), so the remote pty does the echoing and the line editing.
 //! The mode it had is registered with the runtime first
 //! (`term.restore_at_exit`) and put back by `restore` when the session
-//! ends, however it ends.
+//! ends, however it ends. Each change of the local window's size (the
+//! host's `signal.resize()` to the foreground group) is sent as a
+//! `window-change` while the pty is held.
 //!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
@@ -181,16 +183,24 @@ fn sock_ready(c: transport.Conn, ms: int) -> bool ! refuse.Refusal {
     ready.len > 0
 }
 
-fn stdin_ready(ms: int) -> bool ! refuse.Refusal {
+// Whether stdin has something to read within `ms`; a window change heard
+// during the wait is kept in `flow` for the next turn.
+fn stdin_ready(ms: int, mut flow: Flow) -> bool ! refuse.Refusal {
     var files = List[fs.File]()
     (mut files).push(fs.stdin())
     let w = signal.wait_fds(files, signal.resize(), ms) else { return io }
+    if w.meaning == signal.resize() {
+        flow.winch = true
+    }
     w.ready == 0
 }
 
-/// What a session's turns carry between them: whether stdin is still open.
+/// What a session's turns carry between them: whether stdin is still open,
+/// whether it is a terminal, and a window change not yet sent.
 pub struct Flow {
     stdin_open: bool,
+    tty_in: bool,
+    winch: bool,
 }
 
 // One turn: a message from the server if one is there, else input if the
@@ -201,13 +211,23 @@ fn turn_once(
     plan: Plan,
     mut flow: Flow,
 ) -> () ! refuse.Refusal {
+    if ch.pty_ok && flow.tty_in {
+        let heard = signal.poll(signal.resize()) else 0
+        if flow.winch || heard != 0 {
+            flow.winch = false
+            let size = term.size(fs.stdin()) else term.Size { rows: 0, columns: 0 }
+            transport.write(mut c, channel.window_msg(ch, size.columns, size.rows, 0, 0))?
+            say(plan, "window-change: {size.columns} by {size.rows}")
+            return
+        }
+    }
     if sock_ready(c, 0)? {
         pump(mut c, mut ch, plan)?
         return
     }
     let want_in = flow.stdin_open && !ch.sent_eof && !ch.eow && !ch.got_close
     let room = channel.room(ch)
-    if want_in && room > 0 && stdin_ready(0)? {
+    if want_in && room > 0 && stdin_ready(0, mut flow)? {
         var inp = fs.stdin()
         var eof = false
         let got = fs.read_chunk(mut inp, room) else {
@@ -223,7 +243,7 @@ fn turn_once(
         return
     }
     if !sock_ready(c, 5)? && want_in && room > 0 {
-        let _ = stdin_ready(5)?
+        let _ = stdin_ready(5, mut flow)?
     }
 }
 
@@ -279,7 +299,7 @@ pub fn run(
     if ch.pty_ok && tty_in {
         go_raw(mut t)
     }
-    var flow = Flow { stdin_open: true }
+    var flow = Flow { stdin_open: true, tty_in: tty_in, winch: false }
     while !channel.done(ch) {
         region turn {
             turn_once(mut c, mut ch, plan, mut flow)?
