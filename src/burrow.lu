@@ -247,6 +247,7 @@ fn run(s: config.Settings, pty: bool) -> int {
             term: env.get("TERM") else "",
             escape: s.escape,
             host: s.hostname,
+            obscure_ms: s.obscure_ms,
         }
         var tty = session.untouched()
         code = session.run(mut c, mut ch, plan, mut tty) else |e| {

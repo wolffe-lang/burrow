@@ -40,6 +40,14 @@
 //! `C`) is refused by name (`escape_unsupported`) and sends nothing; any
 //! other byte is sent after the escape character, both as typed.
 //!
+//! **Keystroke timing** (`ssh_config(5)` `ObscureKeystrokeTiming`, 20 ms
+//! by default, `no`, `interval:N`): while the terminal is raw on a granted
+//! pty and the server takes PING (`ping@openssh.com`, `PROTOCOL` §1.9),
+//! what is typed is held and sent on a fixed grid of that interval, the
+//! grid starting at the first key after a pause; a tick with nothing held
+//! sends a PING of a key packet's size instead, until a while after the
+//! last key. The server's PONGs are passed over (`src/channel`).
+//!
 //! **Waiting.** wolf-std at the pin has no single wait over a socket and a
 //! file: `net.wait` takes the network table's handles and
 //! `signal.wait_fds` takes files. So an idle turn waits up to 5 ms on the
@@ -64,10 +72,12 @@ use std.io
 use std.net
 use std.signal
 use std.term
+use std.time
 use channel
 use refuse
 use transport
 use ttymodes
+use wire
 
 /// What the session runs: `command` by `exec`, or, when `shell`, the
 /// user's default shell by a `shell` request (RFC 4254 §6.5); on a
@@ -82,6 +92,7 @@ pub struct Plan {
     term: str,
     escape: int,
     host: str,
+    obscure_ms: int,
 }
 
 /// The local terminal as a `pty-req` describes it: its size and its modes
@@ -249,7 +260,9 @@ fn stdin_ready(ms: int, mut flow: Flow) -> bool ! refuse.Refusal {
 /// What a session's turns carry between them: whether stdin is still open,
 /// whether it is a terminal, a window change not yet sent; whether escapes
 /// are read, whether the next byte starts a line, whether the escape
-/// character was the last byte, and whether `~.` ended the session.
+/// character was the last byte, and whether `~.` ended the session; and
+/// the keystroke grid: on or not, its interval, its next tick (0 when
+/// idle), the end of the chaff, and what is held for the next tick.
 pub struct Flow {
     stdin_open: bool,
     tty_in: bool,
@@ -260,6 +273,103 @@ pub struct Flow {
     at_bol: bool,
     esc_pending: bool,
     quit: bool,
+    ks_on: bool,
+    ks_ns: int,
+    ks_next: int,
+    ks_until: int,
+    held: List[byte],
+}
+
+// How long chaff goes on after the last key, in milliseconds. [U11: set
+// from the black-box measurement of the pinned ssh.]
+fn chaff_ms() -> int {
+    1000
+}
+
+// Whether the server takes PING (`ping@openssh.com` in its EXT_INFO,
+// PROTOCOL §1.9): chaff is sent only to one that answers it.
+fn server_pings(c: transport.Conn) -> bool {
+    for n in c.extensions {
+        if n == "ping@openssh.com" {
+            return true
+        }
+    }
+    false
+}
+
+// One packet of chaff: a PING whose payload is as long as one key's
+// CHANNEL_DATA (type, channel, length and the byte: ten bytes), so on the
+// wire it is the same size.
+fn chaff() -> List[byte] {
+    var p = List[byte]()
+    wire.put_u8(mut p, refuse.msg_ping())
+    var d = List[byte]()
+    var i = 0
+    while i < 5 {
+        (mut d).push(0 as byte)
+        i += 1
+    }
+    wire.put_string(mut p, d)
+    p
+}
+
+// Keystroke timing (ssh_config(5) ObscureKeystrokeTiming): what was typed
+// is held and sent on a fixed grid of `ks_ns`, and on each tick with
+// nothing held a PING goes instead, until `chaff_ms` after the last key.
+// The answer is whether this turn sent something.
+fn tick(mut c: transport.Conn, mut ch: channel.Chan, mut flow: Flow) -> bool ! refuse.Refusal {
+    if !flow.ks_on || flow.ks_next == 0 {
+        return false
+    }
+    let now = time.monotonic_ns()
+    if now < flow.ks_next {
+        return false
+    }
+    if flow.held.len > 0 {
+        let room = channel.room(ch)
+        if room == 0 {
+            return false
+        }
+        let n = if flow.held.len < room then flow.held.len else room
+        var out = List[byte]()
+        var i = 0
+        while i < n {
+            (mut out).push(flow.held[i])
+            i += 1
+        }
+        var rest = List[byte]()
+        while i < flow.held.len {
+            (mut rest).push(flow.held[i])
+            i += 1
+        }
+        (mut flow.held).reset()
+        for b in rest {
+            (mut flow.held).push(b)
+        }
+        transport.write(mut c, channel.data_msg(mut ch, out))?
+    } else if now < flow.ks_until {
+        transport.write(mut c, chaff())?
+    } else {
+        flow.ks_next = 0
+        return false
+    }
+    flow.ks_next += flow.ks_ns
+    if flow.ks_next < now {
+        flow.ks_next = now + flow.ks_ns
+    }
+    true
+}
+
+// Milliseconds to wait at most before the next tick (5 when none is due).
+fn wait_ms(flow: Flow) -> int {
+    if !flow.ks_on || flow.ks_next == 0 {
+        return 5
+    }
+    let left = (flow.ks_next - time.monotonic_ns()) / 1000000
+    if left < 0 {
+        return 0
+    }
+    if left < 5 then left else 5
 }
 
 // The escape character as the help writes it: itself, or ^ and a letter.
@@ -349,6 +459,9 @@ fn turn_once(
             return
         }
     }
+    if tick(mut c, mut ch, mut flow)? {
+        return
+    }
     if ch.pty_ok && flow.tty_in {
         let heard = signal.poll(signal.resize()) else 0
         if flow.winch || heard != 0 {
@@ -366,7 +479,7 @@ fn turn_once(
     let want_in = flow.stdin_open && !ch.sent_eof && !ch.eow && !ch.got_close
     // A pending escape character may come out with the next byte: one
     // byte of room kept for it.
-    let room = if flow.esc_pending then channel.room(ch) - 1 else channel.room(ch)
+    let room = if flow.esc_pending then channel.room(ch) - 1 - flow.held.len else channel.room(ch) - flow.held.len
     if want_in && room > 0 && stdin_ready(0, mut flow)? {
         var inp = fs.stdin()
         var eof = false
@@ -377,6 +490,17 @@ fn turn_once(
         if eof || got.len == 0 {
             flow.stdin_open = false
             transport.write(mut c, channel.eof_msg(mut ch))?
+        } else if flow.ks_on {
+            // Held for the grid; the first key after a pause starts it.
+            let out = if flow.escapes then unescape(plan.escape, mut flow, got) else copy got
+            for b in out {
+                (mut flow.held).push(b)
+            }
+            let now = time.monotonic_ns()
+            flow.ks_until = now + chaff_ms() * 1000000
+            if flow.ks_next == 0 {
+                flow.ks_next = now
+            }
         } else if flow.escapes {
             let out = unescape(plan.escape, mut flow, got)
             if out.len > 0 {
@@ -387,8 +511,9 @@ fn turn_once(
         }
         return
     }
-    if !sock_ready(c, 5)? && want_in && room > 0 {
-        let _ = stdin_ready(5, mut flow)?
+    let ms = wait_ms(flow)
+    if !sock_ready(c, ms)? && want_in && room > 0 {
+        let _ = stdin_ready(ms, mut flow)?
     }
 }
 
@@ -468,6 +593,11 @@ pub fn run(
         at_bol: true,
         esc_pending: false,
         quit: false,
+        ks_on: t.raw && ch.pty_ok && plan.obscure_ms > 0 && server_pings(c),
+        ks_ns: plan.obscure_ms * 1000000,
+        ks_next: 0,
+        ks_until: 0,
+        held: List[byte](),
     }
     while !channel.done(ch) && !flow.quit && flow.ended == 0 {
         region turn {
@@ -475,8 +605,12 @@ pub fn run(
         }
     }
     if flow.quit {
-        // `~.`: the line written while the terminal is still raw, then
-        // the terminal put back; nothing more is read.
+        // `~.`: what was typed before it sent, the line written while the
+        // terminal is still raw, then the terminal put back; nothing more
+        // is read.
+        if flow.held.len > 0 && flow.held.len <= channel.room(ch) {
+            transport.write(mut c, channel.data_msg(mut ch, copy flow.held))?
+        }
         eprint("Connection to {plan.host} closed.\r")
         t.closed = true
         restore(mut t)
