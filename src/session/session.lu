@@ -7,9 +7,12 @@
 //! **A pseudo-terminal** (B8, RFC 4254 §6.2) when the plan asks for one:
 //! the `pty-req` carries `TERM`, the window's size and the modes the local
 //! terminal has (`src/ttymodes`), read from stdin; with stdin not a
-//! terminal (`-tt`), a size of 0 by 0 and no modes. A server that refuses
-//! it is told of on stderr, as the pinned `ssh` tells it, and the session
-//! goes on without one.
+//! terminal (`-tt`), a size of 0 by 0 and no modes. Its answer is awaited
+//! before the command or shell is asked for. A server that refuses it is
+//! told of on stderr in the pinned `ssh`'s line (`PTY allocation request
+//! failed on channel 0`); the session goes on without one, except under
+//! `-tt` (`force`), where, as `ssh` does (measured in bw06), burrow gives up
+//! with 255 and the command never runs.
 //!
 //! **The local terminal** (B8): once the server has given the pty, a stdin
 //! that is a terminal is set raw for the session (`term.raw_bytes`: a key
@@ -72,6 +75,7 @@ pub struct Plan {
     env: List[str],
     verbose: int,
     pty: bool,
+    force: bool,
     term: str,
     escape: int,
     host: str,
@@ -408,6 +412,17 @@ pub fn run(
         let l = local_terminal()
         transport.write(mut c, channel.pty_msg(mut ch, plan.term, l.cols, l.rows, 0, 0, l.modes))?
         say(plan, "Requesting a pseudo-terminal: {plan.term}, {l.cols} by {l.rows}")
+        while !ch.pty_ok && !ch.pty_refused && !ch.got_close {
+            pump(mut c, mut ch, plan)?
+        }
+        if ch.pty_refused {
+            eprint("PTY allocation request failed on channel 0\r")
+            if plan.force {
+                t.closed = true
+                transport.disconnect(mut c, 11, "disconnected by user")
+                return 255
+            }
+        }
     }
     if plan.shell {
         transport.write(mut c, channel.shell_msg(mut ch))?
@@ -423,13 +438,8 @@ pub fn run(
         transport.write(mut c, channel.exec_msg(mut ch, plan.command))?
         say(plan, "Sending command: {str_from_utf8(plan.command) else "<not UTF-8>"}")
     }
-    var told = false
     while !ch.exec_ok && !ch.got_close {
         pump(mut c, mut ch, plan)?
-        if ch.pty_refused && !told {
-            eprint("PTY allocation request failed on channel 0")
-            told = true
-        }
     }
     let tty_in = io.is_terminal(fs.stdin()) else false
     if ch.pty_ok && tty_in {

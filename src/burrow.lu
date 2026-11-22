@@ -243,6 +243,7 @@ fn run(s: config.Settings, pty: bool) -> int {
             env: env_pairs,
             verbose: s.verbose,
             pty: pty,
+            force: config.tty_request(s) == "force",
             term: env.get("TERM") else "",
             escape: s.escape,
             host: s.hostname,
