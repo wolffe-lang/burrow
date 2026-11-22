@@ -1438,6 +1438,19 @@ def tty_restore():
     return "restored after " + ", ".join(notes) + ", as ssh"
 
 
+
+@row
+def tty_winch():
+    """The terminal resized mid-session: the remote pty follows (window-change)."""
+    d = run_dir("tty-winch")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "stty size; read x; stty size; exit 0"], rows=24, cols=80,
+                        steps=[(b"24 80", resize(41, 120, b"\r"))])
+    ts = term_same(d, got, "a window change")
+    check(b"41 120" in ts, f"harness: ssh's transcript {ts!r}")
+    return "24 80 then 41 120, as ssh"
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"session-{tier}"
     if out.exists():
