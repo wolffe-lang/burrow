@@ -45,7 +45,7 @@ pub fn max_version_line() -> int {
 /// written in the program. `src/wolf.pkg` names the same number and
 /// `tools/check-version` fails when they differ.
 pub fn version() -> str {
-    "0.0.0"
+    "0.1.0"
 }
 
 /// burrow's identification string, without CR LF: V_C.
