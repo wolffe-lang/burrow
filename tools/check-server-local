@@ -611,14 +611,15 @@ def local_keystroke():
 IDLE_SECONDS = 60
 IDLE_BOUND_KIB = 64
 CONN_COUNT = 300
-# Measured against, over 300 logins on macOS (footprint, 16 KiB pages). The fixed listener: +16 KiB (Mac takes at
-# 68b239a and 5ba2de2), then ten takes in a row at b3cfd8b: +32 +32 +32 +32 +16 +16 +32 +32 +32 +32, so a maximum
-# of +32, which the Linux bound of 32 KiB would leave no room over. The listener rebuilding and copying out its
-# connection table (the plant, on b3cfd8b as e3aea2f): +144 +128 +112 +128 +128, and +128 twice before (68b239a,
-# 5ba2de2); its passes outside a region +400 KiB (68b239a). The bound is 64 KiB: two pages over the fixed listener's
-# maximum, and the table plant's minimum, +112, is still 48 KiB (1.75 times) over it. A row that read +48 at the head
-# would still pass; one that read the plant's least would still fail.
-CONN_BOUND_KIB = 64
+# Measured against, over 300 logins on macOS (footprint(1), which counts in 16 KiB pages). The fixed listener: +16
+# KiB (Mac takes at 68b239a and 5ba2de2); ten takes in a row at b3cfd8b: +32 +32 +32 +32 +16 +16 +32 +32 +32 +32;
+# the hosted macOS runners at e4f5e15 and its five plant runs, both tiers, twelve readings: +16 to +48, the +48 once.
+# The listener rebuilding and copying out its connection table (the plant, on b3cfd8b as e3aea2f): +144 +128 +112
+# +128 +128, and +128 twice before (68b239a, 5ba2de2); its passes outside a region +400 KiB (68b239a).
+# How the bound is set: the fixed listener's largest reading so far plus two pages, recomputed when a larger reading
+# comes in. Today +48 + 32 = 80 KiB, which leaves the table plant's least reading, +112, 32 KiB over it: the same
+# margin on both sides.
+CONN_BOUND_KIB = 80
 
 
 def mem_kib(pid):
