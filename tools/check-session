@@ -1292,6 +1292,8 @@ def term_argv(who, s, kh, d, args):
 
 def tnorm(b, keep_closed=False):
     b = re.sub(rb"/dev/pts/\d+", b"/dev/pts/N", b)
+    # A login shell's banner names the previous login, which for burrow's run is ssh's.
+    b = re.sub(rb"Last login: [^\r\n]*", b"Last login: (the previous one)", b)
     return b if keep_closed else CLOSED.sub(b"", b)
 
 
