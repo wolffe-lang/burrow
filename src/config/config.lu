@@ -4,15 +4,15 @@
 //! `~/.ssh/config` it reads (`ssh(1)`, `ssh_config(5)` of the pinned
 //! 10.0p2).
 //!
-//! **The command line:** `ssh [-Ttv] [-F configfile] [-i identity_file]
-//! [-l login_name] [-o option] [-p port] [--] destination [command
-//! [argument ...]]`, destination `[user@]host` or
+//! **The command line:** `ssh [-Ttv] [-e escape_char] [-F configfile]
+//! [-i identity_file] [-l login_name] [-o option] [-p port] [--]
+//! destination [command [argument ...]]`, destination `[user@]host` or
 //! `ssh://[user@]host[:port]`. The arguments after the destination are the
 //! remote command, joined with single spaces (`ssh(1)`). It is what den's
 //! ssh transport passes (its argv shapes are in `src/config_test.lu`).
 //!
 //! **Keywords**, from `-o` and the config file alike: `BatchMode`,
-//! `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster` (`no` only),
+//! `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster` (`no` only), `EscapeChar`,
 //! `ControlPath` (`none` only), `GlobalKnownHostsFile`, `HashKnownHosts`,
 //! `HostKeyAlias`, `Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
 //! `RequestTTY`, `SendEnv`, `SetEnv`, `StrictHostKeyChecking`, `UpdateHostKeys` (`no`
@@ -29,7 +29,9 @@
 //! **A pseudo-terminal (B8):** `RequestTTY` (`ssh_config(5)`: `no`, `yes`,
 //! `force`, `auto`, the default) says when one is asked for; `-t` is `yes`,
 //! a second `-t` `force`, and `-T` `no`. A flag wins over `-o` and the
-//! file, the last flag over the ones before it (`tty_request`).
+//! file, the last flag over the ones before it (`tty_request`). The escape
+//! character (`-e`, `EscapeChar`) is one character, `^` and a letter (that
+//! control character), or `none`; `~` by default (`escape`, -1 for none).
 //!
 //! **First value wins** (`ssh_config(5)`): the command line, then the file;
 //! `IdentityFile` and `SendEnv` accumulate, and a `SendEnv` pattern written
@@ -63,6 +65,7 @@ pub struct Settings {
     global_known_hosts: List[str],
     no_tty: bool,
     request_tty: str,
+    escape: int,
     strict: str,
     hash_known: bool,
     key_alias: str,
@@ -86,7 +89,7 @@ pub struct Settings {
 
 /// The usage line, as the pinned `ssh` begins its own.
 pub fn usage() -> str {
-    "usage: ssh [-Ttv] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
+    "usage: ssh [-Ttv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
 }
 
 // ssh_config(5)'s keywords, lowercased, from the pinned 10.0p2's page.
@@ -216,6 +219,7 @@ pub fn empty() -> Settings {
         global_known_hosts: List[str](),
         no_tty: false,
         request_tty: "",
+        escape: 126,
         strict: "",
         hash_known: false,
         key_alias: "",
@@ -524,6 +528,18 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             }
             (mut s.set_env).push(w)
         }
+    } else if k == "escapechar" {
+        let e = escape_of(v)
+        if e < -1 {
+            refuse_as(
+                mut s,
+                refusal,
+                "",
+                "EscapeChar {v}: one character, ^ and a letter, or none",
+            )
+            return
+        }
+        s.escape = e
     } else if k == "requesttty" {
         let l = v.lower()
         if l != "no" && l != "yes" && l != "force" && l != "auto" {
@@ -556,6 +572,25 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
     } else {
         refuse_as(mut s, refusal, "", "{key}: an ssh_config(5) keyword burrow does not take")
     }
+}
+
+// An escape character's value: its byte, a control character for `^` and
+// a letter, -1 for `none`, -2 for anything else.
+fn escape_of(v: str) -> int {
+    if v.lower() == "none" {
+        return -1
+    }
+    let b = v.bytes()
+    if b.len == 1 {
+        return b[0] as int
+    }
+    if b.len == 2 && b[0] as int == 94 {
+        let c = b[1] as int
+        if (c >= 65 && c <= 90) || (c >= 97 && c <= 122) {
+            return c % 32
+        }
+    }
+    -2
 }
 
 fn option(mut s: Settings, text: str) {
@@ -670,7 +705,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                 } else if f == "v" {
                     s.verbose += 1
                     j += 1
-                } else if f == "p" || f == "l" || f == "o" || f == "i" || f == "F" {
+                } else if f == "p" || f == "l" || f == "o" || f == "i" || f == "F" || f == "e" {
                     var v = a[j + 1..a.len]
                     if v.len == 0 {
                         if i + 1 >= args.len {
@@ -688,6 +723,20 @@ pub fn parse_args(args: List[str]) -> Settings {
                         cli_port = n
                     } else if f == "l" {
                         cli_user = v
+                    } else if f == "e" {
+                        let e = escape_of(v)
+                        if e < -1 {
+                            refuse_as(
+                                mut s,
+                                "option_unsupported",
+                                "",
+                                "-e {v}: the escape character is one character, ^ and a letter, or none",
+                            )
+                        }
+                        s.escape = e
+                        if !was_set(s, "escapechar") {
+                            (mut s.set).push("escapechar")
+                        }
                     } else if f == "o" {
                         option(mut s, v)
                     } else if f == "i" {
@@ -705,7 +754,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                         s.config_file = v
                     }
                     j = a.len
-                } else if "46AaCfGgKkMNnqsVXxYyBbcDEeIJLmOPQRSWw".contains(f) {
+                } else if "46AaCfGgKkMNnqsVXxYyBbcDEIJLmOPQRSWw".contains(f) {
                     refuse_as(
                         mut s,
                         "option_unsupported",

@@ -195,6 +195,19 @@ fn main() {
         ),
     )
     assert(refused(["h"], "Host *\n  RequestTTY sometimes\n", "config_unsupported", ""))
+    // The escape character: ~ by default; -e (over -o and the file), then
+    // EscapeChar; one character, ^ and a letter, or none.
+    assert(ready(["h"], "").escape == 126)
+    assert(ready(["-e", "none", "h"], "").escape == -1)
+    assert(ready(["-e#", "h"], "").escape == 35)
+    assert(ready(["-e", "^a", "h"], "").escape == 1 && ready(["-e", "^Z", "h"], "").escape == 26)
+    assert(ready(["-o", "EscapeChar=%", "h"], "Host *\n  EscapeChar !\n").escape == 37)
+    assert(ready(["h"], "Host *\n  EscapeChar NONE\n").escape == -1)
+    assert(ready(["-e", "+", "-o", "EscapeChar=!", "h"], "").escape == 43)
+    assert(refused(["-e", "ab", "h"], "", "option_unsupported", ""))
+    assert(refused(["-e", "^1", "h"], "", "option_unsupported", ""))
+    assert(refused(["-e"], "", "usage", "option requires an argument -- e"))
+    assert(refused(["h"], "Host *\n  EscapeChar xy\n", "config_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
     assert(
@@ -236,6 +249,6 @@ fn main() {
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
     print(
-        "config: den's argv shapes, ssh's flags, -t and RequestTTY, Host and Match host, the global known_hosts, 19 refusals",
+        "config: den's argv shapes, ssh's flags, -t and RequestTTY, the escape character, Host and Match host, the global known_hosts, 23 refusals",
     )
 }
