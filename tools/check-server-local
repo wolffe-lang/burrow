@@ -211,7 +211,8 @@ def local_tty():
     r = on_terminal(["-tt", "tty; stty size; echo ready; read x; stty size; exit 3"], steps=[(b"ready", resize)],
                     rows=40, cols=132, argv=argv)
     check(r[0] == 3, f"exit {r[0]}, transcript {r[1][-300:]!r} ({version})")
-    m = re.match(rb"(/dev/tty\S+)\r\n40 132\r\nready\r\n", r[1])
+    # stderr shares the terminal: the system ssh's own warnings may come first.
+    m = re.search(rb"(/dev/tty\S+)\r\n40 132\r\nready\r\n", r[1])
     check(m is not None and b"\r\n50 100\r\n" in r[1], f"transcript {r[1][:300]!r}")
     c = on_terminal(["-tt", "exec /bin/sh -c \"trap 'echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done\""],
                     steps=[(b"ready", typed(b"\x03", 0.3))], argv=argv)
