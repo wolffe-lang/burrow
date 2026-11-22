@@ -3,7 +3,7 @@
 // and `exec` for std.signal's wait on stdin (session); no subprocesses.
 pkg {
     name: "burrow",
-    version: "0.0.0",
+    version: "0.1.0",
     edition: "1",
     capabilities: [env, fs, net, exec],
 }
