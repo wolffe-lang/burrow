@@ -3,12 +3,13 @@
 function in src/version/version.lu holds it for the program, the two
 identification strings and `burrowd -V` are built from it. This row fails when they disagree.
 
-  tools/check-version [--root DIR] [--burrowd BURROW]
+  tools/check-version [--root DIR] [--burrowd BURROWD] [--burrow BURROW]
   tools/check-version --self-test
 
 Without --burrowd it compares the manifest and the function and refuses a second
 version literal in the program's sources; with --burrowd it also runs
-`BURROWD -V` and requires `burrowd_<version>, burrow (wolf)` on stderr.
+`BURROWD -V` and requires `burrowd_<version>, burrow (wolf)` on stderr, and with
+--burrow `BURROW -V` and `burrow_<version>, burrow (wolf)`.
 """
 import argparse
 import pathlib
@@ -37,7 +38,17 @@ def source_version(root):
     return found[0]
 
 
-def check(root, binary=None):
+def printed(binary, program, manifest):
+    """`PROGRAM -V`'s one line on stderr, exit 0, the manifest's version."""
+    if not pathlib.Path(binary).is_file():
+        raise SystemExit('FAIL version-binary-missing %s' % binary)
+    out = subprocess.run([binary, '-V'], capture_output=True, text=True)
+    want = '%s_%s, burrow (wolf)' % (program, manifest)
+    if out.returncode != 0 or out.stderr.strip() != want:
+        raise SystemExit('FAIL version-printed-disagrees %s manifest=%s printed=%r' % (program, manifest, out.stderr))
+
+
+def check(root, binary=None, client=None):
     manifest = manifest_version(root)
     source = source_version(root)
     if manifest != source:
@@ -51,13 +62,10 @@ def check(root, binary=None):
         if path.is_file() and path.name != 'check-version' and LITERAL.search(path.read_text(errors='replace')):
             raise SystemExit('FAIL version-second-literal %s' % path.relative_to(root))
     if binary:
-        if not pathlib.Path(binary).is_file():
-            raise SystemExit('FAIL version-binary-missing %s' % binary)
-        out = subprocess.run([binary, '-V'], capture_output=True, text=True)
-        want = 'burrowd_%s, burrow (wolf)' % manifest
-        if out.returncode != 0 or out.stderr.strip() != want:
-            raise SystemExit('FAIL version-printed-disagrees manifest=%s printed=%r' % (manifest, out.stderr))
-    print('PASS version %s%s' % (manifest, ' printed' if binary else ''))
+        printed(binary, 'burrowd', manifest)
+    if client:
+        printed(client, 'burrow', manifest)
+    print('PASS version %s%s' % (manifest, ' printed' if binary or client else ''))
 
 
 def tree(base, pkg_version, fn_version, extra=''):
@@ -110,12 +118,13 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--root', type=pathlib.Path, default=ROOT)
     p.add_argument('--burrowd')
+    p.add_argument('--burrow')
     p.add_argument('--self-test', action='store_true')
     a = p.parse_args()
     if a.self_test:
         self_test()
     else:
-        check(a.root, a.burrowd)
+        check(a.root, a.burrowd, a.burrow)
 
 
 if __name__ == '__main__':
