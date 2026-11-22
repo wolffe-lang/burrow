@@ -47,6 +47,9 @@ def check(root, binary=None):
             continue
         if LITERAL.search(path.read_text()):
             raise SystemExit('FAIL version-second-literal %s' % path.relative_to(root))
+    for path in sorted((root / 'tools').glob('*')):
+        if path.is_file() and path.name != 'check-version' and LITERAL.search(path.read_text(errors='replace')):
+            raise SystemExit('FAIL version-second-literal %s' % path.relative_to(root))
     if binary:
         if not pathlib.Path(binary).is_file():
             raise SystemExit('FAIL version-binary-missing %s' % binary)
@@ -62,6 +65,7 @@ def tree(base, pkg_version, fn_version, extra=''):
     (base / 'src/wolf.pkg').write_text('pkg { name: "burrow", version: "%s", edition: "1" }\n' % pkg_version)
     (base / 'src/version/version.lu').write_text('pub fn version() -> str { "%s" }\n' % fn_version)
     (base / 'src/other.lu').write_text(extra)
+    (base / 'tools').mkdir()
 
 
 def self_test():
@@ -90,6 +94,15 @@ def self_test():
             raise AssertionError('two fields not refused')
         except SystemExit as e:
             assert 'version-manifest-field-count' in str(e)
+    with tempfile.TemporaryDirectory() as t:
+        base = pathlib.Path(t)
+        tree(base, '1.2.3', '1.2.3')
+        (base / 'tools/row').write_text('check(re.search(r"remote software version burrow_1\\.2\\.3", log))\n')
+        try:
+            check(base)
+            raise AssertionError('tools literal not refused')
+        except SystemExit as e:
+            assert 'version-second-literal tools/row' in str(e), e
     print('PASS version-self-test agree disagree second-literal two-fields')
 
 
