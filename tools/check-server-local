@@ -457,10 +457,13 @@ def local_tty_restore():
         pub = (WORK / "nopty.pub").read_text().strip()
         with open(L.home / ".ssh" / "authorized_keys", "a") as f:
             f.write(f"no-pty {pub}\n")
+    # As the pinned ssh under -t (tools/check-session's tty-refused): its line, written raw, then 255 and the
+    # command never asked for.
     n = on_terminal(["-t", "127.0.0.1", "echo done"], key=k, modes=odd_modes)
-    check(n[0] == 0 and b"done" in n[1], f"refused pty: exit {n[0]}, transcript {n[1][-300:]!r}")
+    check(n[0] == 255 and n[1] == b"PTY allocation request failed on channel 0\r\n",
+          f"refused pty: exit {n[0]}, transcript {n[1][-300:]!r}")
     restored("a refused pty", n)
-    return "after ~. (exit 255, closed CR LF) and a refused pty"
+    return "after ~. (exit 255, closed CR LF) and a refused pty (255)"
 
 
 @row
