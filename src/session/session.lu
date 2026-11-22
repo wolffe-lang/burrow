@@ -28,8 +28,9 @@
 //! `window-change` while the pty is held.
 //!
 //! **The escape character** (`ssh(1)` ESCAPE CHARACTERS; `~` unless `-e` or
-//! `EscapeChar` say otherwise, none for `none`) is read only while the pty
-//! is held and only at the start of a line (the session's first byte, or
+//! `EscapeChar` say otherwise, none for `none`) is read when a pty was asked
+//! for ("When a pseudo-terminal has been requested", `ssh(1)`), granted or
+//! not, and only at the start of a line (the session's first byte, or
 //! the one after a CR or LF typed). After it: `.` ends the connection
 //! (`Connection to HOST closed.`, exit 255); `?` lists the escapes burrow
 //! takes, in the pinned `ssh`'s words; the escape character again sends it
@@ -451,7 +452,7 @@ pub fn run(
         raw: t.raw,
         ended: 0,
         winch: false,
-        escapes: t.raw && plan.escape >= 0,
+        escapes: plan.pty && plan.escape >= 0,
         at_bol: true,
         esc_pending: false,
         quit: false,
