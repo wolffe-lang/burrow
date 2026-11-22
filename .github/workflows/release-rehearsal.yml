@@ -1,0 +1,114 @@
+# A rehearsal of the release path from a branch, before any tag: the pinned shared release tool builds burrow,
+# observes every version line, packs the archive twice and writes its SHA-256 on both hosted systems, and a clean
+# runner with no checkout of burrow, no compiler and no token unpacks and runs each archive. It makes no draft and no
+# tag and writes nothing outside this run's own artifacts. The draft, its upload and its read are the shared
+# workflow's code (release.yml), run only from a tag the owner pushes.
+name: release rehearsal
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wolffe-lang/homebrew-wolf
+          ref: 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+          path: release-infrastructure
+          persist-credentials: false
+      - id: tag
+        name: the tag the manifest's version would take
+        run: |
+          python3 -I -c '
+          import re
+          text = re.sub(r"//[^\n]*", "", open("src/wolf.pkg").read())
+          (v,) = re.findall(r"\bversion\s*:\s*\"([^\"]+)\"", text)
+          print("tag=v" + v)
+          ' >> "$GITHUB_OUTPUT"
+      - name: package and CHANGELOG
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: python3 -I release-infrastructure/tools/tool-release validate --config .github/release.json --tag "$TAG"
+      - name: carry only configuration to the clean runner
+        run: |
+          mkdir -p target/release-config
+          cp -- .github/release.json target/release-config/release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-config
+          path: target/release-config/release.json
+          if-no-files-found: error
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, host: x86_64-unknown-linux-gnu}
+          - {os: macos-15, host: aarch64-apple-darwin}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wolffe-lang/homebrew-wolf
+          ref: 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+          path: release-infrastructure
+          persist-credentials: false
+      - name: digest-pinned toolchain
+        run: tools/fetch-toolchain
+      - name: build, observe every version, pack twice
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          HOST: ${{ matrix.host }}
+        run: python3 -I release-infrastructure/tools/tool-release build --config .github/release.json --tag "$TAG" --host "$HOST"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rehearsal-${{ matrix.host }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.tar.gz.sha256
+          if-no-files-found: error
+  smoke:
+    needs: [prepare, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: ubuntu-24.04, host: x86_64-unknown-linux-gnu}
+          - {os: macos-15, host: aarch64-apple-darwin}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: wolffe-lang/homebrew-wolf
+          ref: 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+          path: release-infrastructure
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-config
+          path: smoke-work
+      - uses: actions/download-artifact@v4
+        with:
+          name: rehearsal-${{ matrix.host }}
+          path: smoke-work/target/download
+      - name: unpack and execute the archive this run built
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+          HOST: ${{ matrix.host }}
+        run: python3 -I release-infrastructure/tools/tool-release smoke --root smoke-work --config release.json --tag "$TAG" --expect-sha "$GITHUB_SHA" --artifacts smoke-work/target/download --host "$HOST"
+      - name: a rehearsal only
+        run: echo 'Archives built and run from a branch. No draft, no tag; the release itself starts from a tag.' >> "$GITHUB_STEP_SUMMARY"
