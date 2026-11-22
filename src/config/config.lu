@@ -4,7 +4,7 @@
 //! `~/.ssh/config` it reads (`ssh(1)`, `ssh_config(5)` of the pinned
 //! 10.0p2).
 //!
-//! **The command line:** `ssh [-Ttv] [-e escape_char] [-F configfile]
+//! **The command line:** `ssh [-TtVv] [-e escape_char] [-F configfile]
 //! [-i identity_file] [-l login_name] [-o option] [-p port] [--]
 //! destination [command [argument ...]]`, destination `[user@]host` or
 //! `ssh://[user@]host[:port]`. The arguments after the destination are the
@@ -32,6 +32,8 @@
 //! file, the last flag over the ones before it (`tty_request`). The escape
 //! character (`-e`, `EscapeChar`) is one character, `^` and a letter (that
 //! control character), or `none`; `~` by default (`escape`, -1 for none).
+//! `-V` (`print_version`) is acted on where it stands: nothing after it is
+//! read and no destination is needed; a refusal before it still stands.
 //!
 //! **First value wins** (`ssh_config(5)`): the command line, then the file;
 //! `IdentityFile` and `SendEnv` accumulate, and a `SendEnv` pattern written
@@ -77,6 +79,7 @@ pub struct Settings {
     rekey_seconds: int,
     batch: bool,
     verbose: int,
+    print_version: bool,
     command: List[str],
     config_file: str,
     traffic: int,
@@ -90,7 +93,7 @@ pub struct Settings {
 
 /// The usage line, as the pinned `ssh` begins its own.
 pub fn usage() -> str {
-    "usage: ssh [-Ttv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
+    "usage: ssh [-TtVv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]"
 }
 
 // ssh_config(5)'s keywords, lowercased, from the pinned 10.0p2's page.
@@ -232,6 +235,7 @@ pub fn empty() -> Settings {
         rekey_seconds: 0,
         batch: false,
         verbose: 0,
+        print_version: false,
         command: List[str](),
         config_file: "",
         traffic: 0,
@@ -777,7 +781,12 @@ pub fn parse_args(args: List[str]) -> Settings {
                         s.config_file = v
                     }
                     j = a.len
-                } else if "46AaCfGgKkMNnqsVXxYyBbcDEIJLmOPQRSWw".contains(f) {
+                } else if f == "V" {
+                    // ssh(1): "Display the version number and exit". Nothing
+                    // after it is read, and no destination is needed.
+                    s.print_version = true
+                    return s
+                } else if "46AaCfGgKkMNnqsXxYyBbcDEIJLmOPQRSWw".contains(f) {
                     refuse_as(
                         mut s,
                         "option_unsupported",
