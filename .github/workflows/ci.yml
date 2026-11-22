@@ -107,6 +107,12 @@ jobs:
       - name: Session rows against the pinned sshd, ssh and ssh-keygen, release
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-session --bin target/release/burrow
+      - name: Keystroke timing rows against the pinned ssh and sshd, native
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        run: tools/in-container python3 -I tools/check-session --bin target/native/burrow --timing
+      - name: Keystroke timing rows against the pinned ssh and sshd, release
+        if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
+        run: tools/in-container python3 -I tools/check-session --bin target/release/burrow --timing
       - name: Hostile-peer rows (tools/fakeserver.py), native
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-hostile --bin target/native/burrow
