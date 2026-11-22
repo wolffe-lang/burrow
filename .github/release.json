@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "name": "burrow",
+  "manifest": "src/wolf.pkg",
+  "gate_workflow": ".github/workflows/release-gate.yml",
+  "gate_profile": "full",
+  "build": [
+    "tools/build",
+    "--release"
+  ],
+  "binaries": {
+    "burrow": "target/release/burrow",
+    "burrow-keygen": "target/release/burrow-keygen",
+    "burrowd": "target/release/burrowd"
+  },
+  "version_args": [
+    "-V"
+  ],
+  "version_pattern": "^burrowd?_(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+), burrow \\(wolf\\)$",
+  "smoke": [
+    [
+      "{bin}/burrow",
+      "-V"
+    ],
+    [
+      "{bin}/burrowd",
+      "-V"
+    ],
+    [
+      "{bin}/burrow-keygen",
+      "-q",
+      "-t",
+      "ed25519",
+      "-N",
+      "",
+      "-f",
+      "key"
+    ],
+    [
+      "{bin}/burrow-keygen",
+      "-l",
+      "-f",
+      "key"
+    ]
+  ],
+  "version_exemptions": {
+    "burrow-keygen": "ssh-keygen's options have no version flag; the family version is observed through burrow and burrowd"
+  },
+  "experimental": true
+}
