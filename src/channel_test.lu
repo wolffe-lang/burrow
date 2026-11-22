@@ -235,6 +235,12 @@ fn main() {
     let _ = channel.shell_msg(mut pn)
     assert(why(mut pn, msg(100, 0)) == "ok" && pn.pty_refused && !pn.pty_ok)
     assert(why(mut pn, msg(99, 0)) == "ok" && pn.exec_ok)
+    // A PONG (PROTOCOL §1.9) is taken and passed over, whatever it carries.
+    var pong = List[byte]()
+    wire.put_u8(mut pong, 193)
+    wire.put_string(mut pong, x("0000000000"))
+    let ps = step(mut pt, pong)
+    assert(ps.reply.len == 0 && ps.out.len == 0 && ps.info == "PONG")
     // §6.7's window-change, laid out by hand: 120 columns, 41 rows, no
     // pixels, want reply FALSE.
     assert(

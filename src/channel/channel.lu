@@ -36,7 +36,8 @@
 //! `auth-agent@openssh.com`, any type) is answered `OPEN_FAILURE` reason 1
 //! and the session goes on (§6.1, §6.3.2); a global request wanting a
 //! reply is answered `REQUEST_FAILURE`, and a channel request wanting one
-//! (other than burrow's own) `CHANNEL_FAILURE`.
+//! (other than burrow's own) `CHANNEL_FAILURE`. A PONG, the answer to a
+//! PING burrow sent (`PROTOCOL` §1.9), is taken and passed over.
 //!
 //! Every field is a scalar or bytes the channel owns, so a session turn's
 //! region may update it in place.
@@ -337,6 +338,12 @@ pub fn on(mut ch: Chan, p: List[byte]) -> Step ! refuse.Refusal {
             s.reply = no
         }
         s.info = "global request {name} (want reply {want}): declined"
+        return s
+    }
+    if t == refuse.msg_pong() {
+        // The answer to a PING burrow sent (PROTOCOL §1.9): the chaff that
+        // hides keystroke timing (src/session).
+        s.info = "PONG"
         return s
     }
     if t == refuse.msg_channel_open() {
