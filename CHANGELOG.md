@@ -1,5 +1,22 @@
 ## Unreleased
 
+- burrow, the client, takes a terminal (B8). At a terminal with no command,
+  and for a command under `-t` (with stdin a terminal) or `-tt`, it asks for
+  a pseudo-terminal, as `ssh` does (`RequestTTY` `auto`, `yes`, `force`,
+  `no`), carrying `TERM`, the window's size and every mode the local
+  terminal has. While the pty is held the local terminal is raw, so the
+  remote side echoes and edits, ^C, ^\ and ^Z reach it as bytes, and each
+  change of the window's size is sent on; the terminal is put back as it was
+  found however the session ends, TERM, HUP and QUIT included, and
+  `Connection to HOST closed.` follows. The escape character (`-e`,
+  `EscapeChar`, `~` by default) at a line's start: `~.` disconnects, `~?`
+  lists, `~~` sends one; `ssh`'s other escapes are refused by name. A
+  refused pty is `ssh`'s line and the session goes on, except under `-tt`,
+  where burrow gives up with 255 as `ssh` does. The refusal
+  `pty_unsupported` is gone. Rows: `tools/check-session` holds burrow to the
+  pinned `ssh` from the same terminal (the `tty-*`, `esc-*` and
+  `pty-req-bytes` rows); `tools/check-server-local` holds it to fixed facts
+  through burrowd, on macOS in the hosted job.
 - burrowd's listener keeps the memory it started with (burrow#30,
   burrow#28). Each 50 ms pass of its loop built its wait lists in the
   daemon's own region, which ends only with the daemon, so an idle listener
