@@ -485,7 +485,10 @@ def local_tty_keys():
         t0 = time.monotonic()
         r = on_terminal(["-t", "127.0.0.1", "echo ready; sleep 30; echo after"], steps=[(b"ready", typed(key, 0.5))])
         secs = time.monotonic() - t0
-        check(r[0] == 255 and b"after" not in r[1] and secs < 20, f"{name}: exit {r[0]} after {secs:.0f} s, transcript {r[1][-300:]!r}")
+        # The session ran (`ready`), ended by the key (no `after`, well before the sleep's 30 s) and closed as a
+        # session that held a pty closes.
+        check(r[0] == 255 and b"ready\r\n" in r[1] and b"after" not in r[1] and r[1].endswith(CLOSED_COOKED) and secs < 20,
+              f"{name}: exit {r[0]} after {secs:.0f} s, transcript {r[1][-300:]!r}")
         restored(name, r)
         notes.append(f"{name} exit 255 in {secs:.0f} s")
     return ", ".join(notes)
