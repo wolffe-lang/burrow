@@ -13,8 +13,11 @@
 #               ci/fetch-retry's rows
 #   vectors     tools/vectorgen.py regenerates src/kexvec, tools/nistvec.py src/sha1vec,
 #               byte for byte
+#   version     tools/check-version: the manifest, the version function and the
+#               literals agree (and its own plants)
 #   fmt         `wolf fmt --check`
 #   build       the native and release tiers, warnings denied
+#   version-printed  `burrowd -V` prints the manifest's version
 #   unit        every src/*_test.lu: the checked machine, native and lupin
 #   transport   the transport rows against the pinned sshd, native
 #   transport-release   the same rows, release
@@ -58,7 +61,7 @@
 #               2x and its wall time reported (a perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors fmt build unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
+ALL="toolchain oracle planner vectors version fmt build version-printed unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -77,8 +80,10 @@ run() {
     oracle) tools/in-container tools/fetch-oracle ;;
     planner) tools/in-container sh -c 'python3 -I ci/tiers-test.py && python3 -I ci/local-gate-test.py && python3 -I ci/fetch-retry-test.py' ;;
     vectors) tools/in-container sh -c 'python3 -I tools/vectorgen.py --check src/kexvec/kexvec.lu && python3 -I tools/nistvec.py --check ci/vectors/nist-sha1.rsp src/sha1vec/sha1vec.lu' ;;
+    version) tools/in-container sh -c 'python3 -I tools/check-version --self-test && python3 -I tools/check-version' ;;
     fmt) tools/in-container tools/check-fmt ;;
     build) tools/in-container tools/build --all ;;
+    version-printed) tools/in-container python3 -I tools/check-version --burrowd target/native/burrowd ;;
     unit) tools/in-container tools/check-test ;;
     transport) tools/in-container python3 -I tools/check-transport --bin target/native/burrow ;;
     transport-release) tools/in-container python3 -I tools/check-transport --bin target/release/burrow ;;

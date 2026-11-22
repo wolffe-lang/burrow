@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""The program's version has one source: the package manifest names it, one
+function in src/version/version.lu holds it for the program, the two
+identification strings and `burrowd -V` are built from it. This row fails when they disagree.
+
+  tools/check-version [--root DIR] [--burrowd BURROW]
+  tools/check-version --self-test
+
+Without --burrowd it compares the manifest and the function and refuses a second
+version literal in the program's sources; with --burrowd it also runs
+`BURROWD -V` and requires `burrowd_<version>, burrow (wolf)` on stderr.
+"""
+import argparse
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+FN = re.compile(r'pub fn version\(\) -> str \{\s*"([^"]*)"\s*\}')
+LITERAL = re.compile(r'burrowd?_[0-9]')
+
+
+def manifest_version(root):
+    text = re.sub(r'//[^\n]*', '', (root / 'src/wolf.pkg').read_text())
+    fields = re.findall(r'\bversion\s*:\s*"([^"]*)"', text)
+    if len(fields) != 1:
+        raise SystemExit('FAIL version-manifest-field-count %d' % len(fields))
+    return fields[0]
+
+
+def source_version(root):
+    found = FN.findall((root / 'src/version/version.lu').read_text())
+    if len(found) != 1:
+        raise SystemExit('FAIL version-function-count %d' % len(found))
+    return found[0]
+
+
+def check(root, binary=None):
+    manifest = manifest_version(root)
+    source = source_version(root)
+    if manifest != source:
+        raise SystemExit('FAIL version-source-disagree manifest=%s source=%s' % (manifest, source))
+    for path in sorted((root / 'src').rglob('*.lu')):
+        if path.name.endswith('_test.lu'):
+            continue
+        if LITERAL.search(path.read_text()):
+            raise SystemExit('FAIL version-second-literal %s' % path.relative_to(root))
+    if binary:
+        if not pathlib.Path(binary).is_file():
+            raise SystemExit('FAIL version-binary-missing %s' % binary)
+        out = subprocess.run([binary, '-V'], capture_output=True, text=True)
+        want = 'burrowd_%s, burrow (wolf)' % manifest
+        if out.returncode != 0 or out.stderr.strip() != want:
+            raise SystemExit('FAIL version-printed-disagrees manifest=%s printed=%r' % (manifest, out.stderr))
+    print('PASS version %s%s' % (manifest, ' printed' if binary else ''))
+
+
+def tree(base, pkg_version, fn_version, extra=''):
+    (base / 'src/version').mkdir(parents=True)
+    (base / 'src/wolf.pkg').write_text('pkg { name: "burrow", version: "%s", edition: "1" }\n' % pkg_version)
+    (base / 'src/version/version.lu').write_text('pub fn version() -> str { "%s" }\n' % fn_version)
+    (base / 'src/other.lu').write_text(extra)
+
+
+def self_test():
+    def refused(why, **kw):
+        with tempfile.TemporaryDirectory() as t:
+            base = pathlib.Path(t)
+            tree(base, **kw)
+            try:
+                check(base)
+            except SystemExit as e:
+                assert why in str(e), (why, e)
+                return
+            raise AssertionError('not refused: ' + why)
+    with tempfile.TemporaryDirectory() as t:
+        tree(pathlib.Path(t), '1.2.3', '1.2.3')
+        check(pathlib.Path(t))
+    refused('version-source-disagree', pkg_version='1.2.4', fn_version='1.2.3')
+    refused('version-second-literal', pkg_version='1.2.3', fn_version='1.2.3',
+            extra='fn f() -> str { "SSH-2.0-burrow_1.2.3" }\n')
+    with tempfile.TemporaryDirectory() as t:
+        base = pathlib.Path(t)
+        tree(base, '1.2.3', '1.2.3')
+        (base / 'src/wolf.pkg').write_text('pkg { version: "1.2.3", version: "1.2.3" }\n')
+        try:
+            check(base)
+            raise AssertionError('two fields not refused')
+        except SystemExit as e:
+            assert 'version-manifest-field-count' in str(e)
+    print('PASS version-self-test agree disagree second-literal two-fields')
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--root', type=pathlib.Path, default=ROOT)
+    p.add_argument('--burrowd')
+    p.add_argument('--self-test', action='store_true')
+    a = p.parse_args()
+    if a.self_test:
+        self_test()
+    else:
+        check(a.root, a.burrowd)
+
+
+if __name__ == '__main__':
+    main()
