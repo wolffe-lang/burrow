@@ -1,0 +1,27 @@
+name: release wiring
+on:
+  pull_request:
+  push:
+    branches: [trunk]
+    paths: ['.github/**', 'src/**', 'CHANGELOG.md']
+permissions:
+  contents: read
+jobs:
+  wiring:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wolffe-lang/homebrew-wolf
+          ref: 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+          path: release-infrastructure
+          persist-credentials: false
+      - name: same complete gate and immutable caller pin
+        run: python3 -I release-infrastructure/tools/release-adapter --root . --check-pin 183a4e18e63bb1f21cd41a74ff63cb848bc89094
+      - name: workflow syntax
+        run: |
+          ruby -e 'require "yaml"; Dir[".github/workflows/*.yml"].each { |f| YAML.load_file(f) }'
