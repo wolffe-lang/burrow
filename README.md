@@ -21,7 +21,7 @@ does, and a static build is ready for PAX. It takes the command line den
 passes:
 
 ```sh
-ssh [-Tv] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]
+ssh [-Ttv] [-e escape_char] [-F configfile] [-i identity_file] [-l login_name] [-o option] [-p port] [--] destination [command [argument ...]]
 burrow-keygen -t ed25519 [-q] [-f path] [-C comment] [-N ""]
 burrow-keygen -y -f path        # the public line
 burrow-keygen -l -f path        # the fingerprint
@@ -29,23 +29,38 @@ burrow-keygen -l -f path        # the fingerprint
 
 `-o` and `~/.ssh/config` (`Host` and `Match host` blocks) take `BatchMode`,
 `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster no`, `ControlPath
-none`, `GlobalKnownHostsFile`, `HashKnownHosts`, `HostKeyAlias`, `Hostname`,
-`IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`, `SendEnv`, `SetEnv`,
-`StrictHostKeyChecking`, `UpdateHostKeys no`, `User` and
-`UserKnownHostsFile`. Anything else is refused by name, never ignored.
+none`, `EscapeChar`, `GlobalKnownHostsFile`, `HashKnownHosts`, `HostKeyAlias`,
+`Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
+`RequestTTY`, `SendEnv`, `SetEnv`, `StrictHostKeyChecking`, `UpdateHostKeys
+no`, `User` and `UserKnownHostsFile`. Anything else is refused by name, never
+ignored.
 
-With no command, burrow starts the login shell with no pseudo-terminal, as
-`ssh -T` does: stdin, stdout and stderr pass as raw bytes, and burrow exits
-with the shell's status. So `ssh -T git@github.com` with a key GitHub knows
-prints GitHub's greeting (`Hi …! You've successfully authenticated, but
-GitHub does not provide shell access.`) and exits 1, the status GitHub
-sends, as `ssh` does; without a key it is refused authentication as `ssh`
-refuses it. Without `-T` and with stdin not a terminal, burrow prints the
-line `ssh` prints (`Pseudo-terminal will not be allocated because stdin is
-not a terminal.`) and does the same. There is no pty yet, nor agent or
-forwarding ([MAP](docs/MAP.md)): `-t`, `RequestTTY`, and no command at a
-terminal without `-T` are refused by name (`pty_unsupported`, before
-connecting).
+With no command, burrow starts the login shell. Under `-T`, or with stdin
+not a terminal, it asks for no pseudo-terminal, as `ssh -T` does: stdin,
+stdout and stderr pass as raw bytes, and burrow exits with the shell's
+status. So `ssh -T git@github.com` with a key GitHub knows prints GitHub's
+greeting (`Hi …! You've successfully authenticated, but GitHub does not
+provide shell access.`) and exits 1, the status GitHub sends, as `ssh` does;
+without a key it is refused authentication as `ssh` refuses it. Without `-T`
+and with stdin not a terminal, burrow prints the line `ssh` prints
+(`Pseudo-terminal will not be allocated because stdin is not a terminal.`)
+and does the same.
+
+At a terminal, with no command, burrow asks for a pseudo-terminal, as `ssh`
+does; `-t` asks for one for a command when stdin is a terminal, `-tt`
+always (`RequestTTY` `auto`, `yes`, `force`; `-T` is `no`). The request
+carries `TERM`, the window's size and the local terminal's modes. While the
+session holds the pty, the local terminal is raw: the remote side echoes and
+edits the line, ^C, ^\ and ^Z reach it as bytes, and each change of the
+window's size is sent on. The terminal is put back as it was found however
+the session ends, and `Connection to HOST closed.` follows, as `ssh` writes
+it. The escape character (`~` unless `-e` or `EscapeChar` say otherwise,
+`none` for none) is read at the start of a line: `~.` ends the connection,
+`~?` lists the escapes, and `~~` sends one `~`. `ssh`'s other escapes are
+refused by name (`escape_unsupported`). A server that refuses the pty gets
+`ssh`'s line for it, and the session goes on without one, except under
+`-tt`, where burrow gives up as `ssh` does. There is no agent or forwarding
+([MAP](docs/MAP.md)).
 
 ## burrowd, the server for commands
 
