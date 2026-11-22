@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The program's version has one source: the package manifest names it, one
 function in src/version/version.lu holds it for the program, the two
-identification strings and `burrowd -V` are built from it. This row fails when they disagree.
+identification strings, `burrowd -V` and `burrow -V` are built from it. This row fails when they disagree.
 
   tools/check-version [--root DIR] [--burrowd BURROWD] [--burrow BURROW]
   tools/check-version --self-test
