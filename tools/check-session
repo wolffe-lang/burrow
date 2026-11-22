@@ -1195,7 +1195,9 @@ def cli_t_refused():
 # the row; a window change is the row setting the pty's size, as a terminal does, and the kernel
 # telling the foreground group. The pty's own settings are read before the client starts and after
 # it ends, so a row can hold the client to leaving the terminal as it found it.
-CLOSED = re.compile(rb"Connection to 127\.0\.0\.1 closed\.\r?\n")
+# ssh writes its closing line after the terminal is back in its own mode, where the line discipline
+# writes the line's LF as CR LF: "closed.\r\r\n" (after `~.`, still raw: "closed.\r\n").
+CLOSED = re.compile(rb"Connection to 127\.0\.0\.1 closed\.\r*\n")
 
 
 def set_winsize(fd, rows, cols):
