@@ -41,9 +41,16 @@ pub fn max_version_line() -> int {
     255
 }
 
+/// The version burrow and burrowd report: the one place the number is
+/// written in the program. `src/wolf.pkg` names the same number and
+/// `tools/check-version` fails when they differ.
+pub fn version() -> str {
+    "0.0.0"
+}
+
 /// burrow's identification string, without CR LF: V_C.
 pub fn client_ident() -> str {
-    "SSH-2.0-burrow_0.0.0"
+    "SSH-2.0-burrow_{version()}"
 }
 
 /// burrow's identification line as sent: V_C then CR LF.
@@ -177,7 +184,7 @@ pub fn parse(line: List[byte]) -> Ident ! refuse.Refusal {
 
 /// burrowd's identification string, without CR LF: its V_S.
 pub fn server_ident() -> str {
-    "SSH-2.0-burrowd_0.0.0"
+    "SSH-2.0-burrowd_{version()}"
 }
 
 /// burrowd's identification line as sent: V_S then CR LF.

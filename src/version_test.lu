@@ -24,8 +24,10 @@ fn parsed(line: str) -> str {
 }
 
 fn main() {
-    assert(version.client_ident() == "SSH-2.0-burrow_0.0.0")
-    assert(wire.hex(version.client_line()) == wire.hex(b("SSH-2.0-burrow_0.0.0\r\n")))
+    let ours = "SSH-2.0-burrow_" + version.version()
+    assert(version.client_ident() == ours)
+    assert(wire.hex(version.client_line()) == wire.hex(b(ours + "\r\n")))
+    assert(version.server_ident() == "SSH-2.0-burrowd_" + version.version())
     // Banner lines before the identification line, CR LF and bare LF.
     let s = version.scan(
         b("hello there\r\nsecond line\nSSH-2.0-OpenSSH_10.0p2\r\n\x00\x00\x01"),

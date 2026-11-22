@@ -31,6 +31,7 @@ use spass
 use ssession
 use transport
 use utmp
+use version
 use wire
 use worker
 
@@ -978,7 +979,7 @@ pub fn run(args: List[str], one_process: bool) -> int {
         return fail(s.refusal, s.detail)
     }
     if s.version {
-        eprint("burrowd_0.0.0, burrow (wolf)")
+        eprint("burrowd_{version.version()}, burrow (wolf)")
         return 0
     }
     let euid = env.euid() else -1
