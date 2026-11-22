@@ -307,7 +307,10 @@ def local_log():
 IDLE_SECONDS = 60
 IDLE_BOUND_KIB = 64
 CONN_COUNT = 300
-CONN_BOUND_KIB = 64
+# Measured against, over 300 logins on macOS (footprint, 16 KiB pages): the fixed listener +16 KiB; the listener
+# rebuilding and copying out its connection table +128 KiB; its passes outside a region +400 KiB.
+# The Linux rows' bound, 32 KiB, holds here too.
+CONN_BOUND_KIB = 32
 
 
 def mem_kib(pid):
