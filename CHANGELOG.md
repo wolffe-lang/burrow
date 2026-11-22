@@ -9,7 +9,7 @@
   of it, started that size. Each pass now runs in a region freed at its end,
   and an ended connection is taken out of the table in place. Rows hold the
   listener's anonymous resident memory, beside the pinned `sshd`'s, to
-  64 KiB over a minute idle and over three hundred logins (`server-idle-rss`,
+  64 KiB over a minute idle and 32 KiB over three hundred logins (`server-idle-rss`,
   `server-conn-rss`; `local-idle-rss` and `local-conn-rss` on macOS, by
   footprint(1)).
 - A session's `XDG_RUNTIME_DIR` is `/run/user/UID` when that is a directory
