@@ -2092,7 +2092,11 @@ def server_idle_rss():
 
 CONN_WARM = 10
 CONN_COUNT = 300
-CONN_BOUND_KIB = 64
+# Measured against, over 300 logins (anonymous memory, Linux, both tiers): the fixed listener +12 KiB in five
+# readings (two development takes, the record's two tiers, a plant record); the same listener rebuilding and
+# copying out its connection table +60 KiB (one plant record); the listener before the fix +584 to +588 KiB. A
+# bound of 64 KiB let the table's growth pass, so it is 32.
+CONN_BOUND_KIB = 32
 
 
 @row
