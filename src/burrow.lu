@@ -254,6 +254,12 @@ fn run(s: config.Settings, pty: bool) -> int {
             255
         }
         session.restore(mut tty)
+        // The closing line ssh writes after a session that asked for a
+        // pty, once the terminal is back in its own mode (its LF there
+        // reaches the screen as CR LF); `~.` wrote its own.
+        if ok && pty && !tty.closed {
+            eprint("Connection to {s.hostname} closed.\r")
+        }
     }
     if !ok {
         if why != "closed" && why != "timeout" && why != "io" && why != "disconnected" {
