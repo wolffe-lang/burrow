@@ -17,8 +17,9 @@
   `Connection to HOST closed.` follows. The escape character (`-e`,
   `EscapeChar`, `~` by default) at a line's start: `~.` disconnects, `~?`
   lists, `~~` sends one; `ssh`'s other escapes are refused by name. A
-  refused pty is `ssh`'s line and the session goes on, except under `-tt`,
-  where burrow gives up with 255 as `ssh` does. The refusal
+  refused pty is `ssh`'s line; where `-t`, `-tt` or `RequestTTY` asked
+  for it, burrow gives up with 255 as `ssh` does, and a login shell that
+  asked by default goes on without one. The refusal
   `pty_unsupported` is gone. Rows: `tools/check-session` holds burrow to the
   pinned `ssh` from the same terminal (the `tty-*`, `esc-*` and
   `pty-req-bytes` rows); `tools/check-server-local` holds it to fixed facts
