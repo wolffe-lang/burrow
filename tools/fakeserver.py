@@ -118,9 +118,13 @@ class FakeServer:
     `stage="auth"`, right after SERVICE_ACCEPT). `with_success` (payloads)
     go out in the same write as the exec's CHANNEL_SUCCESS (px112)."""
 
-    def __init__(self, script, stage="session", window=2097152, maxpkt=32768, shell="accept", with_success=()):
+    def __init__(self, script, stage="session", window=2097152, maxpkt=32768, shell="accept", with_success=(),
+                 pty="accept"):
         self.script, self.stage, self.window, self.maxpkt = script, stage, window, maxpkt
         self.shell = shell
+        # B8: a `pty-req` is recorded whole (event "pty-req": TERM, the four sizes, the encoded modes) and
+        # answered CHANNEL_SUCCESS, or CHANNEL_FAILURE with `pty="refuse"`, when a reply is wanted.
+        self.pty = pty
         self.with_success = list(with_success)
         self.seed = os.urandom(32)
         self.host_pub = v.ed25519_public(self.seed)
@@ -193,7 +197,13 @@ class FakeServer:
             if p[0] != 50:
                 raise ValueError(f"message {p[0]} in authentication")
             r = Reader(p[1:])
-            r.string(), r.string(), r.string()
+            r.string(), r.string()
+            method = r.string()
+            if method != b"publickey":
+                # B8: a client that asks `none` first (the pinned ssh does) is told the one method.
+                self.event("method", method.decode())
+                w.send(bytes([51]) + string(b"publickey") + b"\x00")
+                continue
             signed = r.boolean()
             alg, blob = r.string(), r.string()
             if not signed:
@@ -220,6 +230,12 @@ class FakeServer:
                     self.event("command", r.string().decode())
                     w.s.sendall(b"".join(w.encode(m) for m in [bytes([99]) + u32(self.client_channel)] + self.with_success))
                     break
+                if kind == b"pty-req":
+                    term, cols, rows, wpx, hpx, modes = r.string(), r.u32(), r.u32(), r.u32(), r.u32(), r.string()
+                    self.event("pty-req", term.decode("latin-1"), cols, rows, wpx, hpx, modes)
+                    if want:
+                        w.send(bytes([100 if self.pty == "refuse" else 99]) + u32(self.client_channel))
+                    continue
                 if kind == b"shell":
                     # RFC 4254 §6.5; `shell="refuse"` answers CHANNEL_FAILURE.
                     w.send(bytes([100 if self.shell == "refuse" else 99]) + u32(self.client_channel))
