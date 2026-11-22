@@ -204,9 +204,10 @@ named `channel_open_refused` in a debug line; the session goes on. An escape
 `ssh` has and burrow does not (`~B`, `~R`, `~V`, `~v`, `~^Z`, `~#`, `~&`,
 `~C`) is named `escape_unsupported` on the terminal, sends nothing, and the
 session goes on. A pty the server refuses is `ssh`'s line, `PTY allocation
-request failed on channel 0`; the session goes on without one, except under
-`-tt`, where burrow ends with 255 before asking for the command, as `ssh`
-does.
+request failed on channel 0`. Where `-t`, `-tt` or `RequestTTY` `yes` or
+`force` asked for it, burrow ends with 255 before asking for the command, as
+`ssh` does (`tty-refused`); a login shell that asked by default (`auto`)
+goes on without one.
 
 `burrow-keygen` refuses by name too, exiting 1 as `ssh-keygen` does:
 `exists` (it never overwrites), `type_unsupported`, `passphrase_unsupported`,
