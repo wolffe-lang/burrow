@@ -208,6 +208,13 @@ fn main() {
     assert(refused(["-e", "^1", "h"], "", "option_unsupported", ""))
     assert(refused(["-e"], "", "usage", "option requires an argument -- e"))
     assert(refused(["h"], "Host *\n  EscapeChar xy\n", "config_unsupported", ""))
+    // ObscureKeystrokeTiming: a 20 ms interval by default, yes, no, interval:N.
+    assert(ready(["h"], "").obscure_ms == 20)
+    assert(ready(["-o", "ObscureKeystrokeTiming=no", "h"], "").obscure_ms == 0)
+    assert(ready(["-o", "ObscureKeystrokeTiming=yes", "h"], "").obscure_ms == 20)
+    assert(ready(["h"], "Host *\n  ObscureKeystrokeTiming interval:80\n").obscure_ms == 80)
+    assert(refused(["-o", "ObscureKeystrokeTiming=sometimes", "h"], "", "option_unsupported", ""))
+    assert(refused(["-o", "ObscureKeystrokeTiming=interval:0", "h"], "", "option_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
     assert(
@@ -249,6 +256,6 @@ fn main() {
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
     print(
-        "config: den's argv shapes, ssh's flags, -t and RequestTTY, the escape character, Host and Match host, the global known_hosts, 23 refusals",
+        "config: den's argv shapes, ssh's flags, -t and RequestTTY, the escape character, ObscureKeystrokeTiming, Host and Match host, the global known_hosts, 25 refusals",
     )
 }

@@ -14,7 +14,7 @@
 //! **Keywords**, from `-o` and the config file alike: `BatchMode`,
 //! `ClearAllForwardings`, `ConnectTimeout`, `ControlMaster` (`no` only), `EscapeChar`,
 //! `ControlPath` (`none` only), `GlobalKnownHostsFile`, `HashKnownHosts`,
-//! `HostKeyAlias`, `Hostname`, `IdentitiesOnly`, `IdentityFile`, `Port`, `RekeyLimit`,
+//! `HostKeyAlias`, `Hostname`, `IdentitiesOnly`, `IdentityFile`, `ObscureKeystrokeTiming`, `Port`, `RekeyLimit`,
 //! `RequestTTY`, `SendEnv`, `SetEnv`, `StrictHostKeyChecking`, `UpdateHostKeys` (`no`
 //! only), `User`, `UserKnownHostsFile`. burrow has no agent, never prompts
 //! and never forwards, so `BatchMode`, `IdentitiesOnly` and
@@ -66,6 +66,7 @@ pub struct Settings {
     no_tty: bool,
     request_tty: str,
     escape: int,
+    obscure_ms: int,
     strict: str,
     hash_known: bool,
     key_alias: str,
@@ -220,6 +221,7 @@ pub fn empty() -> Settings {
         no_tty: false,
         request_tty: "",
         escape: 126,
+        obscure_ms: 20,
         strict: "",
         hash_known: false,
         key_alias: "",
@@ -536,6 +538,31 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             return
         }
         s.escape = e
+    } else if k == "obscurekeystroketiming" {
+        // ssh_config(5): yes, no, or interval:MILLISECONDS; a 20 ms
+        // interval by default.
+        let l = v.lower()
+        var ms = -1
+        if l == "yes" {
+            ms = 20
+        } else if l == "no" {
+            ms = 0
+        } else if l.starts_with("interval:") {
+            ms = l[9..l.len].to_int() else -1
+            if ms < 1 || ms > 1000 {
+                ms = -1
+            }
+        }
+        if ms < 0 {
+            refuse_as(
+                mut s,
+                refusal,
+                "",
+                "ObscureKeystrokeTiming {v}: yes, no, or interval: and 1 to 1000 milliseconds",
+            )
+            return
+        }
+        s.obscure_ms = ms
     } else if k == "requesttty" {
         let l = v.lower()
         if l != "no" && l != "yes" && l != "force" && l != "auto" {
