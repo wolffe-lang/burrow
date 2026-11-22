@@ -38,7 +38,8 @@
   listener's anonymous resident memory, beside the pinned `sshd`'s, to
   64 KiB over a minute idle and 32 KiB over three hundred logins (`server-idle-rss`,
   `server-conn-rss`; `local-idle-rss` and `local-conn-rss` on macOS, by
-  footprint(1), whose 16 KiB pages give the login row 64 KiB there).
+  footprint(1), whose 16 KiB pages give the login row 80 KiB there: the largest
+  reading so far plus two pages).
 - A session's `XDG_RUNTIME_DIR` is `/run/user/UID` when that is a directory
   (not a link) owned by the account with mode 0700, and unset otherwise
   (burrow#27), as PAX's console login sets it, so a program that keeps a
