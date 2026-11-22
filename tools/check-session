@@ -1487,6 +1487,64 @@ def tty_ctrl_z():
     return "stopped, resumed, interrupted, exit 5, as ssh"
 
 
+
+def esc_row(name, args, typed, what, keep_closed=False):
+    d = run_dir(name)
+    with Server(d) as s:
+        got = term_both(d, s, args + ["127.0.0.1", "echo ready; cat; echo end"], steps=[(b"ready", type_(typed, 0.5))])
+    ts = term_same(d, got, what, keep_closed=keep_closed)
+    return d, got, ts
+
+
+@row
+def esc_dot():
+    """`~.` after a newline ends the connection, as ssh ends it."""
+    d, got, ts = esc_row("esc-dot", ["-t"], b"\r~.", "~. after a newline", keep_closed=True)
+    check(got["ssh"][0] == 255, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return "exit 255, as ssh"
+
+
+@row
+def esc_tilde():
+    """`~~` after a newline sends one `~`."""
+    d, got, ts = esc_row("esc-tilde", ["-t"], b"\r~~x\r\x04", "~~ after a newline")
+    check(b"~x" in ts and got["ssh"][0] == 0, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return "one ~ sent, as ssh"
+
+
+@row
+def esc_midline():
+    """A `~` that does not follow a newline is data: `a~.b` reaches the remote program."""
+    d, got, ts = esc_row("esc-midline", ["-t"], b"a~.b\r\x04", "a ~ mid-line")
+    check(b"a~.b" in ts and got["ssh"][0] == 0, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return "a~.b reached the remote side, as ssh"
+
+
+@row
+def esc_none():
+    """`-e none`: `~.` after a newline is data."""
+    d, got, ts = esc_row("esc-none", ["-e", "none", "-t"], b"\r~.\r\x04", "-e none")
+    check(b"~." in ts and got["ssh"][0] == 0, f"harness: ssh exit {got['ssh'][0]}, transcript {ts!r}")
+    return "~. reached the remote side, as ssh"
+
+
+@row
+def esc_help():
+    """`~?` lists the escapes: each line burrow prints for it is one of ssh's, and burrow lists ~., ~~ and ~?."""
+    d = run_dir("esc-help")
+    with Server(d) as s:
+        got = term_both(d, s, ["-t", "127.0.0.1", "echo ready; sleep 30"],
+                        steps=[(b"ready", type_(b"\r~?", 0.5)), (b"~?", type_(b"\r~.", 0.5))])
+    listed = {who: [l.strip() for l in lines(tnorm(got[who][1])) if re.match(r"^\s*~", l)] for who in got}
+    compare(d, f"ssh lists {listed['ssh']}\nburrow lists {listed['burrow']}\n")
+    check(listed["ssh"], f"harness: ssh's ~? printed no escape lines: {got['ssh'][1][-300:]!r}")
+    check(listed["burrow"] and set(listed["burrow"]) <= set(listed["ssh"]),
+          f"burrow's ~? lines {listed['burrow']} are not all ssh's {listed['ssh']}")
+    for e in ("~.", "~~", "~?"):
+        check(any(l.startswith(e) for l in listed["burrow"]), f"burrow's ~? does not list {e}: {listed['burrow']}")
+    return f"burrow lists {len(listed['burrow'])} of ssh's {len(listed['ssh'])} escapes"
+
+
 def keep_evidence(tier):
     out = ROOT / "target" / "evidence" / f"session-{tier}"
     if out.exists():
