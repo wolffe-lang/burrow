@@ -171,11 +171,30 @@ fn main() {
     assert(refused(["-Z", "h", "x"], "", "option_unknown", "unknown option -- Z"))
     // No strict-kex waiver on any tier: B1's flag is an unknown option.
     assert(refused(["--no-strict-kex", "h", "x"], "", "option_unknown", "unknown option -- -"))
-    assert(refused(["-t", "h", "x"], "", "option_unsupported", ""))
-    assert(refused(["-t", "h"], "", "option_unsupported", ""))
-    // No pty before B7: RequestTTY is refused by name, whatever its value.
-    assert(refused(["-o", "RequestTTY=no", "h"], "", "option_unsupported", ""))
-    assert(refused(["h"], "Host *\n  RequestTTY yes\n", "config_unsupported", ""))
+    // A pseudo-terminal (B8): -t, -tt and -T, then RequestTTY (-o first,
+    // then the file); a flag wins over both, the last flag over the others.
+    assert(config.tty_request(ready(["h", "x"], "")) == "auto")
+    assert(config.tty_request(ready(["-t", "h", "x"], "")) == "yes")
+    assert(config.tty_request(ready(["-tt", "h"], "")) == "force")
+    assert(config.tty_request(ready(["-t", "-t", "h"], "")) == "force")
+    assert(config.tty_request(ready(["-T", "h"], "")) == "no")
+    assert(config.tty_request(ready(["-Tt", "h"], "")) == "yes")
+    assert(config.tty_request(ready(["-tT", "h"], "")) == "no")
+    assert(config.tty_request(ready(["-o", "RequestTTY=Force", "h"], "")) == "force")
+    assert(config.tty_request(ready(["h"], "Host *\n  RequestTTY yes\n")) == "yes")
+    let rt = ready(["-o", "RequestTTY=no", "h"], "Host *\n  RequestTTY yes\n")
+    assert(config.tty_request(rt) == "no")
+    assert(config.tty_request(ready(["-o", "RequestTTY=no", "-t", "h"], "")) == "yes")
+    assert(config.tty_request(ready(["-t", "-o", "RequestTTY=no", "h"], "")) == "yes")
+    assert(
+        refused(
+            ["-o", "RequestTTY=maybe", "h"],
+            "",
+            "option_unsupported",
+            "command-line line 0: unsupported option \"maybe\".",
+        ),
+    )
+    assert(refused(["h"], "Host *\n  RequestTTY sometimes\n", "config_unsupported", ""))
     assert(refused(["-p"], "", "usage", "option requires an argument -- p"))
     assert(refused([], "", "usage", "usage: "))
     assert(
@@ -217,6 +236,6 @@ fn main() {
     // A keyword burrow lacks in a block that does not apply is not read.
     assert(ready(["h.test", "x"], "Host other\n  ForwardAgent yes\n").refusal == "")
     print(
-        "config: den's argv shapes, ssh's flags, Host and Match host, the global known_hosts, 21 refusals",
+        "config: den's argv shapes, ssh's flags, -t and RequestTTY, Host and Match host, the global known_hosts, 19 refusals",
     )
 }
