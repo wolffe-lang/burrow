@@ -177,7 +177,7 @@ the reason code below when the connection can still carry one, and exits 255.
 | `host_key_unsupported` | a host key or signature that is not `ssh-ed25519` | 3 |
 | `host_key_bad_signature` | the server's signature on H does not verify | 3 |
 | `host_key_unknown` | no known_hosts entry, in the user's files or the system's, names this host with an `ssh-ed25519` key | 9 |
-| `host_key_changed` | an `ssh-ed25519` entry for this host holds another key, a `@revoked` line names this key, or the key changes in a re-exchange | 9 |
+| `host_key_changed` | an `ssh-ed25519` entry for this host holds another key (the banner names it, `Offending ED25519 key in FILE:LINE`: the last such line read, the user's files before the system's), a `@revoked` line names this key, or the key changes in a re-exchange | 9 |
 | `known_hosts_unreadable` | a known_hosts file exists and cannot be read | 9 |
 | `service_refused`, `auth_refused` | the server does not accept the service, or the rows' `none` login | 7, 14 |
 | `entropy_unavailable` | `/dev/urandom` cannot be read | 11 |
