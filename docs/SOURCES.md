@@ -383,6 +383,17 @@ command with stderr a pipe: the three warning lines it prints, and none under `-
 `ssh_config(5)` as installed with it: `WarnWeakCrypto`. The pinned 10.0p2's `ssh_config.5` (digest above) has no
 such keyword. No `.c` or `.h` file was opened.
 
+## The changed-key banner, line endings, and later config lines
+
+The pinned `ssh` as a black box, in the oracle container, through two probes that load `tools/check-session` for
+its `sshd`, keys and system file: the changed-key banner for another key in the user's file (on line 1, on line 3,
+on lines 2 and 4), in the system file, in both, hashed, under `accept-new` and `StrictHostKeyChecking=no` (one
+`Offending ED25519 key in FILE:LINE` line, naming the last such line read, the user's files read before the
+system's; no hint follows); and each of its own lines with stderr a pipe and a file (connect refused and timed out,
+the banner timeout, the host-key lines and banners, `Permission denied`, the pseudo-terminal line: CR LF on both,
+but for the fingerprint's lead-in, which ends in LF). The pinned `sshd -t` as a black box on files whose second line
+of a keyword is malformed, and on the same files with a well-formed second line. No `.c` or `.h` file was opened.
+
 ## Login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
