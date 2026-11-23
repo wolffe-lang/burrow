@@ -362,6 +362,19 @@ five runs each of the default, `no` and `interval:80`: a 36-byte packet every 20
 goes at once, PINGs of the same size on ticks with no key, for 1.3 to 3.1 s after the last; with `no`, each key at
 once and nothing after. No `.c` or `.h` file was opened, of OpenSSH or any other client or terminal program.
 
+## The client's version line, and the release path
+
+`ssh(1)` from the same signed `openssh-10.0p2.tar.gz` (`ssh.1`
+`a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea`, unchanged): `-V`, "Display the version number
+and exit". What the pinned `ssh -V` prints was measured as a black box, in the oracle container, through
+`tools/check-session`'s `cli-version`: one line on stderr, nothing on stdout, exit 0, alone and with a destination
+nothing listens on after it.
+
+Organisation code: the formula repository's (wolffe-lang/homebrew-wolf) shared release workflows
+(`tool-release.yml`, `tool-public-smoke.yml`) and its `tools/tool-release` and `tools/release-adapter`, at the
+pinned commit `183a4e18e63bb1f21cd41a74ff63cb848bc89094`, and the other wolf tools' callers of them, read as the
+release path's documentation. No `.c` or `.h` file was opened, of OpenSSH or any other client.
+
 ## px133: login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
