@@ -8,7 +8,7 @@ macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX, and (B7) a terminal for an interactive session, each program in a session of its own. **B4, den over burrow:** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX, and (bw06) a terminal for an interactive session, each program in a session of its own. **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
