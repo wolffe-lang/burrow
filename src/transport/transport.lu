@@ -463,6 +463,9 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
         (mut files).push(g)
     }
     var text = ""
+    // The pinned ssh's `Offending ED25519 key in FILE:LINE`: the last line
+    // read that names the host with another key, the user's files first.
+    var offending = ""
     var i = 0
     while i < files.len {
         let path = files[i]
@@ -473,6 +476,10 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
             }
             text += t
             text += "\n"
+            let at = hostkey.offending(t, name, k_s)
+            if at > 0 {
+                offending = "{path}:{at}"
+            }
         }
         i += 1
     }
@@ -506,7 +513,7 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
         return
     }
     if verdict == "host_key_changed" {
-        changed_banner(fp, c.opts.known_hosts)
+        changed_banner(fp, c.opts.known_hosts, offending)
         if c.opts.strict == "no" {
             eprint("Password authentication is disabled to avoid man-in-the-middle attacks.")
             eprint(
@@ -531,8 +538,9 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
     }
 }
 
-// The pinned ssh's warning for a changed host key, line for line.
-fn changed_banner(fp: str, files: List[str]) {
+// The pinned ssh's warning for a changed host key, line for line, with the
+// line that holds the other key (`offending`, FILE:LINE) where it names it.
+fn changed_banner(fp: str, files: List[str], offending: str) {
     eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
     eprint("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @")
     eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
@@ -544,6 +552,9 @@ fn changed_banner(fp: str, files: List[str]) {
     eprint("Please contact your system administrator.")
     if files.len > 0 {
         eprint("Add correct host key in {files[0]} to get rid of this message.")
+    }
+    if offending != "" {
+        eprint("Offending ED25519 key in {offending}")
     }
 }
 
