@@ -365,6 +365,7 @@ Three black-box findings shape B1:
 | `tools/check-live` | the live push and clone-back through both clients, from `BURROW_LIVE_SSH_URL` and `BURROW_LIVE_SSH_KEY` alone, redacted, its work files removed when it ends; `--self-test` against a loopback `sshd` |
 | `tools/check-static` | the static binaries: no interpreter, no dynamic section, their digests; den rows through the static `burrow` |
 | `tools/check-release` | the draft release path with no upload: the workflows' one pinned commit of the shared release workflow, its smoke job's draft read, the rehearsal's read-only wiring, the pinned adapter's check, this host's archive built and packed twice, and the clean smoke |
+| `tools/check-public-text` | the documents (README, CHANGELOG, `docs/`) hold no internal work-item id: a token's shape, with the names and paths it allows by list; `--self-test` first |
 | `tools/measure-den` | den's clone of a fixed fixture through release burrow against through the pinned `ssh`, interleaved: CPU held to 2x, wall reported |
 | `tools/serverlib.py` | burrowd and the pinned `sshd` side by side: one host key, one account, one `authorized_keys`, a known_hosts naming both |
 | `tools/check-server` | burrowd held to the pinned `sshd` through the pinned `ssh`: the transport, the host key, authentication, the session, the limits, the log and the processes' users |
