@@ -206,8 +206,8 @@ address, filed as
 and `std/os/users`. On linux the client's address comes from
 `/proc/net/tcp` and `tcp6` (their format measured from the files
 themselves, in the pinned container) until that call exists. PAX at its trunk, for what B6 needs:
-its kernel README and the notes of the lanes that added set-ID,
-credentials and its init.
+its kernel README and the notes on its set-ID,
+credentials and init.
 
 ## Passwords from /etc/shadow (for B6)
 
