@@ -281,10 +281,14 @@ pub fn apply(mut s: Settings, keyword: str, value: str, origin: str) {
     }
     let accumulates = k == "listenaddress" || k == "acceptenv"
     if !accumulates && given(s, k) {
-        // px116: a later SetEnv line counts for nothing, but a malformed one
-        // is refused, as the pinned sshd refuses it (measured).
-        if k == "setenv" {
-            set_env(mut s, value, origin, false)
+        // A later line counts for nothing, but its value is checked as a
+        // first line's is: the pinned sshd refuses a malformed one wherever
+        // it is (measured, burrow#22). The check runs on fresh settings, so
+        // nothing of the later value is kept but its refusal.
+        var probe = defaults()
+        apply(mut probe, keyword, value, origin)
+        if probe.refusal != "" {
+            refuse(mut s, probe.refusal, probe.detail)
         }
         return
     }
