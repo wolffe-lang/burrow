@@ -283,7 +283,8 @@ tools/gate                            # the whole gauntlet, in the container
 `END … exit=N`, stopping at the first that fails: the toolchain and oracle
 digests, the CI planner's tests, the vectors (`tools/vectorgen.py`
 regenerates `src/kexvec` byte for byte from the RFCs, `tools/nistvec.py`
-`src/sha1vec` from NIST's vectors), formatting, both compiler tiers, the
+`src/sha1vec` from NIST's vectors), that the documents name no internal
+work-item id (`tools/check-public-text`), formatting, both compiler tiers, the
 version each program prints, the release path's dry run
 (`tools/check-release --dry`, below), the unit rows, the transport, session and hostile-peer rows on both tiers, the
 server's rows and its hostile-client rows on both tiers, git through
