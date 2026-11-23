@@ -209,7 +209,7 @@ themselves, in the pinned container) until that call exists. PAX at its trunk, f
 its kernel README and the notes of the lanes that added set-ID,
 credentials and its init.
 
-## px112: passwords from /etc/shadow (for B6)
+## Passwords from /etc/shadow (for B6)
 
 RFC 4252, the same text as above (its sha256 unchanged), read again: §5 and
 §5.1 (the methods list a FAILURE carries) and §8, the `password` method:
@@ -257,7 +257,7 @@ string past PAX's cost where burrowd refuses both by name. No `.c` or `.h`
 file was opened, of OpenSSH or any other server.
 
 
-## px112: a shell with no pty (for the next PAX stick)
+## A shell with no pty (for the next PAX stick)
 
 RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`,
 read twice), from the server's side: §6.5's `shell` ("the user's default shell (typically
@@ -277,14 +277,14 @@ shell request, and what the pinned `ssh` prints at a terminal when the pty is re
 from the pinned `sshd` and `ssh` (tools/check-server's `session-shell`, `auth-forced-shell` and
 `session-shell-pty`), black-box.
 
-## px112: one packet a turn
+## One packet a turn
 
 `ssh_config(5)`, the same page and digest as above: `ObscureKeystrokeTiming` (on by default: in a session that asked
 for a pty, keystrokes sent at fixed intervals and fake packets for a while after typing stops). `PROTOCOL` §1.9, as
 read for B1: `ping@openssh.com`, PING answered with PONG. The fake packets' kind, a PING every 20 ms, was measured
 black box: a packet capture of the pinned client against burrowd, and the client with the option on and off.
 
-## px116: SetEnv
+## SetEnv
 
 The man pages, from the same signed `openssh-10.0p2.tar.gz`, the same digests as above (`sshd_config.5`
 `9f499c39e00e92f05621c0b259f4d0b05d1cedf34b376fde31fa2787a0d1978c`, `sshd.8`
@@ -305,7 +305,7 @@ on the first line and on a later one), and `env` in a session with the line (the
 `config-setenv`, `session-setenv` and `session-setenv-forced` hold burrowd to those answers. No `.c` or `.h`
 file was opened.
 
-## bw06: a terminal for burrowd's sessions
+## A terminal for burrowd's sessions
 
 RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`): §6.2
 `pty-req`, §6.7 `window-change`, §6.9 signals again, §6.10 again, §8 the encoded terminal modes.
@@ -333,7 +333,7 @@ with and without SIGHUP ignored, 20000 lines before the end, the client's end of
 `pty,restrict`, and `PermitTTY no`; `sshd`'s own debug log beside them. No `.c` or `.h` file was opened, of
 OpenSSH or any other server or terminal program.
 
-## bw08: the interactive client (B8)
+## The interactive client (B8)
 
 RFC 4254, the same text (sha256 `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f`), from the
 client's side: §6.2 `pty-req`, §6.7 `window-change`, §8 the encoded terminal modes. RFC 8160, the same text, §3.
@@ -375,7 +375,7 @@ Organisation code: the formula repository's (wolffe-lang/homebrew-wolf) shared r
 pinned commit `183a4e18e63bb1f21cd41a74ff63cb848bc89094`, and the other wolf tools' callers of them, read as the
 release path's documentation. No `.c` or `.h` file was opened, of OpenSSH or any other client.
 
-## px133: login records
+## Login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
 utmp's slots by `ut_id`, a logout in wtmp as DEAD_PROCESS with no user. OpenSSH's `sshd` as a black box: 9.6p1
