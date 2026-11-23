@@ -16,7 +16,7 @@ on 2026-11-05; the digest is of the text file as fetched.
 | RFC 4251, SSH Architecture | `23a5052796d29edc2f0ff4f5be557df244544d129cfc26ed51971a6485eff4ef` | §5 data types (byte, boolean, uint32, uint64, string, mpint, name-list, with §5's examples), §6 algorithm naming |
 | RFC 4252, SSH Authentication | `a36b882cf77b107335d49921b5e955b4ba78e253205dfbce5096ebc0e78bdf14` | §5, §5.1 and §5.2: the request format and the `none` method the rekey rows log in with; B2: §5.1 FAILURE's list and partial success, §5.3, §5.4 the banner, §6 numbers, §7 `publickey` (the query, PK_OK, the signed data and request) |
 | RFC 4253, SSH Transport Layer | `b471173305154f6c66facffcf7a4a25fc5c32765cb30542120be6c20a88f1ed3` | §4.2 version exchange, §5.1 the 1.99 version, §6 and §6.1 the binary packet protocol, §6.4 sequence numbers, §7 and §7.1 negotiation and first_kex_packet_follows, §7.2 key derivation, §7.3 NEWKEYS, §8 the exchange hash, §9 re-exchange, §10 service request, §11 DISCONNECT, IGNORE, DEBUG, UNIMPLEMENTED, §12 message numbers |
-| RFC 4254, SSH Connection | `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f` | §4 global requests; B3: §5.1 to §5.4 (open, windows, data and extended data, EOF and CLOSE, requests), §6.1 sessions, §6.3.2 x11 opens, §6.4 `env`, §6.5 `exec`, §6.9 signals, §6.10 `exit-status` and `exit-signal`; bw03b: §6.5 `shell` |
+| RFC 4254, SSH Connection | `bfc727e9350067eaa49edeecc3d32f1e3518dd57cf3c36ceed02177156c5703f` | §4 global requests; B3: §5.1 to §5.4 (open, windows, data and extended data, EOF and CLOSE, requests), §6.1 sessions, §6.3.2 x11 opens, §6.4 `env`, §6.5 `exec`, §6.9 signals, §6.10 `exit-status` and `exit-signal`; later: §6.5 `shell` |
 | RFC 4256, keyboard-interactive | `000091bd78ea7a4c71e2c0bd2c20998f0d0d775c71160b0f6c18fbe12d5a1233` | fetched; not needed by B1 |
 | RFC 4344, SSH Transport Encryption Modes | `be7136101f41619175421f0343866bd9a4eee0b32b74a29f29e8fd26e7ef01ce` | §3 rekeying: §3.1 the 2^32-packet bound (2^31 on receipt), §3.2 the block bound |
 | RFC 4419, DH group exchange | `20b76eff3be0c2311636e03604b1ddb9d5368fadd75a39c0c831fa7e04da0ad6` | fetched for reading; burrow refuses its method names |
@@ -91,10 +91,10 @@ first), and nothing else from it:
 
 | page | sha256 | read |
 |---|---|---|
-| `ssh.1` | `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea` | SYNOPSIS, DESCRIPTION (the destination forms, the command joined by spaces), `-F -i -l -o -p -T -v`, EXIT STATUS; bw03b: `-t`, AUTHENTICATION's known hosts paragraph and its no-command, pty and transparent-session paragraphs, FILES (`/etc/ssh/ssh_known_hosts`) |
+| `ssh.1` | `a9626bad0a33076acd1549d9bf3d8d2c0034004f5447cea57cf96f13375548ea` | SYNOPSIS, DESCRIPTION (the destination forms, the command joined by spaces), `-F -i -l -o -p -T -v`, EXIT STATUS; later: `-t`, AUTHENTICATION's known hosts paragraph and its no-command, pty and transparent-session paragraphs, FILES (`/etc/ssh/ssh_known_hosts`) |
 | `ssh-keygen.1` | `d4053a38a1616d22eb6ea875696029c0ea1351b4d9218b94c48830c3eb206bf7` | DESCRIPTION, `-C -f -H -l -N -q -t -y`, FILES |
-| `ssh_config.5` | `5b196bcd9b4f49f94ee903fede196e02035521fb21f9060a51030d1fd2d4eb34` | DESCRIPTION (first value wins), `Host`, `Match`, PATTERNS, the keyword list, and the entries of every keyword burrow takes; bw03b: `GlobalKnownHostsFile`, `RequestTTY` |
-| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` | SSH_KNOWN_HOSTS FILE FORMAT (for bw03b, again: a match in either file is accepted); for B4, AUTHORIZED_KEYS FILE FORMAT's `command="command"` (`SSH_ORIGINAL_COMMAND`) and LOGIN PROCESS |
+| `ssh_config.5` | `5b196bcd9b4f49f94ee903fede196e02035521fb21f9060a51030d1fd2d4eb34` | DESCRIPTION (first value wins), `Host`, `Match`, PATTERNS, the keyword list, and the entries of every keyword burrow takes; later: `GlobalKnownHostsFile`, `RequestTTY` |
+| `sshd.8` | `effa773e96d537f09df9ff54925a4d6f5cf7193b1e8667898f77f96290992e9c` | SSH_KNOWN_HOSTS FILE FORMAT (read again later: a match in either file is accepted); for B4, AUTHORIZED_KEYS FILE FORMAT's `command="command"` (`SSH_ORIGINAL_COMMAND`) and LOGIN PROCESS |
 
 ## The oracle, as a black box
 
@@ -147,7 +147,7 @@ wrappers), `den-oracle.toml`, README's "Wire protocols and transport
 bounds", MAP's "SSH protocol boundary" and `notes/vc16-the-wire-porcelain.md`.
 den's git is used only as its pinned binary, a black box (no git source or
 documentation was needed). The destination forms and first-value-wins are
-`ssh(1)` and `ssh_config(5)` as bw02 read them; nothing new was read there.
+`ssh(1)` and `ssh_config(5)` as read for B2 and B3; nothing new was read there.
 
 den moved to `ac2332b` (den#65, which sends a plain ssh program word bare).
 Read there, as the consumer's: `src/transport/ssh.lu` (`ssh_program`,
@@ -237,17 +237,17 @@ field 3's `0`; the maximum age; the inactivity period after which "no login
 is possible for the user"; the account's expiry. A manual page, read as
 documentation; no shadow-utils source.
 
-crypt(5)'s `$7$` as wolf-std's sc80 reads it (`std/x/crypto/passwd`'s
+crypt(5)'s `$7$` as wolf-std reads it (`std/x/crypto/passwd`'s
 header). The unit vector `src/spass_test.lu` checks, and the equal-work
 string in `src/spass`, were made by Ubuntu 24.04's crypt (libxcrypt
 4.4.36, through python3's `crypt` module in the pinned image) run as a
 black box.
 
-Organisation code: wolf-std at `2411d868` (the std pin since px112):
+Organisation code: wolf-std at `2411d868` (the std pin since burrowd's passwords):
 `std/x/crypto/passwd` (`parse`, `verify_capped`, `hash`, `gen_salt`,
 `cost`) and `std/x/crypto/scrypt` (`memory`). PAX at its trunk: its
 `user/auth` (the `$7$` cost it ships, the cap, `/etc/shadow`'s rules) and
-the px106 note, for the strings burrowd is given there.
+its note on them, for the strings burrowd is given there.
 
 The pinned `sshd` as a black box, beside burrowd in every password row: the
 lines the pinned `ssh` prints for a wrong password, root, a locked or
@@ -319,10 +319,10 @@ PROCESS and AUTHORIZED_KEYS FILE FORMAT (`no-pty`, `pty`, `restrict`), `sshd_con
 `PrintMotd` and `PrintLastLog`, and `ssh(1)`'s `-t` and `-T`. POSIX's General Terminal Interface, `setsid`,
 `posix_openpt`, `grantpt`, `unlockpt` and `ptsname`, for the design only.
 
-Organisation code: wolf-std's sc81 (`std/term`'s `open_pty`, `pty_name`, `set_size`, `attr`, `set_attr`,
-`open_controlling`; `std/process`'s `lead_session`; its note `docs/sc81-sessions-and-ptys.md`) and wolf-lang's
-s290 note and spec text (`os_setsid`), each read as the toolchain's documentation; PAX's pty branch px111's
-note, for what PAX's kernel serves.
+Organisation code: wolf-std's sessions and ptys (`std/term`'s `open_pty`, `pty_name`, `set_size`, `attr`,
+`set_attr`, `open_controlling`; `std/process`'s `lead_session`; its note `docs/sc81-sessions-and-ptys.md`) and
+wolf-lang's note and spec text on `os_setsid`, each read as the toolchain's documentation; the note on PAX's pty
+branch, for what PAX's kernel serves.
 
 The pinned `ssh` and `sshd` as black boxes, in the oracle container (`notes/bw06/probe/sshd_pty.py`,
 `sshd_pty_hold.py`; their output in `notes/bw06/evidence/linux-probes.log`): `ssh -tt` with and without TERM,
@@ -355,7 +355,7 @@ the session leader of a pty of the row's own, against the pinned `sshd`, the tra
 `pty-req` a scripted server records, from the same terminal, for the modes and their order; the closing line written
 after the terminal is restored, `closed.\r\r\n`, and after `~.` while still raw, `closed.\r\n`), and `~?`'s
 lines, of which burrow prints the ones for the escapes it takes.
-bw06's probes, for `-tt` when the pty is refused (`PTY allocation request failed on channel 0`, 255, the command
+The probes for burrowd's terminal (above), for `-tt` when the pty is refused (`PTY allocation request failed on channel 0`, 255, the command
 never run), and `tty-refused` for `-t`, `-tt`, `-t` with no command and a login shell by default. The pinned
 `ssh`'s keystroke timing, through a relay that timestamps every chunk the client writes, ten keys at fixed gaps,
 five runs each of the default, `no` and `interval:80`: a 36-byte packet every 20 ms (or 80) from the first key, which
