@@ -391,7 +391,9 @@ on lines 2 and 4), in the system file, in both, hashed, under `accept-new` and `
 `Offending ED25519 key in FILE:LINE` line, naming the last such line read, the user's files read before the
 system's; no hint follows); and each of its own lines with stderr a pipe and a file (connect refused and timed out,
 the banner timeout, the host-key lines and banners, `Permission denied`, the pseudo-terminal line: CR LF on both,
-but for the fingerprint's lead-in, which ends in LF). The pinned `sshd -t` as a black box on files whose second line
+but for the fingerprint's lead-in, which ends in LF); and its command-line and config-file refusal lines with
+stderr a pipe and a file (getopt's two lines and every keyword line in CR LF, `-p`'s `Bad port` and the usage in
+LF, the keyword lines' own text). The pinned `sshd -t` as a black box on files whose second line
 of a keyword is malformed, and on the same files with a well-formed second line. No `.c` or `.h` file was opened.
 
 ## Login records
