@@ -144,21 +144,28 @@ def refused(r, name):
     check(re.search(rb"^burrow: " + name.encode() + rb": ", r[2], re.M), f"no 'burrow: {name}:' line; stderr {tail(r[2])}")
 
 
+def raw_lines(b):
+    """stderr's lines as written, each with its CR if it has one (the LF dropped)."""
+    out = b.split(b"\n")
+    return out[:-1] if out and out[-1] == b"" else out
+
+
 def same_verdict(rb, rs, d, what):
-    """burrow's exit code is ssh's, and ssh's last stderr line is among burrow's."""
-    last = [x for x in lines(rs[2]) if x.strip()][-1:] or [""]
+    """burrow's exit code is ssh's, and ssh's last stderr line is among burrow's, its ending included (the pinned
+    ssh ends its own lines in CR LF on a pipe and in a file)."""
+    last = [x for x in raw_lines(rs[2]) if x.strip()][-1:] or [b""]
     compare(d, f"{what}\nssh exit {rs[0]}, last line {last[0]!r}\nburrow exit {rb[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}"
                f"ssh stderr:\n{rs[2].decode('utf-8', 'replace')}")
     check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}")
-    check(last[0] in lines(rb[2]), f"ssh's line {last[0]!r} not in burrow's stderr {tail(rb[2])}")
-    return last[0]
+    check(last[0] in raw_lines(rb[2]), f"ssh's line {last[0]!r}, ending included, not in burrow's stderr {tail(rb[2])}")
+    return last[0].decode("utf-8", "replace").rstrip("\r")
 
 
 def same_banner(rb, rs, d, what):
-    """burrow's stderr is ssh's line for line (CR set aside), but for burrow's own `burrow: <name>: <detail>` line;
-    the exit codes agree. Returns ssh's Offending line, if it printed one."""
-    b = [x for x in lines(rb[2]) if not x.startswith("burrow: ")]
-    s = lines(rs[2])
+    """burrow's stderr is ssh's line for line, each line's ending included, but for burrow's own
+    `burrow: <name>: <detail>` line; the exit codes agree. Returns ssh's Offending line, if it printed one."""
+    b = [x for x in raw_lines(rb[2]) if not re.match(rb"burrow: [a-z_]+: ", x)]
+    s = raw_lines(rs[2])
     compare(d, f"{what}\nburrow exit {rb[0]}\nssh exit {rs[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}"
                f"ssh stderr:\n{rs[2].decode('utf-8', 'replace')}")
     check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}")
@@ -166,7 +173,7 @@ def same_banner(rb, rs, d, what):
         bl = b[i] if i < len(b) else None
         sl = s[i] if i < len(s) else None
         check(bl == sl, f"line {i + 1}: burrow {bl!r}, ssh {sl!r}")
-    off = [x for x in s if x.startswith("Offending ")]
+    off = [x.decode("utf-8", "replace").rstrip("\r") for x in s if x.startswith(b"Offending ")]
     return off[0] if off else "no Offending line"
 
 
@@ -1038,6 +1045,47 @@ def cli_version():
               f"burrow {args}: exit {rb[0]}, stdout {rb[1]!r}, stderr {rb[2]!r} (wanted {want!r} alone, exit 0)")
         notes.append(lines(rb[2])[0])
     return f"{notes[0]!r}, and with a destination nothing listens on, as ssh"
+
+
+def stderr_to_file(d, argv, name):
+    """argv run with stderr a file of the row's own (stdin not a terminal): (exit, stdout, the file's bytes)."""
+    f = d / f"{name}.stderr"
+    with open(f, "wb") as out:
+        p = subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=out, env=envfor(d), timeout=120)
+    return p.returncode, p.stdout, f.read_bytes()
+
+
+@row
+def cli_line_endings_file():
+    """burrow#9, stderr a file: each line burrow mirrors from the pinned ssh ends as ssh's does (CR LF, measured on
+    a pipe and in a file alike), byte for byte; burrow's own `burrow: <name>: <detail>` lines are set aside. The
+    pipe is every other row's (same_verdict, same_banner). Nothing listening; a changed host key; a refused key."""
+    d = run_dir("cli-line-endings-file")
+    notes = []
+
+    def held(name, rb, rs):
+        mine = b"".join(x + b"\n" for x in raw_lines(rb[2]) if not re.match(rb"burrow: [a-z_]+: ", x))
+        compare_file = d / f"{name}.compare"
+        compare_file.write_text(f"burrow {rb[0]} {rb[2]!r}\nssh {rs[0]} {rs[2]!r}\n")
+        check(rb[0] == rs[0], f"{name}: burrow exit {rb[0]}, ssh exit {rs[0]}")
+        check(mine == rs[2], f"{name}: burrow's mirrored lines {mine!r}, ssh's {rs[2]!r}")
+        notes.append(name)
+
+    port = oraclelib.free_port()
+    base = ["-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-p", str(port), "127.0.0.1", "true"]
+    held("connect-refused", stderr_to_file(d, [str(as_ssh(d))] + base, "b-refused"),
+         stderr_to_file(d, [SSH] + base, "s-refused"))
+    other = d / "id_other"
+    keypair(other)
+    with Server(d) as s:
+        kh = known(d, s, other_line(d, s))
+        args = ["-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"] + common(s, kh, d / "id_user") + [
+            "-o", PAGE_DEFAULT, "127.0.0.1", "true"]
+        held("host-changed", stderr_to_file(d, [str(BIN)] + args, "b-changed"), stderr_to_file(d, [SSH] + args, "s-changed"))
+        kh = known(d, s)
+        args = ["-F", "none", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes"] + common(s, kh, other) + ["127.0.0.1", "true"]
+        held("permission-denied", stderr_to_file(d, [str(BIN)] + args, "b-denied"), stderr_to_file(d, [SSH] + args, "s-denied"))
+    return ", ".join(notes) + ", byte for byte"
 
 
 @row
