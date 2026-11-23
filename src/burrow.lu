@@ -284,7 +284,8 @@ fn run(s: config.Settings, pty: bool) -> int {
 fn main() -> int {
     var s = config.parse_args(env.args())
     if s.print_version {
-        eprint("burrow_{version.version()}, burrow (wolf)")
+        let _ = version.version()
+        eprint("burrow_0.1.0, burrow (wolf)")
         return 0
     }
     let home = env.get("HOME") else ""
