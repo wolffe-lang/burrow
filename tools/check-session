@@ -1088,6 +1088,50 @@ def cli_line_endings_file():
     return ", ".join(notes) + ", byte for byte"
 
 
+# burrow#9: each command-line and config-file line burrow mirrors from the pinned ssh, found by a piece of its text,
+# held byte for byte with its ending, stderr a pipe. (case, args, a config file's text or None, the piece)
+CONFIG_LINES = [
+    ("unknown-flag", ["-Z", "127.0.0.1", "true"], None, b"unknown option -- Z"),
+    ("missing-argument", ["127.0.0.1", "-e"], None, b"option requires an argument -- e"),
+    ("bad-port-flag", ["-p", "0", "127.0.0.1", "true"], None, b"Bad port '0'"),
+    ("o-unknown-keyword", ["-o", "Foo=bar", "127.0.0.1", "true"], None, b"Bad configuration option: foo"),
+    ("o-bad-strict", ["-o", "StrictHostKeyChecking=maybe", "127.0.0.1", "true"], None, b"unsupported option"),
+    ("o-missing-argument", ["-o", "Port", "127.0.0.1", "true"], None, b"missing argument."),
+    ("o-bad-time", ["-o", "ConnectTimeout=x", "127.0.0.1", "true"], None, b"invalid time value."),
+    ("o-bad-port", ["-o", "Port=x", "127.0.0.1", "true"], None, b"Badly formatted port number."),
+    ("o-bad-rekey", ["-o", "RekeyLimit=x", "127.0.0.1", "true"], None, b"Bad RekeyLimit"),
+    ("o-bad-requesttty", ["-o", "RequestTTY=sometimes", "127.0.0.1", "true"], None, b"unsupported option"),
+    ("file-unknown-keyword", ["127.0.0.1", "true"], "Foo bar\n", b"Bad configuration option: foo"),
+    ("file-bad-value", ["127.0.0.1", "true"], "Host *\n  StrictHostKeyChecking maybe\n", b"unsupported option"),
+    ("file-bad-port", ["127.0.0.1", "true"], "Host *\n  Port x\n", b"Badly formatted port number."),
+]
+
+
+@row
+def cli_config_lines():
+    """Each command-line and config-file refusal line burrow prints as the pinned ssh prints it (getopt's, `-p`'s,
+    every kind of keyword line, from `-o` and from a file) ends as ssh's does, byte for byte, stderr a pipe; burrow
+    run as `ssh`, and the exits agree. The usage that follows some is burrow's own subset, not compared."""
+    d = run_dir("cli-config-lines")
+    out = []
+    for name, args, text, piece in CONFIG_LINES:
+        config = "none"
+        if text is not None:
+            cfg = d / f"{name}.config"
+            cfg.write_text(text)
+            config = str(cfg)
+        rb = proc([str(as_ssh(d)), "-F", config] + args, env=envfor(d))
+        rs = proc([SSH, "-F", config] + args, env=envfor(d))
+        sl = [x for x in raw_lines(rs[2]) if piece in x]
+        bl = [x for x in raw_lines(rb[2]) if piece in x]
+        out.append(f"{name}: ssh {rs[0]} {sl!r}; burrow {rb[0]} {bl!r}")
+        compare(d, "\n".join(out) + "\n")
+        check(len(sl) == 1, f"{name}: the pinned ssh printed {len(sl)} lines with {piece!r}: {rs[2]!r}")
+        check(rb[0] == rs[0], f"{name}: burrow exit {rb[0]}, ssh exit {rs[0]}")
+        check(bl == sl, f"{name}: burrow's line {bl!r}, ssh's {sl!r}")
+    return f"{len(CONFIG_LINES)} lines, byte for byte"
+
+
 @row
 def cli_connect_refused():
     d = run_dir("cli-connect-refused")
