@@ -15,6 +15,8 @@
 #               byte for byte
 #   version     tools/check-version: the manifest, the version function and the
 #               literals agree (and its own plants)
+#   public-text tools/check-public-text: no internal work-item id in README,
+#               CHANGELOG or docs/ (its self-test first)
 #   fmt         `wolf fmt --check`
 #   build       the native and release tiers, warnings denied
 #   version-printed  `burrowd -V` and `burrow -V` print the manifest's version
@@ -68,7 +70,7 @@
 #               2x and its wall time reported (a perf step)
 set -u
 cd "$(dirname "$0")/.." || exit 1
-ALL="toolchain oracle planner vectors version fmt build version-printed release-dry unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
+ALL="toolchain oracle planner vectors version public-text fmt build version-printed release-dry unit transport transport-release session session-release hostile hostile-release server server-release server-hostile server-hostile-release server-git den-pin den den-release live-self-test github live static measure measure-server measure-den"
 STEPS=${*:-$ALL}
 
 gauntlet_step() {
@@ -90,6 +92,7 @@ run() {
     version) tools/in-container sh -c 'python3 -I tools/check-version --self-test && python3 -I tools/check-version' ;;
     fmt) tools/in-container tools/check-fmt ;;
     build) tools/in-container tools/build --all ;;
+    public-text) tools/in-container sh -c 'python3 -I tools/check-public-text --self-test && python3 -I tools/check-public-text' ;;
     version-printed) tools/in-container python3 -I tools/check-version --burrowd target/native/burrowd --burrow target/native/burrow ;;
     release-dry) tools/in-container sh -c 'python3 -I tools/check-release --self-test && python3 -I tools/check-release --dry' ;;
     unit) tools/in-container tools/check-test ;;
