@@ -158,14 +158,18 @@ def manifest_version(root):
 
 
 def run(row, argv, cwd):
-    """Runs one of the pinned tools; its own lines are indented, a nonzero exit is the row's FAIL."""
-    say(f"  $ {' '.join(argv[2:])}")
+    """Runs one of the pinned tools, unbuffered so its lines keep their order; its own lines are indented, and a
+    nonzero exit is the row's FAIL, carrying the tool's own last FAIL line (else its last line)."""
+    argv = [argv[0], "-u", *argv[1:]]
+    say(f"  $ {' '.join(argv[3:])}")
     p = subprocess.run(argv, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in p.stdout.splitlines():
         say("    " + line)
     if p.returncode != 0:
-        last = p.stdout.strip().splitlines()[-1] if p.stdout.strip() else ""
-        raise Red(f"{row} exit {p.returncode}: {last}")
+        lines = p.stdout.strip().splitlines()
+        fails = [x for x in lines if x.startswith("FAIL ")]
+        why = fails[-1] if fails else (lines[-1] if lines else "")
+        raise Red(f"{row} exit {p.returncode}: {why}")
     return p.stdout
 
 
