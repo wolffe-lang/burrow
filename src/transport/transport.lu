@@ -492,9 +492,9 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
     if verdict == "host_key_unknown" {
         if c.opts.strict == "yes" || c.opts.known_hosts.len == 0 {
             eprint(
-                "No ED25519 host key is known for {name} and you have requested strict checking.",
+                "No ED25519 host key is known for {name} and you have requested strict checking.\r",
             )
-            eprint("Host key verification failed.")
+            eprint("Host key verification failed.\r")
             return host_key_unknown
         }
         let salt = entropy.draw(mut c.pool, 20)?
@@ -505,35 +505,35 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
             wrote = false
         }
         if !wrote {
-            eprint("Failed to add the host to the list of known hosts ({path}).")
+            eprint("Failed to add the host to the list of known hosts ({path}).\r")
             say(c, 1, "known_hosts_unwritable: {path}")
             return
         }
-        eprint("Warning: Permanently added '{name}' (ED25519) to the list of known hosts.")
+        eprint("Warning: Permanently added '{name}' (ED25519) to the list of known hosts.\r")
         return
     }
     if verdict == "host_key_changed" {
         changed_banner(fp, c.opts.known_hosts, offending)
         if c.opts.strict == "no" {
-            eprint("Password authentication is disabled to avoid man-in-the-middle attacks.")
+            eprint("Password authentication is disabled to avoid man-in-the-middle attacks.\r")
             eprint(
-                "Keyboard-interactive authentication is disabled to avoid man-in-the-middle attacks.",
+                "Keyboard-interactive authentication is disabled to avoid man-in-the-middle attacks.\r",
             )
             return
         }
-        eprint("Host key for {name} has changed and you have requested strict checking.")
-        eprint("Host key verification failed.")
+        eprint("Host key for {name} has changed and you have requested strict checking.\r")
+        eprint("Host key verification failed.\r")
         return host_key_changed
     }
     if verdict == "host_key_revoked" {
-        eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-        eprint("@       WARNING: REVOKED HOST KEY DETECTED!               @")
-        eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-        eprint("The ED25519 host key for {name} is marked as revoked.")
-        eprint("This could mean that a stolen key is being used to")
-        eprint("impersonate this host.")
-        eprint("ED25519 host key for {name} was revoked and you have requested strict checking.")
-        eprint("Host key verification failed.")
+        eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+        eprint("@       WARNING: REVOKED HOST KEY DETECTED!               @\r")
+        eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+        eprint("The ED25519 host key for {name} is marked as revoked.\r")
+        eprint("This could mean that a stolen key is being used to\r")
+        eprint("impersonate this host.\r")
+        eprint("ED25519 host key for {name} was revoked and you have requested strict checking.\r")
+        eprint("Host key verification failed.\r")
         return host_key_revoked
     }
 }
@@ -541,20 +541,20 @@ fn check_known_hosts(mut c: Conn, k_s: List[byte]) -> () ! refuse.Refusal {
 // The pinned ssh's warning for a changed host key, line for line, with the
 // line that holds the other key (`offending`, FILE:LINE) where it names it.
 fn changed_banner(fp: str, files: List[str], offending: str) {
-    eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    eprint("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @")
-    eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-    eprint("IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!")
-    eprint("Someone could be eavesdropping on you right now (man-in-the-middle attack)!")
-    eprint("It is also possible that a host key has just been changed.")
+    eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+    eprint("@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\r")
+    eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+    eprint("IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!\r")
+    eprint("Someone could be eavesdropping on you right now (man-in-the-middle attack)!\r")
+    eprint("It is also possible that a host key has just been changed.\r")
     eprint("The fingerprint for the ED25519 key sent by the remote host is")
-    eprint("{fp}.")
-    eprint("Please contact your system administrator.")
+    eprint("{fp}.\r")
+    eprint("Please contact your system administrator.\r")
     if files.len > 0 {
-        eprint("Add correct host key in {files[0]} to get rid of this message.")
+        eprint("Add correct host key in {files[0]} to get rid of this message.\r")
     }
     if offending != "" {
-        eprint("Offending ED25519 key in {offending}")
+        eprint("Offending ED25519 key in {offending}\r")
     }
 }
 
