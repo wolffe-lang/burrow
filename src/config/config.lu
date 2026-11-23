@@ -384,7 +384,12 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, vsrc: str, cli: bool
         return
     }
     if words.len == 0 {
-        refuse_as(mut s, refusal, "{vline}: no argument after keyword \"{k}\"\r", "{key} needs a value")
+        refuse_as(
+            mut s,
+            refusal,
+            "{vline}: no argument after keyword \"{k}\"\r",
+            "{key} needs a value",
+        )
         return
     }
     let v = words[0]
@@ -583,7 +588,12 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, vsrc: str, cli: bool
         if words[0].lower() != "default" {
             let n = byte_count(words[0])
             if n < 0 {
-                refuse_as(mut s, refusal, "{vline}: Bad number '{words[0]}': Invalid argument\r", "RekeyLimit {value}")
+                refuse_as(
+                    mut s,
+                    refusal,
+                    "{vline}: Bad number '{words[0]}': Invalid argument\r",
+                    "RekeyLimit {value}",
+                )
                 return
             }
             s.rekey_bytes = n
@@ -736,7 +746,12 @@ pub fn parse_args(args: List[str]) -> Settings {
                     var v = a[j + 1..a.len]
                     if v.len == 0 {
                         if i + 1 >= args.len {
-                            refuse_as(mut s, "usage", "option requires an argument -- {f}\r", "-{f}")
+                            refuse_as(
+                                mut s,
+                                "usage",
+                                "option requires an argument -- {f}\r",
+                                "-{f}",
+                            )
                             return s
                         }
                         i += 1
@@ -907,7 +922,12 @@ pub fn apply_config(mut s: Settings, text: str, file: str) {
             continue
         }
         if !known_keyword(k) {
-            refuse_as(mut s, "config_unsupported", "{src}: Bad configuration option: {k}\r", "{key}")
+            refuse_as(
+                mut s,
+                "config_unsupported",
+                "{src}: Bad configuration option: {k}\r",
+                "{key}",
+            )
             continue
         }
         if active {
