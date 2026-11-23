@@ -134,6 +134,16 @@ jobs:
       - name: Hostile-client rows (tools/fakeclient.py), release
         if: ${{ !cancelled() && steps.stage.outcome == 'success' }}
         run: tools/in-container python3 -I tools/check-server-hostile --bin target/release/burrowd
+      - name: A fresh checkout for the release path's dry run on the bare runner
+        if: ${{ !cancelled() }}
+        uses: actions/checkout@v4
+        with:
+          path: bare-release
+          persist-credentials: false
+      - name: The release path's dry run on the bare runner, as the release build runs it (tools/check-release)
+        if: ${{ !cancelled() }}
+        working-directory: bare-release
+        run: tools/fetch-toolchain && python3 -I tools/check-release --self-test && python3 -I tools/check-release --dry
       - name: Retain row evidence
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -158,6 +168,9 @@ jobs:
       - name: burrowd and burrow's terminal rows as the runner's user, release
         if: ${{ !cancelled() }}
         run: python3 -I tools/check-server-local --bin target/release/burrowd
+      - name: The release path's dry run on the bare runner, as the release build runs it (tools/check-release)
+        if: ${{ !cancelled() }}
+        run: python3 -I tools/check-release --self-test && python3 -I tools/check-release --dry
   tier:
     name: tier ${{ needs.plan.outputs.tier || 'unplanned' }}
     if: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-matrix') || contains(github.event.pull_request.labels.*.name, 'ci') || contains(github.event.pull_request.labels.*.name, 'release-matrix')) && (!cancelled()) }}
