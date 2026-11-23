@@ -91,7 +91,7 @@
 - Every program burrowd runs leads a session of its own, as `sshd` gives
   it: with no pty it has no controlling terminal, so nothing it does reaches
   the terminal burrowd was started from (PAX's console).
-- Pin wolf 0.2.39, lupin 0.1.61 and wolf-std's sessions and ptys (sc81).
+- Pin wolf 0.2.39, lupin 0.1.61 and wolf-std's sessions and ptys.
 - burrowd takes `SetEnv` (`sshd_config(5)`): `NAME=VALUE` variables set in
   every session, over burrowd's defaults and the accepted `GIT_PROTOCOL`,
   never over `SSH_CONNECTION` or a forced command's `SSH_ORIGINAL_COMMAND`;
