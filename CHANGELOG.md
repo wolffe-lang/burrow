@@ -9,7 +9,12 @@
   host-key lines, the banners, `Permission denied`) end in CR LF, as `ssh`'s
   own do with stderr a pipe or a file; burrow's own
   `burrow: <name>: <detail>` lines are unchanged (burrow#9, the part
-  without a terminal). The rows compare those lines byte for byte.
+  without a terminal). That covers the command-line and config-file lines
+  too, as measured: getopt's two lines and every keyword line end in CR LF;
+  `-p`'s `Bad port` and the usage stay LF. Three of those lines now carry
+  `ssh`'s own text: `no argument after keyword "port"`, `Bad port 'x'.` and
+  `Bad number 'x': Invalid argument`, and a config file's value lines name
+  it `FILE line N`. The rows compare all these lines byte for byte.
 - burrowd checks every later line of a keyword in its config as it checks
   the first, and refuses a malformed one at start by file and line, as the
   pinned `sshd` does; the first value still wins (burrow#22).
