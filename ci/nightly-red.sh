@@ -20,7 +20,7 @@ set -euo pipefail
 
 label=nightly-red
 title="nightly red: $WORKFLOW on trunk"
-body=$(printf 'The scheduled run of `%s` on trunk is red: %s\n\nIt is to be looked at before the next merge. A later red night comments here; close this issue once a nightly is green again.\n' "$WORKFLOW" "$RUN_URL")
+body=$(printf 'The scheduled run of `%s` on trunk is red: %s\n\nIt is to be looked at before the next lane merges. A later red night comments here; close this issue once a nightly is green again.\n' "$WORKFLOW" "$RUN_URL")
 
 # The label may exist already: --force keeps its description current, and a
 # refusal is no failure.
