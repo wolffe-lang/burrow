@@ -209,6 +209,41 @@ pub fn check_text(text: str, name: str, k_s: List[byte]) -> () ! refuse.Refusal 
     host_key_unknown
 }
 
+/// The number (from 1) of the last line in known_hosts `text` that names
+/// `name` with an ed25519 key other than `k_s`, or 0 for none: the line the
+/// pinned `ssh` names as `Offending ED25519 key in FILE:LINE`. Lines are
+/// counted as the file has them, comments and blank lines included;
+/// `@cert-authority` and `@revoked` lines are not offending.
+pub fn offending(text: str, name: str, k_s: List[byte]) -> int {
+    let want = base64.encode(k_s)
+    var found = 0
+    var n = 0
+    for raw_line in text.lines() {
+        n += 1
+        let line = raw_line.trim()
+        if line.len == 0 || line.starts_with("#") || line.starts_with("@") {
+            continue
+        }
+        var fields = List[str]()
+        for w in line.words() {
+            (mut fields).push(w)
+        }
+        if fields.len < 3 || fields[1] != "ssh-ed25519" || fields[2] == want {
+            continue
+        }
+        let hosts = fields[0]
+        let names = if hosts.starts_with("|") {
+            hashed_match(hosts, name)
+        } else {
+            hosts_match(hosts, name)
+        }
+        if names {
+            found = n
+        }
+    }
+    found
+}
+
 /// The line the pinned `ssh` appends for `name` and the blob `k_s`: the
 /// name, or its hashed form under `salt` (20 bytes) when `hashed`, then
 /// `ssh-ed25519` and the base64 blob.
