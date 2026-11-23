@@ -69,6 +69,15 @@ fn main() {
     var w = sconfig.parse_args(args("-p 2222"))
     sconfig.apply_file(mut w, "Port 3333\nLoginGraceTime 5\nLoginGraceTime 9\n", "f")
     assert(w.port == 2222 && w.grace == 5)
+    // A later line counts for nothing, but a malformed one is refused by its
+    // line, as the pinned sshd refuses it (burrow#22).
+    let lg = file("LoginGraceTime 5\nLoginGraceTime soon\n")
+    assert(refused(lg) == "config_unsupported" && lg.detail.contains("line 2") && lg.grace == 5)
+    assert(refused(file("Port 2222\nPort x\n")) == "config_unsupported")
+    assert(refused(file("MaxAuthTries 3\nMaxAuthTries many\n")) == "config_unsupported")
+    assert(refused(file("StrictModes yes\nStrictModes maybe\n")) == "config_unsupported")
+    let pa = file("PasswordAuthentication no\nPasswordAuthentication yes\n")
+    assert(refused(pa) == "ok" && !pa.password_auth)
     // ListenAddress forms; AcceptEnv accumulates.
     let l = file(
         "Port 2200\nListenAddress 127.0.0.1\nListenAddress [::1]:2201\nListenAddress 127.0.0.1:2202\nListenAddress ::1\nAcceptEnv GIT_PROTOCOL\n",
