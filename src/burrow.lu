@@ -181,7 +181,7 @@ fn run(s: config.Settings, pty: bool) -> int {
     var c = transport.dial(opts) else |e| {
         let name = "{e}"
         if name == "connect_refused" {
-            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused\r")
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused")
         } else if name == "timeout" {
             eprint(
                 "{program()}: connect to host {s.hostname} port {s.port}: Connection timed out\r",
