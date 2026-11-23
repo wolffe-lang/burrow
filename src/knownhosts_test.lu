@@ -52,6 +52,15 @@ fn main() {
     assert(verdict("*,!{name} ssh-ed25519 {blob}\n", name, k_s) == "host_key_unknown")
     // A changed key and a matching one: the match wins (sshd(8): any line).
     assert(verdict("{name} ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n", name, k_s) == "ok")
+    // The line the changed-key banner names: the last naming the host with
+    // another key, counted as the file has them (comments and blank lines
+    // too); a hashed name the same; markers and the matching key are not.
+    let off = "# c\n[127.0.0.9]:22 ssh-ed25519 {other}\n{name} ssh-ed25519 {other}\n\n{name} ssh-ed25519 {other}\n{name} ssh-ed25519 {blob}\n"
+    assert(hostkey.offending(off, name, k_s) == 5)
+    assert(hostkey.offending("{hashed} ssh-ed25519 {other}\n", name, k_s) == 1)
+    assert(hostkey.offending("{name} ssh-ed25519 {blob}\n", name, k_s) == 0)
+    assert(hostkey.offending("@revoked {name} ssh-ed25519 {other}\n", name, k_s) == 0)
+    assert(hostkey.offending("@cert-authority {name} ssh-ed25519 {other}\n", name, k_s) == 0)
     // Appended lines, as the pinned ssh appends them.
     assert(hostkey.entry_line(name, k_s, false, List[byte]()) == "{name} ssh-ed25519 {blob}\n")
     assert(
