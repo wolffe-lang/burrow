@@ -154,6 +154,22 @@ def same_verdict(rb, rs, d, what):
     return last[0]
 
 
+def same_banner(rb, rs, d, what):
+    """burrow's stderr is ssh's line for line (CR set aside), but for burrow's own `burrow: <name>: <detail>` line;
+    the exit codes agree. Returns ssh's Offending line, if it printed one."""
+    b = [x for x in lines(rb[2]) if not x.startswith("burrow: ")]
+    s = lines(rs[2])
+    compare(d, f"{what}\nburrow exit {rb[0]}\nssh exit {rs[0]}\nburrow stderr:\n{rb[2].decode('utf-8', 'replace')}"
+               f"ssh stderr:\n{rs[2].decode('utf-8', 'replace')}")
+    check(rb[0] == rs[0], f"burrow exit {rb[0]}, ssh exit {rs[0]}")
+    for i in range(max(len(b), len(s))):
+        bl = b[i] if i < len(b) else None
+        sl = s[i] if i < len(s) else None
+        check(bl == sl, f"line {i + 1}: burrow {bl!r}, ssh {sl!r}")
+    off = [x for x in s if x.startswith("Offending ")]
+    return off[0] if off else "no Offending line"
+
+
 class Server:
     """A row's sshd with one authorized user key."""
 
@@ -477,7 +493,7 @@ def kh_accept_new_changed():
         rb = burrow(d, args)
         rs = ssh(d, args)
     refused(rb, "host_key_changed")
-    return same_verdict(rb, rs, d, "a changed key under accept-new")
+    return same_banner(rb, rs, d, "a changed key under accept-new")
 
 
 @row
@@ -498,8 +514,7 @@ def kh_no_changed():
     compare(d, f"burrow exit {rb[0]} {rb[1]!r}; ssh exit {rs[0]} {rs[1]!r}\n")
     check(rb[0] == rs[0] == 0 and rb[1] == rs[1] == b"ran", f"burrow {rb[0]} {rb[1]!r}; ssh {rs[0]} {rs[1]!r}")
     check(after_b == after_s == text, "a known_hosts file changed")
-    for ln in ("Password authentication is disabled to avoid man-in-the-middle attacks.",):
-        check(ln in lines(rb[2]) and ln in lines(rs[2]), f"{ln!r} not in both stderrs")
+    return same_banner(rb, rs, d, "a changed key under StrictHostKeyChecking=no")
 
 
 @row
@@ -546,7 +561,12 @@ class SystemFile:
 
 def other_line(d, s):
     """A line naming the row's sshd with a key it does not hold."""
-    other = d / "other"
+    return other_line_named(d, s, "other")
+
+
+def other_line_named(d, s, name):
+    """other_line with a key of its own, at `d / name`."""
+    other = d / name
     keypair(other)
     algo, blob = other.with_suffix(".pub").read_text().split()[:2]
     return f"[127.0.0.1]:{s.port} {algo} {blob}\n"
@@ -661,7 +681,34 @@ def kh_global_changed():
             rb = burrow(d, common(s, kh, d / "id_user") + ["127.0.0.1", "true"])
             rs = ssh(d, common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "true"])
     refused(rb, "host_key_changed")
-    return same_verdict(rb, rs, d, "another key for the host in the system file only")
+    return same_banner(rb, rs, d, "another key for the host in the system file only")
+
+
+@row
+def kh_changed_offending():
+    """Which line the changed-key banner names (`Offending ED25519 key in FILE:LINE`), held to the pinned ssh: the
+    last line read that holds another key for the host, the user's file read before the system's. Two other keys
+    in the user's file (lines 2 and 4), then the same with another in the system file's line 2."""
+    d = run_dir("kh-changed-offending")
+    with Server(d) as s:
+        def unrelated(n):
+            keypair(d / f"unrelated{n}")
+            algo, blob = (d / f"unrelated{n}.pub").read_text().split()[:2]
+            return f"[127.0.0.9]:22 {algo} {blob}\n"
+        a, b, c = other_line(d, s), other_line_named(d, s, "other2"), other_line_named(d, s, "other3")
+        kh = known(d, s, unrelated(1) + a + unrelated(2) + b)
+        args = common(s, kh, d / "id_user") + ["-o", PAGE_DEFAULT, "127.0.0.1", "true"]
+        rb = burrow(d, args)
+        rs = ssh(d, args)
+        refused(rb, "host_key_changed")
+        user = same_banner(rb, rs, d, "two other keys in the user's file, lines 2 and 4")
+        with SystemFile(SYSTEM_KH[0], unrelated(3) + c):
+            rb = burrow(d, args)
+            rs = ssh(d, args)
+        refused(rb, "host_key_changed")
+        both = same_banner(rb, rs, d, "and another in the system file's line 2")
+    check(user.endswith(f"{kh}:4") and both.endswith(f"{SYSTEM_KH[0]}:2"), f"ssh named {user!r}, then {both!r}")
+    return f"{user.split(' in ')[-1].split('/')[-1]}, then {both.split(' in ')[-1]}"
 
 
 @row
