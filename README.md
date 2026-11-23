@@ -245,6 +245,25 @@ The security posture:
   are generated per run.
 - **Comparisons:** MAC and tag comparisons are constant time.
 
+**No post-quantum key exchange yet** (burrow#14). OpenSSH clients newer
+than the pinned 10.0p2 warn on every connection to a server that offers no
+post-quantum key exchange, burrowd among them. OpenSSH 10.2p1, run against
+burrowd, prints three lines on stderr:
+
+```text
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+```
+
+The warning is about the future: someone who records the session today
+could decrypt it once a quantum computer can break X25519. The session is
+otherwise encrypted and authenticated as before: `curve25519-sha256`, the
+server's Ed25519 host key checked against `known_hosts`, and
+`chacha20-poly1305@openssh.com`. That client's `ssh_config(5)` documents
+`WarnWeakCrypto`; `-o WarnWeakCrypto=no-pq-kex` turns off this one warning
+and leaves the others on. The pinned 10.0p2 prints no such warning.
+
 ## Build and test
 
 The toolchain and the oracle are pinned by digest (`wolf-toolchain.toml`,
