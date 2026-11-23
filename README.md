@@ -262,7 +262,8 @@ otherwise encrypted and authenticated as before: `curve25519-sha256`, the
 server's Ed25519 host key checked against `known_hosts`, and
 `chacha20-poly1305@openssh.com`. That client's `ssh_config(5)` documents
 `WarnWeakCrypto`; `-o WarnWeakCrypto=no-pq-kex` turns off this one warning
-and leaves the others on. The pinned 10.0p2 prints no such warning.
+and leaves the others on. The pinned 10.0p2's `ssh_config(5)` has no
+`WarnWeakCrypto`.
 
 ## Build and test
 
