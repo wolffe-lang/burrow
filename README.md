@@ -447,7 +447,10 @@ smoke job reads a draft the way that works (write permission for the job,
 the token only in the download step), fetches that commit, runs its
 adapter check, builds and packs this host's archive and runs the clean
 smoke, with no upload. It builds from a copy of the tree without `.git`,
-so its `BUILD.json` names no commit; the rehearsal does.
+so its `BUILD.json` names no commit; the rehearsal does. CI's Linux and
+macOS jobs run it too, on the bare hosted runners the release build uses:
+on Linux from a fresh checkout outside the container, its toolchain fetched
+as the release build fetches it.
 
 ## Clean room
 
