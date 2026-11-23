@@ -1094,7 +1094,9 @@ def cli_line_endings_file():
 # (case, args, a config file's text or None, the piece)
 CONFIG_LINES = [
     ("unknown-flag", ["-Z", "127.0.0.1", "true"], None, b"unknown option -- Z"),
-    ("missing-argument", ["127.0.0.1", "-e"], None, b"option requires an argument -- e"),
+    # -e with nothing after it, before any destination: burrow reads options only before the destination, where
+    # the pinned ssh reads them after it too, so `127.0.0.1 -e` is a command to burrow (measured on burrow).
+    ("missing-argument", ["-e"], None, b"option requires an argument -- e"),
     ("bad-port-flag", ["-p", "0", "127.0.0.1", "true"], None, b"Bad port '0'"),
     ("o-unknown-keyword", ["-o", "Foo=bar", "127.0.0.1", "true"], None, b"Bad configuration option: foo"),
     ("o-bad-strict", ["-o", "StrictHostKeyChecking=maybe", "127.0.0.1", "true"], None, b"unsupported option"),
