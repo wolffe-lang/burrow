@@ -213,7 +213,7 @@ fn main() {
     assert(refused(["-o", "RekeyLimit=x", "h"], "", "option_unsupported", "command-line line 0: Bad number 'x': Invalid argument\r"))
     assert(refused(["-o", "Foo=bar", "h"], "", "option_unknown", "command-line: line 0: Bad configuration option: foo\r"))
     assert(refused(["-Z", "h"], "", "option_unknown", "unknown option -- Z\r"))
-    assert(refused(["h", "-e"], "", "usage", "option requires an argument -- e\r") || refused(["-e"], "", "usage", "option requires an argument -- e\r"))
+    assert(refused(["-e"], "", "usage", "option requires an argument -- e\r"))
     assert(refused(["-p", "0", "h"], "", "usage", "Bad port '0'"))
     assert(config.parse_args(["-p", "0", "h"]).line == "Bad port '0'")
     assert(refused(["h"], "Host *\n  Port x\n", "config_unsupported", "~/.ssh/config line 2: Bad port 'x'.\r"))
