@@ -12,10 +12,10 @@ of, what it speaks and refuses, and what is measured where. Sources are in
 | **B1** | the transport: version exchange, binary packet protocol, `curve25519-sha256`, `ssh-ed25519` host keys against known_hosts, `chacha20-poly1305@openssh.com`, strict kex, ext-info, rekeying, disconnect | done |
 | **B2** | auth and keys: `publickey` with `ssh-ed25519` (RFC 4252, 8709), the OpenSSH private key format (`PROTOCOL.key`), `burrow-keygen -t ed25519`, known_hosts appending and hashed `\|1\|` entries | done |
 | **B3** | channels and the CLI: a session channel, `exec` and `env`, byte-clean stdin/stdout/stderr, windows, EOF and close, exit status, the `ssh` options den uses | done |
-| **B4** | den over burrow: clone, fetch and push through burrow against the pinned `sshd`, GitHub read only, the live push, the static build for PAX | done here; installing it on PAX is a px lane's |
+| **B4** | den over burrow: clone, fetch and push through burrow against the pinned `sshd`, GitHub read only, the live push, the static build for PAX | done here; installing it on PAX is PAX's work |
 | **B5** | `burrowd`, the server for commands: the transport's server role, a required host key, key-only authentication against `authorized_keys` with StrictModes, one session channel with `exec`, `env` and the exit status, the limits and the log line, privilege separation, git through it, each held to the pinned `sshd` | done here, on Linux and macOS |
-| **B6** | burrowd on PAX: started at boot, set-ID into the user, the first-boot host key, git through den | a px lane's (its items: `notes/bw04-the-server.md`) |
-| **B7** | interactive shells: burrowd grants a pty, each program in a session of its own (bw06), held to the pinned `sshd` | the server's half here, on Linux and macOS; PAX's rows a px lane's |
+| **B6** | burrowd on PAX: started at boot, set-ID into the user, the first-boot host key, git through den | PAX's work (its items: `notes/bw04-the-server.md`) |
+| **B7** | interactive shells: burrowd grants a pty, each program in a session of its own, held to the pinned `sshd` | the server's half here, on Linux and macOS; PAX's rows are PAX's work |
 | **B8** | the interactive client: a pty for `-t`, `-tt`, `RequestTTY` and a shell at a terminal, with `TERM`, the size and the terminal's modes; the local terminal raw and put back however the session ends; window changes; ^C, ^\ and ^Z as bytes; the escape character (`~.`, `~?`, `~~`); the closing line | here: on Linux held to the pinned `ssh` byte for byte (`tools/check-session`), on macOS to fixed facts through burrowd (`tools/check-server-local`) |
 
 `burrow` logs in with an Ed25519 key, runs one command on a session channel
@@ -54,18 +54,18 @@ clone, fetch and push byte for byte as the pinned `ssh` does
 | `src/burrowd.lu` | `burrowd`: `server.run` |
 | `src/oneproc.lu` | a row program, never installed or built `--static`: burrowd as one root process per connection, for `tools/measure-server`'s comparison only |
 | `src/server` | the listener (MaxStartups, the host key checked in a forked child), and per connection the monitor, the worker and the holder, or the one-process program's one process |
-| `src/sconfig` | burrowd's command line and its `sshd_config(5)` subset, first value wins, `-T`'s lines, refusals by name; `SetEnv`'s arguments and a session's environment in its one order (px116) |
+| `src/sconfig` | burrowd's command line and its `sshd_config(5)` subset, first value wins, `-T`'s lines, refusals by name; `SetEnv`'s arguments and a session's environment in its one order |
 | `src/akeys` | `authorized_keys` as `sshd(8)` documents it: options taken, honoured or admitting nothing; the files' paths (`%h`, `%u`, `%%`) and StrictModes |
 | `src/sauth` | authentication from the server's side as a state machine with no I/O: the request, the decision, the tries, a changed user or service |
 | `src/mon` | the monitor's checks: the account (passwd and group as root, the running user otherwise), the key against `authorized_keys`, the signature over its own session identifier |
 | `src/pipe` | bounded frames between burrowd's processes (length, kind, RFC 4251 strings) |
 | `src/worker` | authentication in the unprivileged worker, asking the monitor; or deciding in place in the one-process program |
-| `src/schannel` | burrowd's one `session` channel as a state machine with no I/O: requests taken and refused by name, the window, the ends; `pty-req` and `window-change` parsed and kept (bw06) |
-| `src/ttymodes` | RFC 4254 §8's encoded terminal modes (and RFC 8160's IUTF8), decoded (bw06), and the ones a client sends, in the pinned `ssh`'s order (B8); no I/O |
-| `src/ptyhost` | the one place burrowd reaches the host's ptys and new sessions, over wolf-std's: the pty opened, sized and set to the client's modes, the slave taken as a controlling terminal, a session led (bw06) |
-| `src/ssession` | the session's I/O: the command and its three pipes, or (bw06) its pty's master, the program's session of its own, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
+| `src/schannel` | burrowd's one `session` channel as a state machine with no I/O: requests taken and refused by name, the window, the ends; `pty-req` and `window-change` parsed and kept (B7) |
+| `src/ttymodes` | RFC 4254 §8's encoded terminal modes (and RFC 8160's IUTF8), decoded (B7), and the ones a client sends, in the pinned `ssh`'s order (B8); no I/O |
+| `src/ptyhost` | the one place burrowd reaches the host's ptys and new sessions, over wolf-std's: the pty opened, sized and set to the client's modes, the slave taken as a controlling terminal, a session led (B7) |
+| `src/ssession` | the session's I/O: the command and its three pipes, or (B7) its pty's master, the program's session of its own, the socket, a region per turn, the exit status or signal; the program's environment: burrowd's defaults, the accepted `env` names, `SetEnv`'s variables, then `SSH_CONNECTION` and a forced command's `SSH_ORIGINAL_COMMAND` |
 | `src/slog` | the one log line per connection: UTC time, escaped user, fingerprint, outcome, status |
-| `src/utmp` | the login records (px133): utmp(5)'s 384-byte record, a pty session's USER_PROCESS and DEAD_PROCESS in utmp and wtmp, a refused password's USER_PROCESS on `ssh:notty` in btmp, as the pinned sshd writes them |
+| `src/utmp` | the login records: utmp(5)'s 384-byte record, a pty session's USER_PROCESS and DEAD_PROCESS in utmp and wtmp, a refused password's USER_PROCESS on `ssh:notty` in btmp, as the pinned sshd writes them |
 | `src/peer` | the client's address and port from `/proc/net/tcp` and `tcp6` by the socket's inode, RFC 5952 text; `UNKNOWN` where there is none (wolf-std#140) |
 
 ## What burrow speaks
@@ -124,7 +124,7 @@ does not take), `option_unknown`, `option_unsupported`, `usage`,
 `listen_failed`, `privileges_unsupported` (root where the user cannot be
 changed: macOS) and `preauth_user_missing` (root without the `burrowd`
 account); `config_unsupported` too for `PasswordAuthentication yes` when
-burrowd is not root (px112: only root reads `/etc/shadow`).
+burrowd is not root (only root reads `/etc/shadow`).
 
 **Per connection:**
 
@@ -137,16 +137,16 @@ burrowd is not root (px112: only root reads `/etc/shadow`).
 | the transport's names (`packet_too_long`, `message_unexpected`, `mac_mismatch` and the rest above) | the shared transport, against a scripted client | DISCONNECT with the client's codes |
 | `service_refused` | a service other than `ssh-userauth` | |
 | `auth_method_refused` | `none`, `keyboard-interactive`, `hostbased`, and `password` while `PasswordAuthentication` is `no` (named, not final) | `Permission denied (publickey).` once `ssh` has spent its methods |
-| `auth_account_locked`, `auth_account_expired` | (px112, every method, `sshd(8)`'s rule) the account's `/etc/shadow` password starts with `!`; its expiry date, or its password's inactive period, has passed | `user@127.0.0.1: Permission denied (publickey,password).` |
-| `auth_password_bad`, `auth_password_unset`, `auth_password_empty`, `auth_password_unsupported`, `auth_password_over_cap`, `auth_password_expired`, `auth_password_too_long`, `auth_password_change_refused` | (px112, `PasswordAuthentication yes`) the wrong password; no password (`*`, no line); an empty field (`PermitEmptyPasswords no`); a crypt(5) method other than `$7$`; a `$7$` string over the shipped cost; field 3 `0` or the maximum age past (a key still logs in); over 1024 bytes; RFC 4252 §8's change request. Each after the same one hash, but the last two, which run none | `Permission denied, please try again.`, then `user@127.0.0.1: Permission denied (publickey,password).` |
+| `auth_account_locked`, `auth_account_expired` | (every method, `sshd(8)`'s rule) the account's `/etc/shadow` password starts with `!`; its expiry date, or its password's inactive period, has passed | `user@127.0.0.1: Permission denied (publickey,password).` |
+| `auth_password_bad`, `auth_password_unset`, `auth_password_empty`, `auth_password_unsupported`, `auth_password_over_cap`, `auth_password_expired`, `auth_password_too_long`, `auth_password_change_refused` | (`PasswordAuthentication yes`) the wrong password; no password (`*`, no line); an empty field (`PermitEmptyPasswords no`); a crypt(5) method other than `$7$`; a `$7$` string over the shipped cost; field 3 `0` or the maximum age past (a key still logs in); over 1024 bytes; RFC 4252 §8's change request. Each after the same one hash, but the last two, which run none | `Permission denied, please try again.`, then `user@127.0.0.1: Permission denied (publickey,password).` |
 | `auth_key_unlisted`, `auth_user_unknown`, `auth_root_refused`, `auth_strict_modes`, `auth_key_unsupported` | no line admits the key; no such account; root, always; StrictModes; a key that is not `ssh-ed25519`. Alike to the client, so no account is disclosed | `user@127.0.0.1: Permission denied (publickey).` |
 | `auth_sig_bad` | a signature that does not verify over the monitor's own session identifier: another session's, another key's | (a scripted client: USERAUTH_FAILURE) |
 | `auth_tries_exceeded` | MaxAuthTries | `Received disconnect from … :2: Too many authentication failures` |
 | `auth_changed` | the user or service changed between requests | (a scripted client: DISCONNECT 2) |
 | `channel_type_refused`, `session_limit` | a channel other than one session | `-W`: `channel 0: open failed: administratively prohibited: open failed` |
 | `forward_refused`, `request_refused` | `tcpip-forward` and the like; any other global request | `-R`: `Error: remote port forwarding failed for listen port 0` |
-| `pty_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the program still runs where `sshd` runs it); `pty_refused` by `PermitTTY no` or a key's `no-pty` or `restrict` (bw06); `exec_twice` is a second program, `exec` or `shell` after either (px112: a shell is served, with no pty) | `PTY allocation request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
-| `pty_failed`, `pty_malformed`, `pty_twice`, `pty_late`, `window_malformed` | (bw06) a `pty-req` the host could give no pty for; one whose TERM (over 255 bytes, or a byte outside `!`..`~`), size (past 65535) or modes (a value cut short) are malformed; a second after one was granted; one after the program started; a `window-change` past 65535. Each answered CHANNEL_FAILURE when a reply is wanted, the connection kept | `PTY allocation request failed on channel 0` |
+| `pty_refused`, `subsystem_refused`, `x11_refused`, `agent_refused`, `signal_refused`, `env_refused`, `exec_twice`, `request_refused` | each channel request burrowd does not take (named, not final; the program still runs where `sshd` runs it); `pty_refused` by `PermitTTY no` or a key's `no-pty` or `restrict` (B7); `exec_twice` is a second program, `exec` or `shell` after either (a shell is served, with no pty) | `PTY allocation request failed on channel 0`, `subsystem request failed on channel 0`, as against `sshd` |
+| `pty_failed`, `pty_malformed`, `pty_twice`, `pty_late`, `window_malformed` | (B7) a `pty-req` the host could give no pty for; one whose TERM (over 255 bytes, or a byte outside `!`..`~`), size (past 65535) or modes (a value cut short) are malformed; a second after one was granted; one after the program started; a `window-change` past 65535. Each answered CHANNEL_FAILURE when a reply is wanted, the connection kept | `PTY allocation request failed on channel 0` |
 | `channel_unknown`, `channel_closed`, `window_exceeded`, `channel_packet_too_large`, `window_overflow` | the client's channel misbehaves | (a scripted client: DISCONNECT 2) |
 | `nologin`, `exec_failed` | `/etc/nologin` exists (its text on stderr); the shell cannot start | |
 | `disconnected`, `closed`, `timeout`, `io` | the client's DISCONNECT, the socket's end, a deadline, a failure | |
@@ -260,11 +260,11 @@ process that signs with it:
 | process | runs as | holds | does |
 |---|---|---|---|
 | listener | root | no private key (a forked child checks the key at start and exits) | accepts, counts unauthenticated connections from a pipe per monitor (MaxStartups), reaps |
-| monitor, one per connection | root | the host key, read after its two children are forked; the session identifier; `/etc/shadow`'s text (px112) | signs exchange hashes; reads passwd, group, shadow and `authorized_keys`; checks the account's lock, StrictModes, the key and the signature; counts tries; writes the log line |
+| monitor, one per connection | root | the host key, read after its two children are forked; the session identifier; `/etc/shadow`'s text | signs exchange hashes; reads passwd, group, shadow and `authorized_keys`; checks the account's lock, StrictModes, the key and the signature; counts tries; writes the log line |
 | worker | the `burrowd` account, cwd `/` | the connection, before authentication | the version, KEXINIT, ECDH, the service and USERAUTH requests, asking the monitor over bounded frames; then hands the transport's state to the monitor and exits |
 | holder, then the session | root holding nothing, then the user's uid, gid and groups with no way back | the transport's state, after authentication | the session channel; asks the monitor to sign at a re-exchange |
-| the command | the user, leading a session of its own (bw06), every signal at its default (bw07) | its three pipes, or the pty's slave as its controlling terminal | the user's shell with `-c`, or the login shell |
-| checker, one password (px112) | root, forked by the monitor, one at a time across the server (a one-byte token the listener keeps in a pipe, put back by the listener when a monitor ends holding it) | the monitor's memory, the password and the field | scrypt at the field's cost (at most N = 2^17, r = 8, p = 1: 128 MiB), exits 0 on a match; the memory leaves with it |
+| the command | the user, leading a session of its own, every signal at its default | its three pipes, or the pty's slave as its controlling terminal | the user's shell with `-c`, or the login shell |
+| checker, one password | root, forked by the monitor, one at a time across the server (a one-byte token the listener keeps in a pipe, put back by the listener when a monitor ends holding it) | the monitor's memory, the password and the field | scrypt at the field's cost (at most N = 2^17, r = 8, p = 1: 128 MiB), exits 0 on a match; the memory leaves with it |
 
 The session can ask the monitor to sign an exchange hash for as long as it
 lives, as any server whose post-authentication process re-keys without the
@@ -399,7 +399,7 @@ receive-pack alike; nothing for the v0 wrapper). The black-box findings:
   den passes neither `-F` nor `UserKnownHostsFile`, so the rows install
   their `.ssh` as the container user's own, and both clients read the same
   files.
-- den's argv is the one bw02 measured, for every URL form: `-p` only for
+- den's argv is the one measured for B3, for every URL form: `-p` only for
   `ssh://host:port`, the user kept in the destination,
   `GIT_PROTOCOL=version=2` sent by `SendEnv` for both services. Its remote
   words are git's: the program bare when it is plain (letters, digits and
@@ -492,11 +492,11 @@ other than the one that built them. A PAX install puts them at `/bin/ssh` and
   burrowd process is a fork of the listener, never a fresh image.
 - On macOS burrowd serves only the user who runs it (wolf-std cannot change
   a process's user there), and refuses to start as root.
-- burrowd runs one program, on a pty when the client asks for one (bw06):
+- burrowd runs one program, on a pty when the client asks for one (B7):
   no subsystem, X11, agent or forwarding, each refused by name. A pty's
   session is written to utmp and wtmp, as `sshd` writes it, but has no
   lastlog entry, and burrowd prints no motd or last-login line.
-- Each program leads a session of its own (bw06; px112's process group
+- Each program leads a session of its own (B7; a process group of its own
   before it). With no pty it has no controlling terminal, so a program
   over ssh never reaches the terminal burrowd was started from (PAX's
   console); the session still waits for a stopped program's end (a stop is
