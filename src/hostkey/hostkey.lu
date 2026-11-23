@@ -238,7 +238,7 @@ pub fn offending(text: str, name: str, k_s: List[byte]) -> int {
             hosts_match(hosts, name)
         }
         if names {
-            found = n
+            found = n + 1
         }
     }
     found
