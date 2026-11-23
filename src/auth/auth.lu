@@ -258,7 +258,7 @@ pub fn login(
                 "methods that can continue: {methods}; {l.index} of {keys.len} identities tried",
             )
             if f.partial || !lists(f.methods, method()) {
-                eprint("{user}@{host}: Permission denied ({methods}).")
+                eprint("{user}@{host}: Permission denied ({methods}).\r")
             }
         } else {
             transport.note(mut c, "message {transport.kind(p)} in authentication")
@@ -275,7 +275,7 @@ pub fn login(
             l.index += 1
             if l.index >= keys.len {
                 let methods = joined(l.last_methods)
-                eprint("{user}@{host}: Permission denied ({methods}).")
+                eprint("{user}@{host}: Permission denied ({methods}).\r")
                 transport.note(
                     mut c,
                     "methods that can continue: {methods}; {keys.len} identities tried",
