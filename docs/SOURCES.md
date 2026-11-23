@@ -375,6 +375,14 @@ Organisation code: the formula repository's (wolffe-lang/homebrew-wolf) shared r
 pinned commit `183a4e18e63bb1f21cd41a74ff63cb848bc89094`, and the other wolf tools' callers of them, read as the
 release path's documentation. No `.c` or `.h` file was opened, of OpenSSH or any other client.
 
+## The post-quantum warning
+
+A newer OpenSSH client than the pinned one, as a black box against burrowd: macOS's `/usr/bin/ssh`,
+`OpenSSH_10.2p1, LibreSSL 3.3.6`, through `tools/check-server-local`'s harness (its scratch HOME and keys), one
+command with stderr a pipe: the three warning lines it prints, and none under `-o WarnWeakCrypto=no-pq-kex`. Its
+`ssh_config(5)` as installed with it: `WarnWeakCrypto`. The pinned 10.0p2's `ssh_config.5` (digest above) has no
+such keyword. No `.c` or `.h` file was opened.
+
 ## Login records
 
 utmp(5) (man-pages 6.19): the record's layout on x86-64 glibc (384 bytes, 32-bit time and session), its kinds,
