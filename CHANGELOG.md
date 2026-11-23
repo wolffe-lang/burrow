@@ -2,6 +2,11 @@
 
 - Experimental: the first release, a preview. burrow has no post-quantum key
   exchange yet, and burrowd, the server, is young.
+- The README says what newer OpenSSH clients' warning about a missing
+  post-quantum key exchange means, as one of them prints it against burrowd,
+  and how that client turns it off (until burrow#14).
+- The documents (README, CHANGELOG, `docs/`) name no internal work-item ids,
+  and a gauntlet row, `tools/check-public-text`, fails on one.
 - A release path to a draft. A `vX.Y.Z` tag runs the release gate (the
   whole of CI) and then the shared draft-only release workflow the other
   wolf tools use: the release tier built on Linux x86-64 and macOS arm64,
