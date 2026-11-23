@@ -1088,22 +1088,25 @@ def cli_line_endings_file():
     return ", ".join(notes) + ", byte for byte"
 
 
-# burrow#9: each command-line and config-file line burrow mirrors from the pinned ssh, found by a piece of its text,
-# held byte for byte with its ending, stderr a pipe. (case, args, a config file's text or None, the piece)
+# burrow#9: each command-line and config-file line burrow mirrors from the pinned ssh, found by a piece of its text
+# as the pinned ssh prints it (measured: getopt's two lines and every keyword line end in CR LF, `-p`'s `Bad port`
+# and the usage in LF, alike on a pipe and in a file), held byte for byte with its ending, stderr a pipe.
+# (case, args, a config file's text or None, the piece)
 CONFIG_LINES = [
     ("unknown-flag", ["-Z", "127.0.0.1", "true"], None, b"unknown option -- Z"),
     ("missing-argument", ["127.0.0.1", "-e"], None, b"option requires an argument -- e"),
     ("bad-port-flag", ["-p", "0", "127.0.0.1", "true"], None, b"Bad port '0'"),
     ("o-unknown-keyword", ["-o", "Foo=bar", "127.0.0.1", "true"], None, b"Bad configuration option: foo"),
     ("o-bad-strict", ["-o", "StrictHostKeyChecking=maybe", "127.0.0.1", "true"], None, b"unsupported option"),
-    ("o-missing-argument", ["-o", "Port", "127.0.0.1", "true"], None, b"missing argument."),
+    ("o-missing-argument", ["-o", "Port", "127.0.0.1", "true"], None, b"no argument after keyword"),
     ("o-bad-time", ["-o", "ConnectTimeout=x", "127.0.0.1", "true"], None, b"invalid time value."),
-    ("o-bad-port", ["-o", "Port=x", "127.0.0.1", "true"], None, b"Badly formatted port number."),
-    ("o-bad-rekey", ["-o", "RekeyLimit=x", "127.0.0.1", "true"], None, b"Bad RekeyLimit"),
+    ("o-bad-port", ["-o", "Port=x", "127.0.0.1", "true"], None, b"Bad port 'x'."),
+    ("o-bad-rekey", ["-o", "RekeyLimit=x", "127.0.0.1", "true"], None, b"Bad number 'x'"),
     ("o-bad-requesttty", ["-o", "RequestTTY=sometimes", "127.0.0.1", "true"], None, b"unsupported option"),
     ("file-unknown-keyword", ["127.0.0.1", "true"], "Foo bar\n", b"Bad configuration option: foo"),
     ("file-bad-value", ["127.0.0.1", "true"], "Host *\n  StrictHostKeyChecking maybe\n", b"unsupported option"),
-    ("file-bad-port", ["127.0.0.1", "true"], "Host *\n  Port x\n", b"Badly formatted port number."),
+    ("file-bad-port", ["127.0.0.1", "true"], "Host *\n  Port x\n", b"Bad port 'x'."),
+    ("file-missing-argument", ["127.0.0.1", "true"], "Host *\n  Port\n", b"no argument after keyword"),
 ]
 
 
