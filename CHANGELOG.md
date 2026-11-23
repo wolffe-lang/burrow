@@ -1,3 +1,19 @@
+## Unreleased
+
+- A changed host key's banner names the line that holds the other key,
+  `Offending ED25519 key in FILE:LINE`, where the pinned `ssh` prints it:
+  the last line read that names the host with another key, the user's files
+  read before the system's (burrow#8). The changed-key rows hold the whole
+  banner to `ssh`'s line by line.
+- The lines burrow prints as the pinned `ssh` prints them (the connect and
+  host-key lines, the banners, `Permission denied`) end in CR LF, as `ssh`'s
+  own do with stderr a pipe or a file; burrow's own
+  `burrow: <name>: <detail>` lines are unchanged (burrow#9, the part
+  without a terminal). The rows compare those lines byte for byte.
+- burrowd checks every later line of a keyword in its config as it checks
+  the first, and refuses a malformed one at start by file and line, as the
+  pinned `sshd` does; the first value still wins (burrow#22).
+
 ## 0.1.0
 
 - Experimental: the first release, a preview. burrow has no post-quantum key
