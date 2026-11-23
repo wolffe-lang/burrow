@@ -368,23 +368,23 @@ fn has_token(v: str) -> bool {
 // config file (`src` names the file and line). `active` is false for a
 // block that does not apply, whose lines are only checked for keywords
 // ssh does not know (it rejects those anywhere).
-fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
+fn keyword(mut s: Settings, key: str, value: str, src: str, vsrc: str, cli: bool) {
     let k = key.lower()
     let words = value_words(value)
     let where = if cli then "command-line: line 0" else src
-    let vline = if cli then "command-line line 0" else src
+    let vline = if cli then "command-line line 0" else vsrc
     let refusal = if cli then "option_unsupported" else "config_unsupported"
     if !known_keyword(k) {
         refuse_as(
             mut s,
             if cli then "option_unknown" else "config_unsupported",
-            "{where}: Bad configuration option: {k}",
+            "{where}: Bad configuration option: {k}\r",
             "{key} is not an ssh_config(5) keyword",
         )
         return
     }
     if words.len == 0 {
-        refuse_as(mut s, refusal, "{vline}: missing argument.", "{key} needs a value")
+        refuse_as(mut s, refusal, "{vline}: no argument after keyword \"{k}\"\r", "{key} needs a value")
         return
     }
     let v = words[0]
@@ -436,7 +436,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             refuse_as(
                 mut s,
                 refusal,
-                "{vline}: unsupported option \"{v}\".",
+                "{vline}: unsupported option \"{v}\".\r",
                 "{key} takes yes or no",
             )
             return
@@ -459,7 +459,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             refuse_as(
                 mut s,
                 refusal,
-                "{vline}: unsupported option \"{v}\".",
+                "{vline}: unsupported option \"{v}\".\r",
                 "StrictHostKeyChecking {v}",
             )
         }
@@ -493,14 +493,14 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
     } else if k == "connecttimeout" {
         let n = v.to_int() else -1
         if n < 0 || n > 86400 {
-            refuse_as(mut s, refusal, "{vline}: invalid time value.", "ConnectTimeout {v}")
+            refuse_as(mut s, refusal, "{vline}: invalid time value.\r", "ConnectTimeout {v}")
             return
         }
         s.connect_timeout = n
     } else if k == "port" {
         let n = v.to_int() else -1
         if n < 1 || n > 65535 {
-            refuse_as(mut s, refusal, "{vline}: Badly formatted port number.", "Port {v}")
+            refuse_as(mut s, refusal, "{vline}: Bad port '{v}'.\r", "Port {v}")
             return
         }
         s.port = n
@@ -573,7 +573,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
             refuse_as(
                 mut s,
                 refusal,
-                "{vline}: unsupported option \"{v}\".",
+                "{vline}: unsupported option \"{v}\".\r",
                 "RequestTTY takes no, yes, force or auto",
             )
             return
@@ -583,7 +583,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
         if words[0].lower() != "default" {
             let n = byte_count(words[0])
             if n < 0 {
-                refuse_as(mut s, refusal, "{vline}: Bad RekeyLimit", "RekeyLimit {value}")
+                refuse_as(mut s, refusal, "{vline}: Bad number '{words[0]}': Invalid argument\r", "RekeyLimit {value}")
                 return
             }
             s.rekey_bytes = n
@@ -591,7 +591,7 @@ fn keyword(mut s: Settings, key: str, value: str, src: str, cli: bool) {
         if words.len > 1 && words[1].lower() != "none" {
             let t = words[1].to_int() else -1
             if t < 0 {
-                refuse_as(mut s, refusal, "{vline}: Bad RekeyLimit", "RekeyLimit {value}")
+                refuse_as(mut s, refusal, "{vline}: Bad RekeyLimit\r", "RekeyLimit {value}")
                 return
             }
             s.rekey_seconds = t
@@ -635,7 +635,7 @@ fn option(mut s: Settings, text: str) {
         key = text[0..cut]
         value = text[cut + 1..text.len].trim()
     }
-    keyword(mut s, key.trim(), value, "", true)
+    keyword(mut s, key.trim(), value, "", "", true)
 }
 
 fn destination(mut s: Settings, a: str) {
@@ -707,7 +707,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                     refuse_as(mut s, "usage", "", "{a}: not a size")
                 }
             } else {
-                refuse_as(mut s, "option_unknown", "unknown option -- -", a)
+                refuse_as(mut s, "option_unknown", "unknown option -- -\r", a)
             }
         } else if a.starts_with("-") && a.len > 1 {
             var j = 1
@@ -736,7 +736,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                     var v = a[j + 1..a.len]
                     if v.len == 0 {
                         if i + 1 >= args.len {
-                            refuse_as(mut s, "usage", "option requires an argument -- {f}", "-{f}")
+                            refuse_as(mut s, "usage", "option requires an argument -- {f}\r", "-{f}")
                             return s
                         }
                         i += 1
@@ -794,7 +794,7 @@ pub fn parse_args(args: List[str]) -> Settings {
                         "-{f}: an ssh(1) option burrow does not take",
                     )
                 } else {
-                    refuse_as(mut s, "option_unknown", "unknown option -- {f}", "-{f}")
+                    refuse_as(mut s, "option_unknown", "unknown option -- {f}\r", "-{f}")
                 }
             }
         } else {
@@ -907,11 +907,11 @@ pub fn apply_config(mut s: Settings, text: str, file: str) {
             continue
         }
         if !known_keyword(k) {
-            refuse_as(mut s, "config_unsupported", "{src}: Bad configuration option: {k}", "{key}")
+            refuse_as(mut s, "config_unsupported", "{src}: Bad configuration option: {k}\r", "{key}")
             continue
         }
         if active {
-            keyword(mut s, key, value, src, false)
+            keyword(mut s, key, value, src, "{file} line {n}", false)
         }
     }
 }
