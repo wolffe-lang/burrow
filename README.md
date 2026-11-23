@@ -8,7 +8,7 @@ macOS. Its first user is
 through an argv vector and speaks git's protocol v2 over its pipes; its
 second is a person typing `ssh` on PAX.
 
-**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX, and (bw06) a terminal for an interactive session, each program in a session of its own. **B4, den over burrow:** burrow connects, verifies the server's host
+**State: B5, the server for commands** ([burrowd](#burrowd-the-server-for-commands), below), with passwords from `/etc/shadow` for B6, the server on PAX, and (B7) a terminal for an interactive session, each program in a session of its own. **B4, den over burrow:** burrow connects, verifies the server's host
 key against known_hosts (the user's files and then the system's,
 `/etc/ssh/ssh_known_hosts` and `/etc/ssh/ssh_known_hosts2`, as `ssh` reads
 them; plain and hashed entries; strict by default, `accept-new` and `no` as
@@ -352,14 +352,14 @@ interleaved streams, exit codes and signals, the session's environment
 `sshd`'s too) and `id`, every refused request, the login shell with no pty (a script on
 stdin, its `$0`, a forced command in its place, `ssh host` at a terminal
 with the pty refused, and a slow answer while the client's keystroke-timing
-PINGs arrive), and (bw06) a terminal: `ssh -tt` with and without TERM, the
+PINGs arrive), and (B7) a terminal: `ssh -tt` with and without TERM, the
 size and the whole `stty -a` from a client's terminal and a window change,
 a full-screen program reading its size and a key, Ctrl-C to a trap and to a
 program it ends, the login shell at a terminal, the session's end with a
 child left on the pty, 20000 lines before the end, the client's end of
 input, `no-pty`, `restrict` and `pty` on a key, and the program's session
 of its own; MaxStartups, `-T`'s limits, the log line and
-the processes' users; and (px112) passwords, each run's own, given to the
+the processes' users; and passwords, each run's own, given to the
 pinned `ssh` by its askpass program's environment: the right one, a wrong
 one, wrong then right, MaxAuthTries and LoginGraceTime with passwords,
 root's, a locked or expired account (by password and by key), an expired,
