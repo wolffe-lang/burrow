@@ -183,7 +183,9 @@ fn run(s: config.Settings, pty: bool) -> int {
         if name == "connect_refused" {
             eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused\r")
         } else if name == "timeout" {
-            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection timed out\r")
+            eprint(
+                "{program()}: connect to host {s.hostname} port {s.port}: Connection timed out\r",
+            )
         } else {
             eprint("{program()}: connect to host {s.hostname} port {s.port}: failed")
         }
