@@ -980,6 +980,46 @@ def config_setenv():
             f"{len(SETENV_REFUSED) - both} by burrowd alone (an empty name, which sshd takes)")
 
 
+# burrow#22: a keyword's first value wins, but every later line's value is still checked (the pinned sshd refuses
+# a malformed one wherever it is, measured). Each: the keyword, its first line's value, a malformed later value,
+# a well-formed later value both servers take and ignore.
+LATER_LINES = [
+    ("LoginGraceTime", "5", "soon", "7"),
+    ("Port", "2222", "x", "2223"),
+    ("MaxAuthTries", "3", "many", "4"),
+    ("StrictModes", "yes", "maybe", "no"),
+    ("PasswordAuthentication", "no", "maybe", "yes"),
+]
+
+
+@row
+def config_later_lines():
+    """burrowd -t on a file whose second line of a keyword is malformed refuses it at start, by file and line, as
+    sshd -t refuses it; with a well-formed second line both take the file and the first value still wins."""
+    d = rundir("config-later-lines")
+    d.mkdir(parents=True)
+    key = d / "host_ed25519"
+    serverlib.keygen(key, "host")
+    log = []
+    for kw, first, bad, good in LATER_LINES:
+        for kind, later in (("bad", bad), ("good", good)):
+            name = f"{kw.lower()}-{kind}"
+            cfg, scfg = setenv_configs(d, name, [f"{kw} {first}", f"{kw} {later}"], key)
+            rb = serverlib.run([str(BIN), "-t", "-f", str(cfg)], timeout=30)
+            rs = serverlib.run([serverlib.SSHD, "-t", "-f", str(scfg)], timeout=30)
+            log.append(f"{name}\n  sshd -t: {rs[0]} {tail(rs[2], 200)!r}\n  burrowd -t: {rb[0]} {tail(rb[2], 200)!r}")
+            (d / "compare.txt").write_text("\n".join(log) + "\n")
+            if kind == "bad":
+                check(rs[0] == 255, f"{name}: sshd -t took {kw} {later!r} on line 2: {show(rs)}")
+                want = f"burrowd: config_unsupported: {cfg} line 2: "
+                check(rb[0] == 1 and want in rb[2].decode(errors="replace"),
+                      f"{name}: burrowd -t {show(rb)}, wanted exit 1 and {want!r}")
+            else:
+                check(rs[0] == 0, f"{name}: sshd -t {show(rs)}")
+                check(rb[0] == 0, f"{name}: burrowd -t {show(rb)}")
+    return f"{len(LATER_LINES)} keywords: a malformed second line refused by both, a well-formed one taken by both"
+
+
 @row
 def session_setenv():
     """A session's environment with SetEnv, for a command and for the login
