@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""check-public-text — no internal work-item id in burrow's public documents.
+
+    python3 -I tools/check-public-text
+    python3 -I tools/check-public-text --self-test
+
+Reads README.md, CHANGELOG.md and every *.md under docs/, outside fenced code blocks, for a token shaped like an
+internal work-item id: at a word start, one to three lowercase letters, then digits, then at most one lowercase
+letter (ID below). A match passes only when it is
+
+  - a name below (ALLOWED): a hash or cipher, a curve, a platform, a protocol version;
+  - a commit hash: seven to forty hex digits;
+  - inside a backticked path listed below (PATHS): another repository's file, which burrow cannot rename, or one
+    of burrow's own files under notes/ until their rename (burrow#36).
+
+Anything else is `FAIL public-text FILE:LINE TOKEN` at column 0; the row's exit is 1 when any line fails.
+--self-test holds the scan to text of its own: ids it must catch, each allowed token and path it must pass.
+"""
+import argparse
+import pathlib
+import re
+import sys
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+ID = re.compile(r"\b[a-z]{1,3}[0-9]+[a-z]?\b")
+HEX = re.compile(r"[0-9a-f]{7,40}")
+ALLOWED = {
+    "sha1", "sha2", "sha256", "sha384", "sha512", "md5",  # hashes
+    "aes128", "aes192", "aes256",  # ciphers
+    "ed25519", "x25519",  # curves
+    "x86", "arm64", "i7",  # platforms and processors
+    "x11", "tcp4", "tcp6", "ipv4", "ipv6", "utf8",  # protocol and encoding names
+    "v0", "v1", "v2", "v00",  # protocol versions (kex-strict-s-v00@openssh.com)
+}
+PATHS = {
+    # Other repositories' files, named as they are there.
+    "notes/vc16-the-wire-porcelain.md": "den's",
+    "notes/vc22-the-smart-http-transport.md": "den's",
+    "docs/sc81-sessions-and-ptys.md": "wolf-std's",
+    # burrow's own, renamed with the rest of notes/ (burrow#36).
+    "notes/bw04-the-server.md": "burrow's, until burrow#36",
+    "notes/bw06/probe/sshd_pty.py": "burrow's, until burrow#36",
+    "notes/bw06/evidence/linux-probes.log": "burrow's, until burrow#36",
+}
+SPAN = re.compile(r"`[^`\n]*`")
+
+
+def files(root):
+    out = [root / "README.md", root / "CHANGELOG.md"]
+    out += sorted((root / "docs").glob("**/*.md"))
+    return [p for p in out if p.is_file()]
+
+
+def scan(name, text):
+    """Each failing (name, line number, token) in one document's text."""
+    fails = []
+    fenced = False
+    for n, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        exempt = []
+        for m in SPAN.finditer(line):
+            if m.group()[1:-1] in PATHS:
+                exempt.append((m.start(), m.end()))
+        for m in ID.finditer(line):
+            tok = m.group()
+            if tok in ALLOWED or HEX.fullmatch(tok):
+                continue
+            if any(a <= m.start() < b for a, b in exempt):
+                continue
+            fails.append((name, n, tok))
+    return fails
+
+
+def self_test():
+    must_fail = ["the bw06 probes", "as px112 read it", "(sc81)", "s290's note", "t16a", "## wr14: a heading",
+                 "`notes/bw07/takes.log`", "`docs/xy12-other.md`"]
+    for t in must_fail:
+        assert scan("t", t), f"not caught: {t!r}"
+    must_pass = [" ".join(sorted(ALLOWED)), "commit ac2332b and e4f5e1533", "x86-64 and arm64",
+                 "`kex-strict-s-v00@openssh.com`", "B4, B8 and RFC 4254", "OpenSSH_10.2p1", "aarch64",
+                 "mlkem768x25519-sha256", "```\nbw06 inside a fence\n```"]
+    must_pass += [f"see `{p}`" for p in PATHS]
+    for t in must_pass:
+        assert not scan("t", t), f"refused: {t!r}: {scan('t', t)}"
+    assert scan("t", "`notes/bw06/probe/sshd_pty.py` and bw06") == [("t", 1, "bw06")], "a listed path exempts only itself"
+    print("PASS public-text-self-test caught %d, passed %d" % (len(must_fail) + 1, len(must_pass)))
+
+
+def main():
+    p = argparse.ArgumentParser(description="no internal work-item id in the public documents")
+    p.add_argument("--self-test", action="store_true")
+    a = p.parse_args()
+    if a.self_test:
+        self_test()
+        return 0
+    fails = []
+    docs = files(ROOT)
+    for f in docs:
+        fails += scan(str(f.relative_to(ROOT)), f.read_text())
+    for name, n, tok in fails:
+        print(f"FAIL public-text {name}:{n} {tok}", flush=True)
+    if not fails:
+        print(f"PASS public-text {len(docs)} documents, no internal id")
+    return 1 if fails else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
