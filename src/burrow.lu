@@ -122,7 +122,7 @@ fn identities(s: config.Settings, explicit: bool) -> Ids {
     for path in s.identities {
         if !fs.exists(path) {
             if explicit {
-                eprint("Warning: Identity file {path} not accessible: No such file or directory.")
+                eprint("Warning: Identity file {path} not accessible: No such file or directory.\r")
             }
             continue
         }
@@ -133,10 +133,10 @@ fn identities(s: config.Settings, explicit: bool) -> Ids {
         }
         if name != "" {
             if name == "key_permissions" {
-                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-                eprint("@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @")
-                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
-                eprint("It is required that your private key files are NOT accessible by others.")
+                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+                eprint("@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @\r")
+                eprint("@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\r")
+                eprint("It is required that your private key files are NOT accessible by others.\r")
             }
             eprint("burrow: {name}: {path} (no key bytes are printed)")
             ids.refused = name
@@ -181,9 +181,9 @@ fn run(s: config.Settings, pty: bool) -> int {
     var c = transport.dial(opts) else |e| {
         let name = "{e}"
         if name == "connect_refused" {
-            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused")
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection refused\r")
         } else if name == "timeout" {
-            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection timed out")
+            eprint("{program()}: connect to host {s.hostname} port {s.port}: Connection timed out\r")
         } else {
             eprint("{program()}: connect to host {s.hostname} port {s.port}: failed")
         }
