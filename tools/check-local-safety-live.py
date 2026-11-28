@@ -76,11 +76,22 @@ def escalation_and_bystander(directory):
         assert read_line(canary) == b"FIXTURE_READY\n"
         assert os.getpgid(victim.pid) == os.getpgid(canary.pid) == os.getpgrp()
         real_deliver = m.deliver
+        real_run = subprocess.run
+        def guard_run(argv, **kwargs):
+            if argv[0] == "/bin/kill":
+                assert len(argv) == 3 and argv[1] in ("-TERM", "-KILL") and argv[2] == str(victim.pid), "blocked nonindividual signal command"
+            elif argv[0] == "/bin/ps":
+                assert argv[1:3] == ["-p", str(victim.pid)], "inspection names an unrecorded PID"
+            else:
+                raise AssertionError("unexpected dispatcher command")
+            return real_run(argv, **kwargs)
         def guarded_deliver(pid, name):
             assert type(pid) is int and pid == victim.pid and pid > 0
             assert name in ("TERM", "KILL")
             real_deliver(pid, name)
-        with patch.object(m, "deliver", side_effect=guarded_deliver), patch("os.killpg", side_effect=AssertionError("forbidden group signal")):
+        with patch.object(m, "deliver", side_effect=guarded_deliver), \
+             patch("subprocess.run", side_effect=guard_run), \
+             patch("os.killpg", side_effect=AssertionError("forbidden group signal")):
             rc = m.OwnedChild(victim, record=events.append).stop(grace=0.1)
         assert rc == -9 and victim.returncode == -9
         identities = [e for e in events if e["event"] == "identity"]

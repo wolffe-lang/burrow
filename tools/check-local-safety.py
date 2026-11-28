@@ -41,6 +41,22 @@ def no_groups():
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
                 assert node.func.attr not in ("killpg", "killall"), f"forbidden group/name dispatcher in {name}:{node.lineno}"
     m = helper()
+    invocations = []
+    def dispatch(argv, **kwargs):
+        assert argv in (["/bin/kill", "-TERM", "123"], ["/bin/kill", "-KILL", "123"]), "not one recorded positive PID per signal command"
+        invocations.append(argv)
+        return SimpleNamespace(returncode=0, stderr="")
+    with patch.object(m.subprocess, "run", side_effect=dispatch):
+        m.deliver(123, "TERM")
+        m.deliver(123, "KILL")
+        for bad in (0, -1, True):
+            try:
+                m.deliver(bad, "TERM")
+            except m.OwnershipError:
+                pass
+            else:
+                raise AssertionError("dispatcher accepted a nonpositive/noninteger PID")
+    assert len(invocations) == 2
     calls = []
     class Process:
         pid = 123
