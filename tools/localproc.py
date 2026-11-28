@@ -265,7 +265,7 @@ class OwnedChild:
     def stop(self, grace=2):
         self.signal("TERM")
         try:
-            return self.wait(timeout=grace)
+            return self.proc.poll()
         except subprocess.TimeoutExpired:
             self.signal("KILL")
             return self.wait(timeout=grace)
