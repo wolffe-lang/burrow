@@ -216,9 +216,8 @@ SYSTEM_SSH = "/usr/bin/ssh"
 
 @row
 def local_tty():
-    """`ssh -tt` at a terminal through burrowd: the pty's name, its size,
-    a window change, Ctrl-C to a trap, the status; the session's line names
-    no refusal."""
+    """`ssh -tt` at a terminal through burrowd: tty, size and resize,
+    then byte 0x03 ends a default-disposition foreground probe."""
     if not os.path.exists(SYSTEM_SSH):
         check(False, f"no {SYSTEM_SSH} on this host")
     version = subprocess.run([SYSTEM_SSH, "-V"], capture_output=True, text=True).stderr.strip()
@@ -238,7 +237,7 @@ def local_tty():
     # stderr shares the terminal: the system ssh's own warnings may come first.
     m = re.search(rb"(/dev/tty\S+)\r\n40 132\r\nready\r\n", r[1])
     check(m is not None and b"\r\n50 100\r\n" in r[1], f"transcript {r[1][:300]!r}")
-    c = signal_terminal(argv=argv)
+    signal_terminal(argv=argv)
     got = L.lines()
     check(got and all(" refused " not in x for x in got[-2:]), f"burrowd's log: {got[-2:]}")
     return f"{m.group(1)[:12].decode()}…, 40 132 then 50 100, exit 3; byte 0x03 ends the default-INT probe ({version})"
@@ -439,6 +438,10 @@ def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, k
                     while not reaped and time.monotonic() < deadline:
                         if not drain(0.05):
                             break
+                if not reaped and leader.poll() is not None:
+                    # Even an exec/protocol failure must explicitly reap the
+                    # direct keeper child; it does not prove a client exit.
+                    owned.wait()
                 check(reaped, f"client not acknowledged reaped; keeper PID {leader.pid}, client PID {client_pid}")
                 # Only after the client is reaped may the keeper be released
                 # or individually stopped. Never orphan the client to fix a wait.
