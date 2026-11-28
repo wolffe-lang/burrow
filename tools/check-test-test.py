@@ -5,6 +5,7 @@ The fakes speak the pinned wolf-test/0 and conform-run protocol 1 shapes.
 They never run wolf code, SSH, a login shell, or a signal operation.
 """
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,7 +33,7 @@ def report():
 def observation():
     return {"commit": "3fc86f7", "diagnostics": [], "file": FILES[0], "impl": "wolfgang",
             "impl_version": "0.2.39", "phase_reached": "run", "protocol": 1,
-            "seeded": False, "stdout_inline": "", "stdout_sha256": "0" * 64,
+            "seeded": False, "stdout_inline": "", "stdout_sha256": hashlib.sha256(b"").hexdigest(),
             "verdict": "exit(0)", "warnings": []}
 
 
