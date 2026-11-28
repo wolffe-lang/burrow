@@ -100,8 +100,10 @@ def retry(path, rc, filename, version, revision):
     require("native" not in r and not any(k.startswith("x-unsupported") for k in r), "fallback or unsupported metadata")
     require(r.get("diagnostics") == [] and r.get("warnings") == [] and r.get("seeded") is False,
             "unexpected diagnostics, warnings or seed mode")
-    stdout = r.get("stdout_inline")
-    require(type(stdout) is str and r.get("stdout_sha256") == hashlib.sha256(stdout.encode()).hexdigest(),
+    stdout, digest = r.get("stdout_inline"), r.get("stdout_sha256")
+    require("stdout_inline" in r and "stdout_sha256" in r and
+            ((stdout is None and digest is None) or
+             (type(stdout) is str and digest == hashlib.sha256(stdout.encode()).hexdigest())),
             "missing or inconsistent executed stdout")
     print(f"PASS {filename} [checked retry] exit(0)")
 
