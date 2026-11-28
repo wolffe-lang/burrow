@@ -23,8 +23,12 @@ def unique_object(pairs):
     return result
 
 
+def reject_constant(value):
+    raise ValueError(f"non-JSON numeric constant {value}")
+
+
 def decode(text):
-    value = json.loads(text, object_pairs_hook=unique_object)
+    value = json.loads(text, object_pairs_hook=unique_object, parse_constant=reject_constant)
     require(type(value) is dict, "observation is not an object")
     return value
 
