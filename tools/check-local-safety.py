@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import struct
 import sys
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -65,7 +66,7 @@ def no_groups():
         def poll(self): return self.returncode
     p = Process()
     child = m.OwnedChild(p, record=calls.append)
-    with patch.object(m, "command_line", return_value=tuple(p.args)), patch.object(m, "deliver", side_effect=lambda pid, sig: calls.append((pid, sig))):
+    with patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", return_value=tuple(p.args)), patch.object(m, "deliver", side_effect=lambda pid, sig: calls.append((pid, sig))):
         child.signal("TERM")
         child.signal("KILL")
     assert [x for x in calls if isinstance(x, tuple)] == [(123, "TERM"), (123, "KILL")]
@@ -83,7 +84,7 @@ def mismatch_payload_synthetic():
     for actual in ("/synthetic/other-image -I /synthetic/with space/probe.py  stubborn\tend",
                    ("/synthetic/other-image", "-I", "/synthetic/with space/probe.py", "", "stubborn")):
         p = Process()
-        with patch.object(m, "command_line", return_value=actual), \
+        with patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", return_value=actual), \
              patch.object(m, "deliver", side_effect=AssertionError("mismatch dispatched a signal")) as deliver:
             try:
                 m.OwnedChild(p).signal("TERM")
@@ -92,12 +93,9 @@ def mismatch_payload_synthetic():
             else:
                 raise AssertionError("mismatch did not fail closed")
             assert not deliver.called
-        assert payload["event"] == "identity-mismatch" and payload["pid"] == 123
-        assert payload["platform"] == sys.platform
-        assert payload["recorded_argv"] == p.args
-        assert payload["observed_command_line"] == (actual if isinstance(actual, str) else list(actual))
-        assert payload["expected_comparison"] == (" ".join(p.args) if isinstance(actual, str) else p.args)
-        assert payload["observed_form"] == ("text" if isinstance(actual, str) else "argv")
+        assert payload["event"] == "identity-refused" and payload["pid"] == 123
+        assert payload["reason"] in ("lossless argv unavailable", "executable differs without a child report")
+        assert not {"recorded_argv", "observed_command_line", "expected_comparison"} & set(payload)
 
 
 def hosted_framework_form():
@@ -120,11 +118,108 @@ def hosted_framework_form():
     delivered = []
     child = m.OwnedChild(Process())
     child.exec_report = Report()
-    with patch.object(m, "parent_pid", return_value=os.getpid(), create=True), \
+    with patch.object(m, "parent_pid", return_value=os.getpid()), \
          patch.object(m, "command_line", return_value=tuple([became] + tail)), \
          patch.object(m, "deliver", side_effect=lambda pid, sig: delivered.append((pid, sig))):
         child.signal("TERM")
     assert delivered == [(123, "TERM")]
+
+
+def strict_identity_negatives():
+    m = helper()
+    launched = ["/fixture/launcher", "-I", "/fixture/a b.py", "", "stubborn"]
+    became = "/fixture/Python.app/Python"
+    class Process:
+        pid = 123
+        args = launched
+        returncode = None
+        def poll(self): return self.returncode
+    good = {"version": 1, "pid": 123, "ppid": os.getpid(), "argv": [became] + launched[1:]}
+    split = [became, "-I", "/fixture/a", "b.py", "", "stubborn"]
+    assert " ".join(split[1:]) == " ".join(launched[1:]), "fixture must collide under flattening"
+    cases = [(tuple(split), good, os.getpid()),
+             (" ".join(launched), good, os.getpid()),
+             (tuple(good["argv"]), None, os.getpid()),
+             (tuple(good["argv"]), dict(good, pid=124), os.getpid()),
+             (tuple(good["argv"]), dict(good, ppid=os.getpid()+1), os.getpid()),
+             (tuple(good["argv"]), dict(good, argv=["Python"] + launched[1:]), os.getpid()),
+             (tuple(good["argv"]), dict(good, argv=[became] + launched[1:-1]), os.getpid()),
+             (tuple(launched), None, os.getpid()+1)]
+    for actual, data, parent in cases:
+        class Report:
+            def get(self): return data
+            def close(self): pass
+        child = m.OwnedChild(Process())
+        child.exec_report = Report() if data is not None else None
+        with patch.object(m, "parent_pid", return_value=parent), patch.object(m, "command_line", return_value=actual), \
+             patch.object(m, "deliver", side_effect=AssertionError("unverified identity dispatched")) as deliver:
+            try:
+                child.signal("TERM")
+            except m.OwnershipError:
+                pass
+            else:
+                raise AssertionError("ambiguous, unbound or mismatched identity accepted")
+            assert not deliver.called
+
+
+def darwin_adapter_synthetic():
+    m = helper()
+    args = ("/fixture/Python.app/Python", "-I", "/fixture/path with spaces/probe.py", "", "stubborn")
+    raw = struct.pack("=i", len(args)) + b"/fixture/exec-image\0\0\0" + b"\0".join(x.encode() for x in args) + b"\0ENV_NOT_ARGV=synthetic\0"
+    assert m.parse_darwin_argv(raw) == args
+    for bad in (b"", struct.pack("=i", 0)+raw[4:], struct.pack("=i", 1000000)+raw[4:],
+                struct.pack("=i", 1)+b"/exec\0\0unterminated"):
+        try:
+            m.parse_darwin_argv(bad)
+        except m.OwnershipError:
+            pass
+        else:
+            raise AssertionError("malformed process-argument data accepted")
+    calls = []
+    class Query:
+        def __call__(self, mib, count, out, size, new, newlen):
+            key = tuple(mib[i] for i in range(count))
+            calls.append(key)
+            if key == (1, 8):
+                m.ctypes.cast(out, m.ctypes.POINTER(m.ctypes.c_int))[0] = 2048
+                return 0
+            assert key == (1, 49, 123), "adapter queried another PID"
+            m.ctypes.memmove(out, raw, len(raw))
+            m.ctypes.cast(size, m.ctypes.POINTER(m.ctypes.c_size_t))[0] = len(raw)
+            return 0
+    with patch.object(m.ctypes, "CDLL", return_value=SimpleNamespace(sysctl=Query())):
+        assert m.darwin_argv(123) == args
+    assert calls == [(1, 8), (1, 49, 123)]
+
+
+def exec_report_binding():
+    m = helper()
+    data = {"version": 1, "nonce": "bound", "pid": 123, "ppid": os.getpid(),
+            "argv": ["/fixture/became", "-I", "/fixture/a b.py", "", "stubborn"]}
+    cases = [(data, b"", True), (dict(data, nonce="other"), b"", False),
+             (dict(data, pid=124), b"", False), (dict(data, ppid=os.getpid()+1), b"", False),
+             (dict(data, version=True), b"", False), (dict(data, argv=[]), b"", False),
+             (data, b"trailing-frame", False)]
+    for item, suffix, accepted in cases:
+        r, w = os.pipe()
+        encoded = json.dumps(item).encode()
+        os.write(w, struct.pack("!I", len(encoded)) + encoded + suffix)
+        os.close(w)
+        report = m.ExecReport(r, "bound", 123, os.getpid())
+        try:
+            result = report.get()
+        except m.OwnershipError:
+            assert not accepted
+        else:
+            assert accepted and result["argv"] == data["argv"]
+        finally:
+            report.close()
+        try:
+            os.fstat(r)
+        except OSError:
+            pass
+        else:
+            raise AssertionError("report pipe leaked")
 
 
 def identities():
@@ -140,7 +235,7 @@ def identities():
         delivered = []
         try:
             child = m.OwnedChild(p)
-            with patch.object(m, "command_line", return_value=("/not-the-child",)), patch.object(m, "deliver", side_effect=lambda *x: delivered.append(x)):
+            with patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", return_value=("/not-the-child",)), patch.object(m, "deliver", side_effect=lambda *x: delivered.append(x)):
                 child.signal("TERM")
         except (m.OwnershipError, ValueError):
             pass
@@ -149,7 +244,7 @@ def identities():
         assert not delivered
     p = Process()
     p.returncode = 0
-    with patch.object(m, "command_line", side_effect=AssertionError("read exited child")), patch.object(m, "deliver", side_effect=AssertionError("signalled exited child")):
+    with patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", side_effect=AssertionError("read exited child")), patch.object(m, "deliver", side_effect=AssertionError("signalled exited child")):
         m.OwnedChild(p).signal("TERM")
 
 
@@ -169,7 +264,7 @@ def reaps():
             self.returncode = -9
             return self.returncode
     p = Process()
-    with patch.object(m, "command_line", return_value=tuple(p.args)), patch.object(m, "deliver", side_effect=lambda pid, sig: events.append((pid, sig))):
+    with patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", return_value=tuple(p.args)), patch.object(m, "deliver", side_effect=lambda pid, sig: events.append((pid, sig))):
         rc = m.OwnedChild(p, record=events.append).stop(grace=0.01)
     assert rc == -9 and p.waits == 2
     assert [x for x in events if isinstance(x, tuple)] == [(123, "TERM"), (123, "KILL")]
@@ -230,7 +325,7 @@ def keeper_protocol():
     with patch.object(m.subprocess, "Popen", return_value=p), \
          patch.object(m.signal, "signal"), patch.object(m.select, "select", return_value=([7], [], [])), \
          patch.object(m.os, "read", side_effect=read), patch.object(m.os, "write", side_effect=write), \
-         patch.object(m.os, "close"), patch.object(m, "command_line", return_value=tuple(p.args)), \
+         patch.object(m.os, "close"), patch.object(m, "parent_pid", return_value=os.getpid()), patch.object(m, "command_line", return_value=tuple(p.args)), \
          patch.object(m, "deliver"):
         rc = m.keeper(8, 7, p.args)
     assert rc == 1 and any(e.get("event") == "error" and "unknown keeper control" in e.get("reason", "") for e in events)
@@ -281,6 +376,9 @@ def main():
     rows = (("local-cleanup-single-pid", no_groups),
             ("local-cleanup-identity", identities),
             ("local-hosted-framework-form", hosted_framework_form),
+            ("local-identity-tail-and-parent", strict_identity_negatives),
+            ("local-darwin-argv-adapter-synthetic", darwin_adapter_synthetic),
+            ("local-exec-report-binding", exec_report_binding),
             ("local-identity-mismatch-payload-synthetic", mismatch_payload_synthetic),
             ("local-cleanup-reaps", reaps),
             ("local-signal-no-script", lambda: capture_signal("local_signal")),
