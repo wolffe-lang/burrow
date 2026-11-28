@@ -71,7 +71,13 @@ class OwnedChild:
             raise
         expected = " ".join(self.argv) if isinstance(actual, str) else self.argv
         if actual != expected:
-            raise OwnershipError(f"PID {self.pid} command line differs from its launch record")
+            # Diagnostic only: retain the exact comparison operands without
+            # changing identity acceptance or sending any signal on mismatch.
+            payload = {"event": "identity-mismatch", "pid": self.pid, "platform": sys.platform,
+                       "recorded_argv": self.argv, "expected_comparison": expected,
+                       "observed_form": "text" if isinstance(actual, str) else "argv",
+                       "observed_command_line": actual}
+            raise OwnershipError(json.dumps(payload, ensure_ascii=True, sort_keys=True))
         self.record({"event": "identity", "pid": self.pid, "command": actual})
         self.record({"event": "signal", "pid": self.pid, "signal": name})
         try:
