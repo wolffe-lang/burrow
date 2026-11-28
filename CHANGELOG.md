@@ -1,5 +1,11 @@
 ## Unreleased
 
+- The unit gate requires complete passing checked observations, not just a
+  zero compiler exit. Unsupported retries, native substitutions and incomplete
+  or malformed reports fail; native and lupin outcomes remain independent
+  (burrow#43). The six monitor-verification assertions run independently under
+  the unchanged checked step budget, with the same vectors and verdicts.
+
 - A changed host key's banner names the line that holds the other key,
   `Offending ED25519 key in FILE:LINE`, where the pinned `ssh` prints it:
   the last line read that names the host with another key, the user's files
