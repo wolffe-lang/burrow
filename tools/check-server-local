@@ -520,7 +520,7 @@ def _signal_terminal(argv=None):
     marker = ("PROBE_READY " + nonce + " pid=").encode()
     before_logs = len(L.lines())
     args = ["-tt"] + (["127.0.0.1"] if argv is None else []) + [signal_probe_command(nonce)]
-    interrupt_byte = b"\x03"
+    interrupt_byte = b"x"
     def interrupt(master, slave):
         time.sleep(0.1)
         os.write(master, interrupt_byte)
