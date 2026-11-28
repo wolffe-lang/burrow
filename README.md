@@ -279,6 +279,16 @@ tools/in-container tools/fetch-den    # den at its pin (burrow-den.toml), built 
 tools/gate                            # the whole gauntlet, in the container
 ```
 
+`tools/check-test` first tests its own result handling with an isolated fake
+compiler, then validates the complete pinned compiler report against every
+`src/*_test.lu` file and its summary. A native fallback is retried checked-only;
+only an executed passing observation counts. Unsupported, missing or malformed
+observations fail the gate even when the compiler exits zero. Native and lupin
+results remain independent. The monitor's six verification assertions run in
+separate test files under the unchanged checked step budget; no assertion or
+vector is removed. Original stdout, stderr and retry JSON are kept separately
+under `target/tests/`.
+
 `tools/gate` runs every step and prints each one's `START` and
 `END … exit=N`, stopping at the first that fails: the toolchain and oracle
 digests, the CI planner's tests, the vectors (`tools/vectorgen.py`
