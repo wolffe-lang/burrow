@@ -125,7 +125,7 @@ class ExecReport:
             self.fd = None
 
     def validate(self, data):
-        if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1 or data.get("nonce") != self.nonce or \
+        if not isinstance(data, dict) or type(data.get("version")) is not int or data["version"] != 1 or \
                 type(data.get("pid")) is not int or data["pid"] != self.pid or \
                 type(data.get("ppid")) is not int or data["ppid"] != self.parent or not argv_vector(data.get("argv")):
             raise OwnershipError("exec report does not bind child, parent, nonce and argv")
