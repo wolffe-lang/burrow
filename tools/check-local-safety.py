@@ -166,6 +166,17 @@ def keeper_protocol():
     assert all(e.get("pid") == 123 for e in events)
 
 
+def wired():
+    d = load_tool()
+    calls = []
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=17 if str(argv[2]).endswith("check-local-safety-live.py") else 0)
+    with patch("sys.argv", ["check-server-local", "--self-test"]), patch("subprocess.run", side_effect=run):
+        rc = d["main"]()
+    assert rc == 17 and len(calls) == 1 and str(calls[0][2]).endswith("check-local-safety-live.py"), "live safety regression is not wired or its exit is swallowed"
+
+
 def main():
     failed = 0
     rows = (("local-cleanup-single-pid", no_groups),
@@ -174,7 +185,8 @@ def main():
             ("local-signal-no-script", lambda: capture_signal("local_signal")),
             ("local-tty-no-trap", lambda: capture_signal("local_tty")),
             ("local-tty-paths", lambda: capture_signal("local_tty", b"/dev/pts/17")),
-            ("local-keeper-protocol", keeper_protocol))
+            ("local-keeper-protocol", keeper_protocol),
+            ("local-safety-wired", wired))
     for name, fn in rows:
         try:
             fn()
