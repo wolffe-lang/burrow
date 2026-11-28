@@ -1,0 +1,35 @@
+//! member: false
+
+// A signature for another user is refused.
+use kexvec
+use mon
+use sauth
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn req(p: List[byte]) -> sauth.Request {
+    sauth.parse(p) else {
+        assert(false, "a request does not parse")
+        return sauth.parse(x(kexvec.auth_query())) else sauth.Request {
+            user: "",
+            service: "",
+            method: "",
+            signed: false,
+            alg: "",
+            blob: List[byte](),
+            sig: List[byte](),
+            change: false,
+            secret: List[byte](),
+            new_secret: List[byte](),
+        }
+    }
+}
+
+fn main() {
+    let sr = req(x(kexvec.auth_signed_request()))
+    let sid = x(kexvec.h())
+    assert(!mon.verify(sid, "root", sr.blob, sr.sig))
+}

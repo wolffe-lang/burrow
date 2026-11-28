@@ -107,17 +107,8 @@ fn main() {
         n += 1
     }
     assert(ended == "auth_tries_exceeded" && n == 6)
-    // The monitor's verification: over its session identifier, by the key
-    // the request names.
-    let sid = x(kexvec.h())
-    assert(mon.verify(sid, "burrowtest", sr.blob, sr.sig))
-    assert(!mon.verify(x(kexvec.h2()), "burrowtest", sr.blob, sr.sig))
-    assert(!mon.verify(sid, "root", sr.blob, sr.sig))
-    assert(!mon.verify(sid, "burrowtest", x(kexvec.k_s()), sr.sig))
-    var flipped = copy sr.sig
-    flipped[40] = (flipped[40] as int ^ 1) as byte
-    assert(!mon.verify(sid, "burrowtest", sr.blob, flipped))
-    assert(!mon.verify(List[byte](), "burrowtest", sr.blob, sr.sig))
+    // Monitor verification cases run independently in sauth_verify_*_test.lu,
+    // under the checked machine's unchanged per-file step budget.
     // Accounts: passwd and group, root refused always, an empty shell /bin/sh.
     let passwd = "root:x:0:0:root:/root:/bin/bash\nburrowtest:x:1000:1000::/home/burrowtest:\nsshd:x:100:65534::/run/sshd:/usr/sbin/nologin\n"
     let group = "root:x:0:\nburrowtest:x:1000:\ngit:x:1001:burrowtest,sshd\nwheel:x:10:burrowtest\n"

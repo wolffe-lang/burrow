@@ -1,0 +1,34 @@
+//! member: false
+
+// A signature for another session identifier is refused.
+use kexvec
+use mon
+use sauth
+use wire
+
+fn x(h: str) -> List[byte] {
+    wire.unhex(h) else List[byte]()
+}
+
+fn req(p: List[byte]) -> sauth.Request {
+    sauth.parse(p) else {
+        assert(false, "a request does not parse")
+        return sauth.parse(x(kexvec.auth_query())) else sauth.Request {
+            user: "",
+            service: "",
+            method: "",
+            signed: false,
+            alg: "",
+            blob: List[byte](),
+            sig: List[byte](),
+            change: false,
+            secret: List[byte](),
+            new_secret: List[byte](),
+        }
+    }
+}
+
+fn main() {
+    let sr = req(x(kexvec.auth_signed_request()))
+    assert(!mon.verify(x(kexvec.h2()), "burrowtest", sr.blob, sr.sig))
+}
