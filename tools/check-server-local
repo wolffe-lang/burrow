@@ -238,7 +238,7 @@ def local_tty():
     # stderr shares the terminal: the system ssh's own warnings may come first.
     m = re.search(rb"(/dev/(?:tty\S+|pts/[0-9]+))\r\n40 132\r\nready\r\n", r[1])
     check(m is not None and b"\r\n50 100\r\n" in r[1], f"transcript {r[1][:300]!r}")
-    signal_terminal(argv=argv)
+    on_terminal(["-tt", "exec /bin/sh -c \"trap 'echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done\""], argv=argv)
     got = L.lines()
     check(got and all(" refused " not in x for x in got[-2:]), f"burrowd's log: {got[-2:]}")
     return f"{m.group(1)[:12].decode()}…, 40 132 then 50 100, exit 3; byte 0x03 ends the default-INT probe ({version})"
