@@ -104,7 +104,7 @@ def reaps():
     assert any(isinstance(x, dict) and x.get("event") == "reaped" for x in events), "no wait/reap receipt"
 
 
-def capture_signal(which):
+def capture_signal(which, tty=b"/dev/ttyfixture"):
     d = load_tool()
     fn = d[which]
     g = fn.__globals__
@@ -123,7 +123,7 @@ def capture_signal(which):
         assert "trap " not in text and "kill " not in text and "kill -" not in text, "script signal witness: " + text
         if "local-signal-probe" in text:
             raise SafeCapture()
-        return 3, b"/dev/ttyfixture\r\n40 132\r\nready\r\n50 100\r\n", [], []
+        return 3, tty + b"\r\n40 132\r\nready\r\n50 100\r\n", [], []
     g["on_terminal"] = terminal
     g["restored"] = lambda *a: None
     g["signal_probe_command"] = lambda *a: "exec /fixture/local-signal-probe nonce"
@@ -149,6 +149,7 @@ def main():
             ("local-cleanup-reaps", reaps),
             ("local-signal-no-script", lambda: capture_signal("local_signal")),
             ("local-tty-no-trap", lambda: capture_signal("local_tty")),
+            ("local-tty-paths", lambda: capture_signal("local_tty", b"/dev/pts/17")),
             ("local-keeper-protocol", keeper_protocol))
     for name, fn in rows:
         try:
