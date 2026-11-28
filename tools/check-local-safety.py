@@ -371,6 +371,25 @@ def wired():
     assert rc == 17 and len(calls) == 1 and str(calls[0][2]).endswith("check-local-safety-live.py"), "live safety regression is not wired or its exit is swallowed"
 
 
+def lifecycle_messages_synthetic():
+    path = ROOT / "tools" / "check-local-safety-live.py"
+    d = runpy.run_path(str(path), run_name="synthetic_lifecycle_diagnostic")
+    for step, expected, observed in (("start", b"FIXTURE_READY\\n", b""),
+                                      ("report read", ["-I", "a b.py"], ["-I", "a", "b.py"]),
+                                      ("escalation", -9, 0), ("canary", b"PONG\\n", b""),
+                                      ("reap", True, False)):
+        try:
+            d["check_state"](step, 123, expected, observed)
+        except AssertionError as e:
+            text = str(e)
+            assert f"step={step}" in text and "pid=123" in text and repr(expected) in text and repr(observed) in text
+        else:
+            raise AssertionError("state mismatch did not fail")
+    for node in ast.walk(ast.parse(path.read_text())):
+        if isinstance(node, ast.Assert):
+            assert node.msg is not None, f"bare lifecycle assertion at line {node.lineno}"
+
+
 def main():
     failed = 0
     rows = (("local-cleanup-single-pid", no_groups),
@@ -387,7 +406,8 @@ def main():
             ("local-keeper-protocol", keeper_protocol),
             ("local-stdin-closed", stdin_closure),
             ("local-scratch-env", scratch_environment),
-            ("local-safety-wired", wired))
+            ("local-safety-wired", wired),
+            ("local-lifecycle-messages-synthetic", lifecycle_messages_synthetic))
     for name, fn in rows:
         try:
             fn()
