@@ -31,6 +31,14 @@ def command_line(pid):
     raise OwnershipError("unsupported host for child command-line verification")
 
 
+def feed(stream, data):
+    """Do not leave an input writer open when its child closes the reader."""
+    try:
+        stream.write(data)
+    finally:
+        stream.close()
+
+
 def deliver(pid, name):
     """Exactly one literal decimal PID and one signal in each command."""
     if type(pid) is not int or pid <= 0 or name not in ("TERM", "KILL"):

@@ -409,8 +409,7 @@ def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, k
         close(out_w)
         close(go_r)
         if stdin_data is not None:
-            leader.stdin.write(stdin_data)
-            leader.stdin.close()
+            localproc.feed(leader.stdin, stdin_data)
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline and rc is None and problem is None:
             if not drain(0.05) and rc is None:
