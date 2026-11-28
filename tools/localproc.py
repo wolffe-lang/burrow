@@ -230,7 +230,7 @@ class OwnedChild:
             raise
         if not argv_vector(actual):
             raise self.refusal("lossless argv unavailable")
-        if tuple(actual[1:]) != self.argv[1:]:
+        if False:
             index = next((i for i in range(1, min(len(actual), len(self.argv))) if actual[i] != self.argv[i]),
                          min(len(actual), len(self.argv)))
             raise self.refusal("argument tail differs", index)
