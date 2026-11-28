@@ -73,6 +73,7 @@ class Local:
         self.bin = bindir
         self.lifecycle = []
         self.home = WORK / "home"
+        (WORK / "tmp").mkdir(mode=0o700)
         (self.home / ".ssh").mkdir(parents=True)
         os.chmod(WORK, 0o755)
         os.chmod(self.home, 0o755)
@@ -111,7 +112,7 @@ class Local:
         (self.home / ".ssh" / "known_hosts").write_text(f"[127.0.0.1]:{self.port} {pub[0]} {pub[1]}\n")
 
     def env(self, extra=None):
-        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "USER": self.user,
+        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "TMPDIR": str(WORK / "tmp"), "USER": self.user,
              "LOGNAME": self.user, "SHELL": "/bin/sh", "LC_ALL": "C"}
         e.update(extra or {})
         return e
