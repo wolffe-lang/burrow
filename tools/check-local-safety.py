@@ -182,6 +182,23 @@ def keeper_protocol():
     assert all(e.get("pid") == 123 for e in events)
 
 
+def stdin_closure():
+    m = helper()
+    class Pipe:
+        closed = False
+        def write(self, data):
+            raise BrokenPipeError("fixture closed stdin")
+        def close(self): self.closed = True
+    pipe = Pipe()
+    try:
+        m.feed(pipe, b"fixture")
+    except BrokenPipeError:
+        pass
+    else:
+        raise AssertionError("stdin failure was swallowed")
+    assert pipe.closed, "stdin writer leaked after write failure"
+
+
 def wired():
     d = load_tool()
     calls = []
@@ -202,6 +219,7 @@ def main():
             ("local-tty-no-trap", lambda: capture_signal("local_tty")),
             ("local-tty-paths", lambda: capture_signal("local_tty", b"/dev/pts/17")),
             ("local-keeper-protocol", keeper_protocol),
+            ("local-stdin-closed", stdin_closure),
             ("local-safety-wired", wired))
     for name, fn in rows:
         try:
