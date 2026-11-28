@@ -325,7 +325,7 @@ def odd_modes(fd):
 
 
 def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, key=None, timeout=30, argv=None,
-                lifecycle=None):
+                lifecycle=None, report_client=False):
     """A row-owned pty; the keeper reaps its client before it is released."""
     import pty
     import select
@@ -403,10 +403,13 @@ def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, k
         go_r, go_w = os.pipe()
         fds.update((out_r, out_w, go_r, go_w))
         keeper_argv = [sys.executable, "-I", str(ROOT / "tools" / "localproc.py"), "keeper", str(out_w), str(go_r), "--"] + command
-        leader = subprocess.Popen(keeper_argv, stdin=slave if stdin_data is None else subprocess.PIPE,
-                                  stdout=slave, stderr=slave, env=L.env({"TERM": "xterm"}),
-                                  start_new_session=True, preexec_fn=_ctty, pass_fds=(out_w, go_r))
-        owned = localproc.OwnedChild(leader, lambda event: events.append(dict(event, role="keeper")))
+        owned = localproc.spawn_reported(keeper_argv,
+                                         record=lambda event: events.append(dict(event, role="keeper")),
+                                         stdin=slave if stdin_data is None else subprocess.PIPE,
+                                         stdout=slave, stderr=slave,
+                                         env=L.env({"TERM": "xterm", "BURROW_LOCAL_REPORT_CLIENT": "1" if report_client else "0"}),
+                                         start_new_session=True, preexec_fn=_ctty, pass_fds=(out_w, go_r))
+        leader = owned.proc
         close(out_w)
         close(go_r)
         if stdin_data is not None:
@@ -465,6 +468,8 @@ def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, k
         except Exception as e:
             problem = (problem + "; " if problem else "") + f"cleanup: {type(e).__name__}: {e}"
         finally:
+            if owned is not None:
+                owned.close_report()
             for fd in list(fds):
                 close(fd)
             events.append({"event": "fds-closed", "count": len(fds)})

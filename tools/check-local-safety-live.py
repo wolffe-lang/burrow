@@ -64,16 +64,24 @@ def escalation_and_bystander(directory):
     release = directory / "release-stubborn"
     canary_release = directory / "release-canary"
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(directory), "SHELL": "/bin/sh"}
-    script = directory / "cleanup-child.py"
-    script.write_text(CHILD)
-    victim = subprocess.Popen([sys.executable, "-I", str(script), str(release), "stubborn"],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    canary = subprocess.Popen([sys.executable, "-I", str(script), str(canary_release), "canary"],
-                              stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    script = directory / "cleanup child.py"
+    bootstrap = "import runpy\nrunpy.run_path(" + repr(str(ROOT / "tools" / "localproc.py")) + ", run_name='child_exec_report')['report_self']()\n"
+    script.write_text(bootstrap + CHILD)
     events = []
+    victim_owned = m.spawn_reported([sys.executable, "-I", str(script), str(release), "stubborn"],
+                                    record=events.append, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, env=env)
+    canary_owned = m.spawn_reported([sys.executable, "-I", str(script), str(canary_release), "canary"],
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    victim, canary = victim_owned.proc, canary_owned.proc
     try:
         assert read_line(victim) == b"FIXTURE_READY\n"
         assert read_line(canary) == b"FIXTURE_READY\n"
+        for owned in (victim_owned, canary_owned):
+            report = owned.exec_report.get()
+            assert report["pid"] == owned.pid and report["ppid"] == os.getpid()
+            assert tuple(report["argv"][1:]) == owned.argv[1:]
+        print("PASS local-exec-report-live (nonce-bound post-exec argv, including a script path with spaces)", flush=True)
         assert os.getpgid(victim.pid) == os.getpgid(canary.pid) == os.getpgrp()
         real_deliver = m.deliver
         real_run = subprocess.run
@@ -92,7 +100,7 @@ def escalation_and_bystander(directory):
         with patch.object(m, "deliver", side_effect=guarded_deliver), \
              patch("subprocess.run", side_effect=guard_run), \
              patch("os.killpg", side_effect=AssertionError("forbidden group signal")):
-            rc = m.OwnedChild(victim, record=events.append).stop(grace=0.1)
+            rc = victim_owned.stop(grace=0.1)
         assert rc == -9 and victim.returncode == -9
         identities = [e for e in events if e["event"] == "identity"]
         attempts = [e for e in events if e["event"] == "signal"]
@@ -108,8 +116,8 @@ def escalation_and_bystander(directory):
         # Rescue is independent and cooperative, never the dispatcher under test.
         release.touch()
         canary_release.touch()
-        victim.wait(timeout=10)
-        canary.wait(timeout=10)
+        victim_owned.wait(timeout=10)
+        canary_owned.wait(timeout=10)
         for p in (victim, canary):
             p.stdin.close()
             p.stdout.close()
@@ -131,11 +139,11 @@ def terminal_lifecycle(directory):
         events = []
         release = directory / ("release-terminal-" + kind)
         command = ([str(directory / "missing-program")] if kind == "missing" else
-                   [sys.executable, "-I", str(directory / "cleanup-child.py"), str(release), kind])
+                   [sys.executable, "-I", str(directory / "cleanup child.py"), str(release), kind])
         before = fds()
         try:
             try:
-                result = fn([], argv=command, timeout=0.25 if kind == "stubborn" else 3, lifecycle=events)
+                result = fn([], argv=command, timeout=0.25 if kind == "stubborn" else 3, lifecycle=events, report_client=True)
             except d["Fail"] as e:
                 assert kind != "normal", str(e)
                 assert "timed out" in str(e) if kind == "stubborn" else "keeper" in str(e)
