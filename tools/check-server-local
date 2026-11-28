@@ -165,7 +165,7 @@ def local_cat_64m():
 
 @row
 def local_signal():
-    signal_terminal()
+    L.ssh(["kill -TERM $$"])
     return "terminal byte 0x03, default-disposition INT, exit 255; live no-pty TERM not witnessed"
 
 
