@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check-server-local — burrowd as the invoking user, burrow's own client, no oracle.
+r"""check-server-local — burrowd as the invoking user, burrow's own client, no oracle.
 
     python3 -I tools/check-server-local --bin target/native/burrowd
 
@@ -18,18 +18,26 @@ keystroke timing (counts of packets only).
 """
 import argparse
 import hashlib
+import importlib.util
+import json
 import os
 import pathlib
 import re
+import secrets
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 WORK = ROOT / "target" / "server-local"
 ROWS = []
+_spec = importlib.util.spec_from_file_location("localproc", ROOT / "tools" / "localproc.py")
+localproc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(localproc)
 
 
 def row(fn):
@@ -47,22 +55,36 @@ def check(cond, why):
 
 
 def run(argv, inp=None, env=None, timeout=300, cwd=None):
-    p = subprocess.run(argv, input=inp, stdin=None if inp is not None else subprocess.DEVNULL, capture_output=True,
-                       env=env, timeout=timeout, cwd=cwd)
-    return p.returncode, p.stdout, p.stderr
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE if inp is not None else subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env, cwd=cwd)
+    child = localproc.OwnedChild(p)
+    try:
+        out, err = p.communicate(input=inp, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        child.stop()
+        p.communicate()
+        raise
+    child.wait()
+    return p.returncode, out, err
 
 
 class Local:
     def __init__(self, bindir):
         self.bin = bindir
-        if WORK.exists():
-            shutil.rmtree(WORK)
+        self.lifecycle = []
         self.home = WORK / "home"
+        (WORK / "tmp").mkdir(mode=0o700)
         (self.home / ".ssh").mkdir(parents=True)
         os.chmod(WORK, 0o755)
         os.chmod(self.home, 0o755)
         os.chmod(self.home / ".ssh", 0o700)
         self.user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+        self.probe = WORK / "local-signal-probe"
+        cc = shutil.which("cc")
+        check(cc is not None, "cc is required for the row-owned signal probe")
+        r = run([cc, "-std=c11", "-D_POSIX_C_SOURCE=200809L", "-Wall", "-Wextra", "-Werror",
+                 str(ROOT / "tools" / "local-signal-probe.c"), "-o", str(self.probe)], env=self.env())
+        check(r[0] == 0, f"signal probe does not compile: {r[2][-500:]!r}")
         self.keygen(WORK / "host", "host")
         self.keygen(self.home / ".ssh" / "id_ed25519", "user")
         shutil.copyfile(self.home / ".ssh" / "id_ed25519.pub", self.home / ".ssh" / "authorized_keys")
@@ -76,6 +98,7 @@ class Local:
         self.proc = subprocess.Popen([str(self.bin / "burrowd"), "-D", "-e", "-f", str(WORK / "burrowd_config")],
                                      stdin=subprocess.DEVNULL, stdout=self.log, stderr=subprocess.STDOUT,
                                      env=self.env())
+        self.owned = localproc.OwnedChild(self.proc, self.lifecycle.append)
         deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
@@ -89,13 +112,13 @@ class Local:
         (self.home / ".ssh" / "known_hosts").write_text(f"[127.0.0.1]:{self.port} {pub[0]} {pub[1]}\n")
 
     def env(self, extra=None):
-        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "USER": self.user,
+        e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(self.home), "TMPDIR": str(WORK / "tmp"), "USER": self.user,
              "LOGNAME": self.user, "SHELL": "/bin/sh", "LC_ALL": "C"}
         e.update(extra or {})
         return e
 
     def keygen(self, path, comment):
-        r = run([str(self.bin / "burrow-keygen"), "-q", "-t", "ed25519", "-f", str(path), "-N", "", "-C", comment])
+        r = run([str(self.bin / "burrow-keygen"), "-q", "-t", "ed25519", "-f", str(path), "-N", "", "-C", comment], env=self.env())
         check(r[0] == 0, f"burrow-keygen: {r[2][-200:]!r}")
 
     def ssh(self, args, user=None, inp=None, env=None):
@@ -107,9 +130,12 @@ class Local:
         return [x for x in (WORK / "burrowd.log").read_text().splitlines() if " from " in x]
 
     def stop(self):
-        self.proc.terminate()
-        self.proc.wait(timeout=10)
+        self.owned.stop()
         self.log.close()
+        # The one listener this test started must release its own port.
+        with socket.socket() as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", self.port))
 
 
 L = None
@@ -139,10 +165,8 @@ def local_cat_64m():
 
 @row
 def local_signal():
-    r = L.ssh(["kill -TERM $$"])
-    check(r[0] == 255, f"exit {r[0]}")
-    check(any(" signal TERM" in x for x in L.lines()), "no signal TERM in the log")
-    return "exit 255, signal TERM logged"
+    signal_terminal()
+    return "terminal byte 0x03, default-disposition INT, exit 255; live no-pty TERM not witnessed"
 
 
 @row
@@ -193,9 +217,8 @@ SYSTEM_SSH = "/usr/bin/ssh"
 
 @row
 def local_tty():
-    """`ssh -tt` at a terminal through burrowd: the pty's name, its size,
-    a window change, Ctrl-C to a trap, the status; the session's line names
-    no refusal."""
+    """`ssh -tt` at a terminal through burrowd: tty, size and resize,
+    then byte 0x03 ends a default-disposition foreground probe."""
     if not os.path.exists(SYSTEM_SSH):
         check(False, f"no {SYSTEM_SSH} on this host")
     version = subprocess.run([SYSTEM_SSH, "-V"], capture_output=True, text=True).stderr.strip()
@@ -213,14 +236,12 @@ def local_tty():
                     rows=40, cols=132, argv=argv)
     check(r[0] == 3, f"exit {r[0]}, transcript {r[1][-300:]!r} ({version})")
     # stderr shares the terminal: the system ssh's own warnings may come first.
-    m = re.search(rb"(/dev/tty\S+)\r\n40 132\r\nready\r\n", r[1])
+    m = re.search(rb"(/dev/(?:tty\S+|pts/[0-9]+))\r\n40 132\r\nready\r\n", r[1])
     check(m is not None and b"\r\n50 100\r\n" in r[1], f"transcript {r[1][:300]!r}")
-    c = on_terminal(["-tt", "exec /bin/sh -c \"trap 'echo caught INT; exit 7' INT; echo ready; while :; do sleep 1; done\""],
-                    steps=[(b"ready", typed(b"\x03", 0.3))], argv=argv)
-    check(c[0] == 7 and b"caught INT" in c[1], f"Ctrl-C: exit {c[0]}, transcript {c[1][-120:]!r}")
+    signal_terminal(argv=argv)
     got = L.lines()
     check(got and all(" refused " not in x for x in got[-2:]), f"burrowd's log: {got[-2:]}")
-    return f"{m.group(1)[:12].decode()}…, 40 132 then 50 100, exit 3; Ctrl-C to a trap: 7 ({version})"
+    return f"{m.group(1)[:12].decode()}…, 40 132 then 50 100, exit 3; byte 0x03 ends the default-INT probe ({version})"
 
 
 @row
@@ -299,92 +320,161 @@ def odd_modes(fd):
     termios.tcsetattr(fd, termios.TCSANOW, a)
 
 
-# The terminal's session leader: as a terminal emulator's shell, it holds the terminal for the whole row, runs the
-# client in its own group (the terminal's foreground) and waits for it, says the client's status on fd OUT, and ends
-# only when the row says so on fd GO. A BSD kernel revokes a terminal when its session leader ends, so the row reads
-# the terminal's settings while the leader still holds it, as a user's terminal is held after a program ends. Its
-# ^C and ^\ handlers are Python's, which the client's exec sets back to the default.
-LEADER = """
-import os, signal, subprocess, sys
-signal.signal(signal.SIGINT, lambda *a: None)
-signal.signal(signal.SIGQUIT, lambda *a: None)
-out, go = int(sys.argv[1]), int(sys.argv[2])
-rc = subprocess.call(sys.argv[3:])
-os.write(out, b"%d\\n" % rc)
-os.read(go, 1)
-"""
+# A separate keeper owns and reaps its client, and accepts STOP while it
+# runs. The outer row keeps the terminal alive until its settings are read.
 
 
-def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, key=None, timeout=30, argv=None):
-    """burrow ARGS (or `argv` + ARGS, another client) at a terminal of the row's own, under its session leader:
-    (exit, transcript, settings before, settings after). `steps` are (marker, action); once `marker` shows after
-    the previous step's, action(master, slave) runs."""
+def on_terminal(args, steps=(), rows=24, cols=80, modes=None, stdin_data=None, key=None, timeout=30, argv=None,
+                lifecycle=None, report_client=False):
+    """A row-owned pty; the keeper reaps its client before it is released."""
     import pty
     import select
     import termios
+    events = lifecycle if lifecycle is not None else L.lifecycle
     master, slave = pty.openpty()
-    winsize(slave, rows, cols)
-    if modes:
-        modes(slave)
-    before = termios.tcgetattr(slave)
+    fds = {master, slave}
+    owned = leader = None
+    go_w = out_r = None
+    got, pending = b"", b""
+    seen = i = 0
+    rc = None
+    launched = reaped = False
+    client_pid = None
+    problem = None
+    before = after = None
     if argv is None:
         argv = [str(L.bin / "burrow"), "-F", "none", "-p", str(L.port), "-l", L.user]
         if key:
-            argv = argv + ["-i", str(key)]
-    out_r, out_w = os.pipe()
-    go_r, go_w = os.pipe()
-    stdin = slave if stdin_data is None else subprocess.PIPE
-    leader = subprocess.Popen([sys.executable, "-I", "-c", LEADER, str(out_w), str(go_r)] + argv + list(args),
-                              stdin=stdin, stdout=slave, stderr=slave, env=L.env({"TERM": "xterm"}),
-                              start_new_session=True, preexec_fn=_ctty, pass_fds=(out_w, go_r))
-    os.close(out_w)
-    os.close(go_r)
-    if stdin_data is not None:
-        leader.stdin.write(stdin_data)
-        leader.stdin.close()
-    got, seen, i, rc, said = b"", 0, 0, None, b""
-    deadline = time.monotonic() + timeout
+            argv += ["-i", str(key)]
+    command = list(argv) + list(args)
+
+    def close(fd):
+        if fd in fds:
+            fds.remove(fd)
+            os.close(fd)
+
+    def receipts():
+        nonlocal pending, rc, launched, reaped, client_pid, problem
+        data = os.read(out_r, 65536)
+        pending += data
+        check(len(pending) <= 65536, "oversize keeper receipt")
+        while b"\n" in pending:
+            line, pending = pending.split(b"\n", 1)
+            event = json.loads(line)
+            check(isinstance(event, dict), "invalid keeper receipt")
+            kind = event.get("event")
+            check(kind in ("launched", "identity", "signal", "reaped", "exit", "error"), "unknown keeper receipt")
+            pid = event.get("pid")
+            check(type(pid) is int and pid > 0, "keeper reported a nonpositive child PID")
+            if kind == "launched":
+                check(not launched and event.get("argv") == command, "keeper child differs from launch intent")
+                launched, client_pid = True, pid
+            else:
+                check(launched and pid == client_pid, "receipt names an unrecorded child")
+            events.append(dict(event, role="client"))
+            if kind == "reaped":
+                reaped = True
+            elif kind == "exit":
+                check(reaped and event.get("reaped") is True and type(event.get("rc")) is int,
+                      "client exit without a wait/reap receipt")
+                rc = event["rc"]
+            elif kind == "error":
+                problem = "keeper: " + str(event.get("reason"))
+        return bool(data)
+
+    def drain(wait):
+        nonlocal got
+        ready = select.select([master, out_r], [], [], wait)[0]
+        if master in ready:
+            try:
+                got += os.read(master, 65536)
+            except OSError:
+                pass
+        if out_r in ready:
+            return receipts()
+        return True
+
     try:
-        while time.monotonic() < deadline:
-            ready = select.select([master, out_r], [], [], 0.05)[0]
-            if master in ready:
-                try:
-                    got += os.read(master, 65536)
-                except OSError:
-                    pass
-            if out_r in ready:
-                said += os.read(out_r, 64)
+        winsize(slave, rows, cols)
+        if modes:
+            modes(slave)
+        before = termios.tcgetattr(slave)
+        out_r, out_w = os.pipe()
+        go_r, go_w = os.pipe()
+        fds.update((out_r, out_w, go_r, go_w))
+        keeper_argv = [sys.executable, "-I", str(ROOT / "tools" / "localproc.py"), "keeper", str(out_w), str(go_r), "--"] + command
+        owned = localproc.spawn_reported(keeper_argv,
+                                         record=lambda event: events.append(dict(event, role="keeper")),
+                                         stdin=slave if stdin_data is None else subprocess.PIPE,
+                                         stdout=slave, stderr=slave,
+                                         env=L.env({"TERM": "xterm", "BURROW_LOCAL_REPORT_CLIENT": "1" if report_client else "0"}),
+                                         start_new_session=True, preexec_fn=_ctty, pass_fds=(out_w, go_r))
+        leader = owned.proc
+        close(out_w)
+        close(go_r)
+        if stdin_data is not None:
+            localproc.feed(leader.stdin, stdin_data)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and rc is None and problem is None:
+            if not drain(0.05) and rc is None:
+                problem = "keeper pipe closed before client exit"
+                break
             if i < len(steps):
                 k = got.find(steps[i][0], seen)
                 if k >= 0:
                     seen = k + len(steps[i][0])
                     steps[i][1](master, slave)
                     i += 1
-            if said.endswith(b"\n") or leader.poll() is not None:
-                rc = int(said) if said.endswith(b"\n") else None
-                end = time.monotonic() + 0.5
-                while time.monotonic() < end and select.select([master], [], [], 0.1)[0]:
+        if rc is None:
+            problem = problem or "terminal row timed out"
+    except Exception as e:
+        problem = f"{type(e).__name__}: {e}"
+    finally:
+        try:
+            if owned is not None:
+                if rc is None:
+                    try:
+                        os.write(go_w, b"STOP\n")
+                    except BrokenPipeError:
+                        pass
+                    deadline = time.monotonic() + 7
+                    while not reaped and time.monotonic() < deadline:
+                        if not drain(0.05):
+                            break
+                if not reaped and leader.poll() is not None:
+                    # Even an exec/protocol failure must explicitly reap the
+                    # direct keeper child; it does not prove a client exit.
+                    owned.wait()
+                check(reaped, f"client not acknowledged reaped; keeper PID {leader.pid}, client PID {client_pid}")
+                # Only after the client is reaped may the keeper be released
+                # or individually stopped. Never orphan the client to fix a wait.
+                after = termios.tcgetattr(slave)
+                try:
+                    os.write(go_w, b"RELEASE\n")
+                except BrokenPipeError:
+                    pass
+                close(go_w)
+                try:
+                    keeper_rc = owned.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    keeper_rc = owned.stop()
+                check(keeper_rc == 0, f"keeper exit {keeper_rc}")
+                end = time.monotonic() + 0.2
+                while time.monotonic() < end and select.select([master], [], [], 0.05)[0]:
                     try:
                         got += os.read(master, 65536)
                     except OSError:
                         break
-                break
-        else:
-            got += b"\n[row: timed out]"
-        after = termios.tcgetattr(slave)
-    finally:
-        os.write(go_w, b"x")
-        os.close(go_w)
-        os.close(out_r)
-        try:
-            leader.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            # A client that outlived the row: the leader's session is the row's own (start_new_session), so its
-            # group, numbered by the leader's pid, holds only the leader and the client.
-            os.killpg(leader.pid, 9)
-            leader.wait()
-        os.close(master)
-        os.close(slave)
+        except Exception as e:
+            problem = (problem + "; " if problem else "") + f"cleanup: {type(e).__name__}: {e}"
+        finally:
+            if owned is not None:
+                owned.close_report()
+            for fd in list(fds):
+                close(fd)
+            events.append({"event": "fds-closed", "count": len(fds)})
+    if problem:
+        raise Fail(problem)
     return rc, got, before, after
 
 
@@ -408,6 +498,51 @@ def settings(a):
 def restored(name, r):
     check(settings(r[3]) == settings(r[2]),
           f"{name}: the terminal was left changed: before {r[2]}, after {r[3]}; transcript {r[1][-200:]!r}")
+
+
+def signal_probe_command(nonce):
+    return "exec " + shlex.quote(str(L.probe)) + " " + shlex.quote(nonce)
+
+
+def signal_terminal(argv=None):
+    name = "local-system-ssh-signal-byte" if argv is not None else "local-signal-byte"
+    try:
+        result = _signal_terminal(argv)
+    except Fail as e:
+        print(f"FAIL {name} {e}", flush=True)
+        raise
+    print(f"PASS {name} (default foreground INT, server log INT, probe reaped, terminal restored)", flush=True)
+    return result
+
+
+def _signal_terminal(argv=None):
+    nonce = secrets.token_hex(12)
+    marker = ("PROBE_READY " + nonce + " pid=").encode()
+    before_logs = len(L.lines())
+    args = ["-tt"] + (["127.0.0.1"] if argv is None else []) + [signal_probe_command(nonce)]
+    interrupt_byte = b"\x03"
+    def interrupt(master, slave):
+        time.sleep(0.1)
+        os.write(master, interrupt_byte)
+        L.lifecycle.append({"event": "terminal-byte", "hex": interrupt_byte.hex(), "nonce": nonce})
+    r = on_terminal(args, steps=[(marker, interrupt)], argv=argv)
+    check(r[0] == 255 and b"PROBE_DEADLINE" not in r[1], f"interrupt: exit {r[0]}, transcript {r[1][-400:]!r}")
+    match = re.search(re.escape(marker) + rb"([1-9][0-9]*) default=1 unblocked=1 foreground=1 intr=3\r\n", r[1])
+    check(match is not None, "no post-exec default/unblocked/foreground probe readiness")
+    restored("terminal interrupt", r)
+    settled(L.proc.pid)
+    logs = L.lines()[before_logs:]
+    check(len(logs) == 1 and " signal INT" in logs[0], f"no matching server signal INT record: {logs}")
+    pid = int(match.group(1))
+    if sys.platform.startswith("linux"):
+        check(not pathlib.Path(f"/proc/{pid}").exists(), f"probe PID {pid} was not reaped")
+    else:
+        p = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "pid="], capture_output=True, text=True)
+        check(not p.stdout.strip(), f"probe PID {pid} remains")
+    L.lifecycle.append({"event": "probe-witness", "pid": pid, "nonce": nonce, "signal": "INT",
+                        "default": True, "unblocked": True, "foreground": True, "reaped": True,
+                        "client_rc": r[0], "server_log": logs[0], "terminal_restored": True})
+    return r
 
 
 @row
@@ -688,35 +823,55 @@ def local_conn_rss():
 
 
 def main():
-    global L
+    global L, WORK
     ap = argparse.ArgumentParser()
-    ap.add_argument("--bin", required=True)
+    ap.add_argument("--bin")
+    ap.add_argument("--self-test", action="store_true")
+    ap.add_argument("--rows", nargs="+")
     a = ap.parse_args()
+    safety = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-local-safety-live.py")])
+    if safety.returncode or a.self_test:
+        return safety.returncode
+    if not a.bin:
+        ap.error("--bin is required unless --self-test is used")
+    names = {fn.__name__.replace("_", "-") for fn in ROWS}
+    if a.rows and not set(a.rows) <= names:
+        ap.error("unknown row selection")
     bindir = pathlib.Path(a.bin).resolve().parent
     if os.geteuid() == 0:
         print("FAIL setup check-server-local runs as an ordinary user (root is tools/check-server's)")
-        sys.exit(1)
+        return 1
     os.umask(0o022)
-    L = Local(bindir)
-    fails = ran = 0
-    try:
-        for fn in ROWS:
-            ran += 1
-            name = fn.__name__.replace("_", "-")
+    (ROOT / "target").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="server-local-", dir=ROOT / "target") as directory:
+        WORK = pathlib.Path(directory)
+        L = Local(bindir)
+        fails = ran = 0
+        try:
+            for fn in ROWS:
+                name = fn.__name__.replace("_", "-")
+                if a.rows and name not in a.rows:
+                    print(f"NOT-RUN {name} reason=focused-selection", flush=True)
+                    continue
+                ran += 1
+                try:
+                    note = fn()
+                    print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
+                except Exception as e:
+                    fails += 1
+                    print(f"FAIL {name} {type(e).__name__}: {e}", flush=True)
+        finally:
             try:
-                note = fn()
-                print(f"PASS {name}" + (f" ({note})" if note else ""), flush=True)
-            except Fail as e:
-                fails += 1
-                print(f"FAIL {name} {e}", flush=True)
-            except Exception as e:
-                fails += 1
-                print(f"FAIL {name} harness: {type(e).__name__}: {e}", flush=True)
-    finally:
-        L.stop()
-    print(f"check-server-local: {ran} rows, {fails} failed, 0 SKIP ({sys.platform})")
-    sys.exit(min(fails, 100))
+                settled(L.proc.pid)
+            finally:
+                L.stop()
+                evidence = ROOT / "target" / "evidence"
+                evidence.mkdir(exist_ok=True)
+                (evidence / "local-lifecycle.jsonl").write_text("".join(json.dumps(e) + "\n" for e in L.lifecycle))
+                (evidence / "local-server.log").write_bytes((WORK / "burrowd.log").read_bytes())
+        print(f"check-server-local: {ran} rows, {fails} failed, {len(ROWS)-ran} NOT RUN ({sys.platform})")
+        return min(fails, 100)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

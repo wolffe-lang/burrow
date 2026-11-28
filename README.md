@@ -422,6 +422,24 @@ burrowd and `sshd`, interleaved, against stated margins.
 the client, on macOS and anywhere without the pinned container, its
 memory rows included (footprint(1)'s dirty memory on macOS).
 
+The local tool first runs its own guarded and real-child cleanup regressions.
+It records each direct child and verifies its current parent and lossless argv
+before an individual TERM or, after another check, KILL; it never signals a
+process group. On macOS it reads the argument vector through sysctl, not the
+flattened display from ps. Every argument after argv[0] must match exactly,
+including spaces and empty arguments. A changed executable spelling is accepted
+only when that same child reports it after exec over a nonce-bound private pipe;
+there is no executable-name or basename fallback. Its terminal keeper reaps the
+client before the keeper is released.
+The interrupt rows write byte `0x03` into a pty after a foreground native probe
+reports default, unblocked INT; they require actual INT termination, the
+server's INT log and restored terminal settings. The probe is test-only and
+needs `cc`. Live no-pty TERM termination is no longer witnessed by this local
+tool; TERM protocol unit checks remain, but are not equivalent live coverage.
+`--self-test` runs cleanup regressions without SSH. `--rows NAME ...` selects
+focused SSH rows and reports every omitted row as `NOT-RUN`. Keys are made in
+a fresh private work directory for each invocation and removed afterward.
+
 ## CI
 
 Unlabelled pull requests run one cheap job that points at the local
