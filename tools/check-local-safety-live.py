@@ -10,12 +10,12 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# This is cleanup test infrastructure, not a signal witness. Cooperative
-# release and a finite deadline keep an independently rescued fixture bounded.
+# Cleanup infrastructure, not a signal witness. Rescue remains cooperative.
 CHILD = r'''
 import os, pathlib, select, signal, sys, time
 release = pathlib.Path(sys.argv[1])
@@ -35,6 +35,12 @@ while time.monotonic() < end and not release.exists():
 '''
 
 
+def check_state(step, pid, expected, observed, condition=None):
+    valid = observed == expected if condition is None else condition
+    if not valid:
+        raise AssertionError(f"step={step} pid={pid} expected={expected!r} observed={observed!r}")
+
+
 def load_helper():
     spec = importlib.util.spec_from_file_location("localproc_live", ROOT / "tools" / "localproc.py")
     m = importlib.util.module_from_spec(spec)
@@ -42,10 +48,20 @@ def load_helper():
     return m
 
 
-def read_line(p, seconds=3):
-    if not select.select([p.stdout], [], [], seconds)[0]:
-        raise AssertionError("fixture did not answer")
-    return p.stdout.readline()
+def read_line(p, seconds=3, step="reply", expected=None):
+    ready = bool(select.select([p.stdout], [], [], seconds)[0])
+    if not ready:
+        check_state(step, p.pid, f"reply within {seconds}s", {"ready": False, "returncode": p.poll()}, False)
+    reply = p.stdout.readline()
+    if expected is not None and reply != expected:
+        rc = p.poll()
+        observed = {"reply": reply, "returncode": rc}
+        if rc is not None:
+            observed["stderr"] = p.stderr.read().decode(errors="replace")
+        elif p.stderr is not None and select.select([p.stderr], [], [], 0)[0]:
+            observed["stderr_available"] = os.read(p.stderr.fileno(), 65536).decode(errors="replace")
+        check_state(step, p.pid, expected, observed, False)
+    return reply
 
 
 def fds():
@@ -75,45 +91,54 @@ def escalation_and_bystander(directory):
                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     victim, canary = victim_owned.proc, canary_owned.proc
     try:
-        assert read_line(victim) == b"FIXTURE_READY\n"
-        assert read_line(canary) == b"FIXTURE_READY\n"
+        read_line(victim, step="start/victim", expected=b"FIXTURE_READY\n")
+        read_line(canary, step="start/canary", expected=b"FIXTURE_READY\n")
         for owned in (victim_owned, canary_owned):
-            report = owned.exec_report.get()
-            assert report["pid"] == owned.pid and report["ppid"] == os.getpid()
-            assert tuple(report["argv"][1:]) == owned.argv[1:]
+            try:
+                report = owned.exec_report.get()
+            except Exception as e:
+                check_state("report read", owned.pid, "complete bound exec report", f"{type(e).__name__}: {e}", False)
+            check_state("report read/ownership", owned.pid, (owned.pid, os.getpid()), (report.get("pid"), report.get("ppid")))
+            check_state("report read/argv tail", owned.pid, owned.argv[1:], tuple(report["argv"][1:]))
         print("PASS local-exec-report-live (nonce-bound post-exec argv, including a script path with spaces)", flush=True)
-        assert os.getpgid(victim.pid) == os.getpgid(canary.pid) == os.getpgrp()
+        group = os.getpgrp()
+        groups = (os.getpgid(victim.pid), os.getpgid(canary.pid), group)
+        check_state("start/process groups", (victim.pid, canary.pid), (group, group, group), groups)
         real_deliver = m.deliver
         real_run = subprocess.run
         def guard_run(argv, **kwargs):
             if argv[0] == "/bin/kill":
-                assert len(argv) == 3 and argv[1] in ("-TERM", "-KILL") and argv[2] == str(victim.pid), "blocked nonindividual signal command"
+                check_state("escalation/dispatch", victim.pid,
+                            {"argc": 3, "signal": ("-TERM", "-KILL"), "target": str(victim.pid)}, argv,
+                            len(argv) == 3 and argv[1] in ("-TERM", "-KILL") and argv[2] == str(victim.pid))
             elif argv[0] == "/bin/ps":
-                assert argv[1:3] == ["-p", str(victim.pid)], "inspection names an unrecorded PID"
+                check_state("escalation/inspection", victim.pid, ["-p", str(victim.pid)], argv[1:3])
             else:
-                raise AssertionError("unexpected dispatcher command")
+                check_state("escalation/dispatcher program", victim.pid, ("/bin/kill", "/bin/ps"), argv, False)
             return real_run(argv, **kwargs)
         def guarded_deliver(pid, name):
-            assert type(pid) is int and pid == victim.pid and pid > 0
-            assert name in ("TERM", "KILL")
+            check_state("escalation/recorded target", victim.pid, {"type": "positive int", "pid": victim.pid},
+                        {"type": type(pid).__name__, "pid": pid}, type(pid) is int and pid == victim.pid and pid > 0)
+            check_state("escalation/signal", pid, ("TERM", "KILL"), name, name in ("TERM", "KILL"))
             real_deliver(pid, name)
+        def blocked_group(*args):
+            check_state("escalation/group guard", victim.pid, "no group invocation", args, False)
         with patch.object(m, "deliver", side_effect=guarded_deliver), \
-             patch("subprocess.run", side_effect=guard_run), \
-             patch("os.killpg", side_effect=AssertionError("forbidden group signal")):
+             patch("subprocess.run", side_effect=guard_run), patch("os.killpg", side_effect=blocked_group):
             rc = victim_owned.stop(grace=0.1)
-        assert rc == -9 and victim.returncode == -9
+        check_state("escalation/result", victim.pid, (-9, -9), (rc, victim.returncode))
         identities = [e for e in events if e["event"] == "identity"]
         attempts = [e for e in events if e["event"] == "signal"]
-        assert len(identities) == 2 and [e["signal"] for e in attempts] == ["TERM", "KILL"]
-        assert all(e["pid"] == victim.pid for e in identities + attempts)
-        assert identity_gone(victim.pid)
+        check_state("escalation/attempts", victim.pid, (2, ["TERM", "KILL"]),
+                    (len(identities), [e["signal"] for e in attempts]))
+        check_state("escalation/verified PIDs", victim.pid, {victim.pid}, {e["pid"] for e in identities + attempts})
+        check_state("reap/victim", victim.pid, True, identity_gone(victim.pid))
         canary.stdin.write(b"ping\n")
         canary.stdin.flush()
-        assert read_line(canary) == b"PONG\n", "bystander stopped answering"
+        read_line(canary, step="canary/reply", expected=b"PONG\n")
         print("PASS local-cleanup-escalation (fresh identity before TERM and separate KILL)", flush=True)
         print("PASS local-cleanup-bystander (same-group canary answered after victim reaped)", flush=True)
     finally:
-        # Rescue is independent and cooperative, never the dispatcher under test.
         release.touch()
         canary_release.touch()
         victim_owned.wait(timeout=10)
@@ -122,7 +147,8 @@ def escalation_and_bystander(directory):
             p.stdin.close()
             p.stdout.close()
             p.stderr.close()
-    assert identity_gone(victim.pid) and identity_gone(canary.pid)
+    check_state("reap/final", (victim.pid, canary.pid), (True, True),
+                (identity_gone(victim.pid), identity_gone(canary.pid)))
 
 
 def terminal_lifecycle(directory):
@@ -145,21 +171,25 @@ def terminal_lifecycle(directory):
             try:
                 result = fn([], argv=command, timeout=0.25 if kind == "stubborn" else 3, lifecycle=events, report_client=True)
             except d["Fail"] as e:
-                assert kind != "normal", str(e)
-                assert "timed out" in str(e) if kind == "stubborn" else "keeper" in str(e)
+                check_state(f"terminal/{kind}/result", os.getpid(), "normal must not fail", str(e), kind != "normal")
+                wanted = "timed out" if kind == "stubborn" else "keeper"
+                check_state(f"terminal/{kind}/failure reason", os.getpid(), f"Fail containing {wanted!r}", str(e), wanted in str(e))
             else:
-                assert kind == "normal" and result[0] == 3
-            assert events[-1] == {"event": "fds-closed", "count": 0}
-            assert fds() == before, "terminal descriptors leaked"
+                check_state(f"terminal/{kind}/exit", os.getpid(), ("normal", 3), (kind, result[0]))
+            check_state(f"terminal/{kind}/descriptor receipt", os.getpid(), {"event": "fds-closed", "count": 0}, events[-1] if events else None)
+            after = fds()
+            check_state(f"terminal/{kind}/descriptor count", os.getpid(), before, after)
             starts = [e for e in events if e.get("event") == "launched"]
             waits = [e for e in events if e.get("event") == "reaped"]
-            assert starts and waits
+            check_state(f"terminal/{kind}/launch and reap receipts", os.getpid(), "both nonempty",
+                        {"starts": starts, "waits": waits}, bool(starts) and bool(waits))
             for e in starts:
-                assert identity_gone(e["pid"]), f"recorded {e['role']} PID {e['pid']} survived"
+                check_state(f"terminal/{kind}/reap {e['role']}", e["pid"], True, identity_gone(e["pid"]))
             if kind != "missing":
-                client_wait = next(i for i,e in enumerate(events) if e.get("role") == "client" and e.get("event") == "reaped")
-                keeper_wait = next(i for i,e in enumerate(events) if e.get("role") == "keeper" and e.get("event") == "reaped")
-                assert client_wait < keeper_wait, "keeper exited before client reap acknowledgement"
+                client = [i for i,e in enumerate(events) if e.get("role") == "client" and e.get("event") == "reaped"]
+                keeper = [i for i,e in enumerate(events) if e.get("role") == "keeper" and e.get("event") == "reaped"]
+                check_state(f"terminal/{kind}/reap order", os.getpid(), "client receipt before keeper receipt",
+                            {"client": client, "keeper": keeper}, bool(client) and bool(keeper) and client[0] < keeper[0])
             print(f"PASS local-terminal-{kind} (recorded children reaped, descriptors closed)", flush=True)
         finally:
             release.touch()
@@ -178,7 +208,10 @@ def main():
             escalation_and_bystander(p)
             terminal_lifecycle(p)
         except Exception as e:
-            print(f"FAIL local-live-lifecycle {type(e).__name__}: {e}", flush=True)
+            frames = traceback.extract_tb(e.__traceback__)
+            site = frames[-2] if len(frames) > 1 and frames[-1].name == "check_state" else (frames[-1] if frames else None)
+            location = f" at {Path(site.filename).name}:{site.lineno} ({site.name})" if site else ""
+            print(f"FAIL local-live-lifecycle {type(e).__name__}: {e}{location}", flush=True)
             return 1
     return 0
 
