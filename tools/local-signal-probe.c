@@ -26,7 +26,7 @@ int main(int argc, char **argv) {
     /* Harmless/missing input must terminate normally and fail the row, never
      * wait indefinitely for its rescue to manufacture a signal verdict. */
     struct pollfd fd = {STDIN_FILENO, POLLIN, 0};
-    if (poll(&fd, 1, 3000) > 0) {
+    if (poll(&fd, 1, 10000) > 0) {
         char data[32];
         (void)read(STDIN_FILENO, data, sizeof data);
     }
