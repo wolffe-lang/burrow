@@ -100,6 +100,33 @@ def mismatch_payload_synthetic():
         assert payload["observed_form"] == ("text" if isinstance(actual, str) else "argv")
 
 
+def hosted_framework_form():
+    # Hosted run 46115409041, as supplied by the coordinator. Work-directory
+    # spelling is normalized; this is not a captured raw sysctl buffer.
+    m = helper()
+    launched = "/opt/homebrew/opt/python@3.15/bin/python3.15"
+    became = "/opt/homebrew/Cellar/python@3.15/3.15.2/Frameworks/Python.framework/Versions/3.15/Resources/Python.app/Contents/MacOS/Python"
+    tail = ["-I", "/fixture/work/target/local-lifecycle-captured/cleanup-child.py",
+            "/fixture/work/target/local-lifecycle-captured/release-stubborn", "stubborn"]
+    class Process:
+        pid = 123
+        args = [launched] + tail
+        returncode = None
+        def poll(self): return self.returncode
+    class Report:
+        def get(self):
+            return {"version": 1, "pid": 123, "ppid": os.getpid(), "argv": [became] + tail}
+        def close(self): pass
+    delivered = []
+    child = m.OwnedChild(Process())
+    child.exec_report = Report()
+    with patch.object(m, "parent_pid", return_value=os.getpid(), create=True), \
+         patch.object(m, "command_line", return_value=tuple([became] + tail)), \
+         patch.object(m, "deliver", side_effect=lambda pid, sig: delivered.append((pid, sig))):
+        child.signal("TERM")
+    assert delivered == [(123, "TERM")]
+
+
 def identities():
     m = helper()
     class Process:
@@ -253,6 +280,7 @@ def main():
     failed = 0
     rows = (("local-cleanup-single-pid", no_groups),
             ("local-cleanup-identity", identities),
+            ("local-hosted-framework-form", hosted_framework_form),
             ("local-identity-mismatch-payload-synthetic", mismatch_payload_synthetic),
             ("local-cleanup-reaps", reaps),
             ("local-signal-no-script", lambda: capture_signal("local_signal")),
