@@ -64,9 +64,11 @@ def escalation_and_bystander(directory):
     release = directory / "release-stubborn"
     canary_release = directory / "release-canary"
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(directory), "SHELL": "/bin/sh"}
-    victim = subprocess.Popen([sys.executable, "-I", "-c", CHILD, str(release), "stubborn"],
+    script = directory / "cleanup-child.py"
+    script.write_text(CHILD)
+    victim = subprocess.Popen([sys.executable, "-I", str(script), str(release), "stubborn"],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-    canary = subprocess.Popen([sys.executable, "-I", "-c", CHILD, str(canary_release), "canary"],
+    canary = subprocess.Popen([sys.executable, "-I", str(script), str(canary_release), "canary"],
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     events = []
     try:
@@ -118,7 +120,7 @@ def terminal_lifecycle(directory):
         events = []
         release = directory / ("release-terminal-" + kind)
         command = ([str(directory / "missing-program")] if kind == "missing" else
-                   [sys.executable, "-I", "-c", CHILD, str(release), kind])
+                   [sys.executable, "-I", str(directory / "cleanup-child.py"), str(release), kind])
         before = fds()
         try:
             try:
