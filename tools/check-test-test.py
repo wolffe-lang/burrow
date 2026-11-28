@@ -153,7 +153,8 @@ def unsupported():
 def retry_observation():
     for text in ("", "not JSON", json.dumps(observation()) + "\n{", json.dumps(observation()) + "\nnoise",
                  "[" + json.dumps(observation()) + "]", json.dumps(observation()) * 2,
-                 json.dumps(observation())[:-1] + ',"verdict":"exit(1)"}'):
+                 json.dumps(observation())[:-1] + ',"verdict":"exit(1)"}',
+                 json.dumps(observation())[:-1] + ',"extra":NaN}'):
         c = config(True)
         c["retry"] = text
         require(c, False)
@@ -190,6 +191,9 @@ def inventory():
     cases.append(c)
     c = config()
     c["raw"] = "noise\n" + "\n".join(json.dumps(r) for r in c["rows"])
+    cases.append(c)
+    c = config()
+    c["raw"] = "\n".join(json.dumps(dict(r, extra=float("nan"))) for r in c["rows"])
     cases.append(c)
     for idx, key, value in ((1, "schema", "other"), (0, "tests", 2), (1, "detail", "unknown"),
                             (1, "file", "src/unknown_test.lu"), (1, "name", "other")):
