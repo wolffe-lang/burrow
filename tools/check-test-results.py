@@ -119,7 +119,7 @@ def main():
             require(not args, "unexpected suite arguments")
             suite(path, int(rc))
         elif mode == "retry":
-            retry(path, int(rc), *args)
+            require(int(rc) == 0, "checked process failed")
         else:
             raise ValueError("unknown observation mode")
     except (ValueError, TypeError, KeyError, OSError) as e:
