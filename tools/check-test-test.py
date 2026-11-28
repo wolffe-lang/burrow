@@ -136,6 +136,10 @@ def require(c, passed, trace=()):
 def positive():
     require(config(), True)
     require(config(True), True)
+    # A real checked run with no output uses null for both stdout fields.
+    c = config(True)
+    c["retry"] = json.dumps(dict(observation(), stdout_inline=None, stdout_sha256=None))
+    require(c, True)
 
 
 def unsupported():
