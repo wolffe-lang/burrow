@@ -104,11 +104,14 @@ def keeper(out_fd, go_fd, argv):
             if select.select([go_fd], [], [], 0.05)[0]:
                 data = os.read(go_fd, 64)
                 pending += data
-                if not data or b"STOP\n" in pending or b"RELEASE\n" in pending:
+                if data and pending not in (b"STOP\n", b"RELEASE\n") and any(
+                        command.startswith(pending) for command in (b"STOP\n", b"RELEASE\n")):
+                    continue
+                if pending and pending not in (b"STOP\n", b"RELEASE\n"):
+                    raise OwnershipError("unknown keeper control")
+                if not data or pending in (b"STOP\n", b"RELEASE\n"):
                     child.stop()
                     break
-                if len(pending) > 64:
-                    raise OwnershipError("malformed keeper control")
         rc = child.wait()
         emit({"event": "exit", "pid": child.pid, "rc": rc, "reaped": True})
         # The parent reads termios while this session leader still exists.
