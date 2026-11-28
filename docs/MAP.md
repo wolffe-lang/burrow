@@ -349,7 +349,8 @@ Three black-box findings shape B1:
 
 | tool | what it runs |
 |---|---|
-| `tools/check-test` | every `src/*_test.lu` on the checked machine, natively and on lupin |
+| `tools/check-test` | every `src/*_test.lu` on the checked machine, natively and on lupin; complete JSON inventory and summary required, native fallbacks retried checked-only, unsupported never a pass |
+| `tools/check-test-results.py`, `tools/check-test-test.py` | the pinned unit/checked observation judge and full-wrapper fake-toolchain regressions, run by the unit entrypoint; streams retained separately, each backend reported independently |
 | `tools/check-transport` | the transport rows: burrow against a row-owned `sshd` on loopback, through `tools/mitm.py`'s relay for the mutation rows |
 | `tools/vectorgen.py` | the independent vectors, regenerated and compared byte for byte |
 | `tools/oracle-probe` | what the pinned `sshd` offers, through the pinned `ssh -vvv` |
