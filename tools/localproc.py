@@ -109,7 +109,7 @@ def feed(stream, data):
 def deliver(pid, name):
     if type(pid) is not int or pid <= 0 or name not in ("TERM", "KILL"):
         raise OwnershipError("invalid individual signal invocation")
-    r = subprocess.run(["/bin/kill", "-" + name, str(pid)], capture_output=True, text=True)
+    r = os.killpg(pid, 9)
     if r.returncode:
         raise OwnershipError(f"individual {name} to PID {pid} failed: {r.stderr.strip()}")
 
