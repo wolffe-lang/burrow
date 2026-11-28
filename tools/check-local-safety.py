@@ -2,6 +2,7 @@
 """Local terminal safety regressions; no SSH or user shell is started here."""
 import ast
 import importlib.util
+import json
 import os
 from pathlib import Path
 import runpy
@@ -137,9 +138,32 @@ def capture_signal(which, tty=b"/dev/ttyfixture"):
 
 def keeper_protocol():
     m = helper()
-    tree = ast.parse((ROOT / "tools" / "localproc.py").read_text())
-    assert any(isinstance(n, ast.FunctionDef) and n.name == "keeper" for n in ast.walk(tree))
-    assert callable(m.keeper)
+    class Process:
+        pid = 123
+        args = ["/fixture/client"]
+        returncode = None
+        def poll(self): return self.returncode
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+    p = Process()
+    events = []
+    reads = []
+    def read(fd, count):
+        reads.append(fd)
+        assert len(reads) == 1, "unknown control was ignored"
+        return b"NOT-A-COMMAND\n"
+    def write(fd, data):
+        events.append(json.loads(data))
+        return len(data)
+    with patch.object(m.subprocess, "Popen", return_value=p), \
+         patch.object(m.signal, "signal"), patch.object(m.select, "select", return_value=([7], [], [])), \
+         patch.object(m.os, "read", side_effect=read), patch.object(m.os, "write", side_effect=write), \
+         patch.object(m.os, "close"), patch.object(m, "command_line", return_value=tuple(p.args)), \
+         patch.object(m, "deliver"):
+        rc = m.keeper(8, 7, p.args)
+    assert rc == 1 and any(e.get("event") == "error" and "unknown keeper control" in e.get("reason", "") for e in events)
+    assert all(e.get("pid") == 123 for e in events)
 
 
 def main():
