@@ -72,6 +72,34 @@ def no_groups():
     assert len([x for x in calls if isinstance(x, dict) and x.get("event") == "identity"]) == 2
 
 
+def mismatch_payload_synthetic():
+    # Constructed on Linux: this is not a captured macOS command line.
+    m = helper()
+    class Process:
+        pid = 123
+        args = ["/synthetic/launcher", "-I", "/synthetic/with space/probe.py", "", "stubborn"]
+        returncode = None
+        def poll(self): return self.returncode
+    for actual in ("/synthetic/other-image -I /synthetic/with space/probe.py  stubborn\tend",
+                   ("/synthetic/other-image", "-I", "/synthetic/with space/probe.py", "", "stubborn")):
+        p = Process()
+        with patch.object(m, "command_line", return_value=actual), \
+             patch.object(m, "deliver", side_effect=AssertionError("mismatch dispatched a signal")) as deliver:
+            try:
+                m.OwnedChild(p).signal("TERM")
+            except m.OwnershipError as error:
+                payload = json.loads(str(error))
+            else:
+                raise AssertionError("mismatch did not fail closed")
+            assert not deliver.called
+        assert payload["event"] == "identity-mismatch" and payload["pid"] == 123
+        assert payload["platform"] == sys.platform
+        assert payload["recorded_argv"] == p.args
+        assert payload["observed_command_line"] == (actual if isinstance(actual, str) else list(actual))
+        assert payload["expected_comparison"] == (" ".join(p.args) if isinstance(actual, str) else p.args)
+        assert payload["observed_form"] == ("text" if isinstance(actual, str) else "argv")
+
+
 def identities():
     m = helper()
     class Process:
@@ -225,6 +253,7 @@ def main():
     failed = 0
     rows = (("local-cleanup-single-pid", no_groups),
             ("local-cleanup-identity", identities),
+            ("local-identity-mismatch-payload-synthetic", mismatch_payload_synthetic),
             ("local-cleanup-reaps", reaps),
             ("local-signal-no-script", lambda: capture_signal("local_signal")),
             ("local-tty-no-trap", lambda: capture_signal("local_tty")),
