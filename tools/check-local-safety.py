@@ -182,6 +182,17 @@ def keeper_protocol():
     assert all(e.get("pid") == 123 for e in events)
 
 
+def scratch_environment():
+    d = load_tool()
+    local = d["Local"].__new__(d["Local"])
+    local.home = Path("/fixture/work/home")
+    local.user = "fixture"
+    local.env.__func__.__globals__["WORK"] = Path("/fixture/work")
+    env = local.env()
+    assert env["SHELL"] == "/bin/sh" and env["HOME"] == str(local.home)
+    assert env.get("TMPDIR") == "/fixture/work/tmp", "compiler children lose the private TMPDIR"
+
+
 def stdin_closure():
     m = helper()
     class Pipe:
@@ -220,6 +231,7 @@ def main():
             ("local-tty-paths", lambda: capture_signal("local_tty", b"/dev/pts/17")),
             ("local-keeper-protocol", keeper_protocol),
             ("local-stdin-closed", stdin_closure),
+            ("local-scratch-env", scratch_environment),
             ("local-safety-wired", wired))
     for name, fn in rows:
         try:
