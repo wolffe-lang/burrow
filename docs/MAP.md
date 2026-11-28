@@ -373,7 +373,9 @@ Three black-box findings shape B1:
 | `tools/fakeclient.py`, `tools/check-server-hostile` | a scripted client that misbehaves at each stage, and a thousand silent connections |
 | `tools/check-server-git` | git's clone, fetch, push and a refused push through burrowd and through `sshd`, the repositories compared |
 | `tools/measure-server` | connect to first byte and `cat` through release burrowd, `sshd` and the one-process program, interleaved, held to stated margins |
-| `tools/check-server-local` | burrowd as the invoking user with burrow as the client: macOS, and any host without the pinned container |
+| `tools/check-server-local` | burrowd as the invoking user, with burrow and the system ssh client; terminal INT witnessed by byte 0x03 and a default-disposition foreground probe, no self-kill or trap command; live no-pty TERM is not witnessed here |
+| `tools/localproc.py`, `tools/check-local-safety.py`, `tools/check-local-safety-live.py` | recorded-child identity checks, individual signals and client-before-keeper reap ownership; guarded regressions and real-child timeout/escalation/bystander/descriptor proofs, run by the local tool's entrypoint |
+| `tools/local-signal-probe.c` | test-only POSIX foreground probe with untouched default INT disposition and a finite failure deadline; built by cc in the invocation's private scratch, never installed |
 | `tools/diag-command-form` | a read-only probe, run by hand: the live fixture's answer to den's old command form, git's, and den's own argv at the pin (taken from den by a recording `ssh`), through both clients, redacted |
 
 ## Machines
