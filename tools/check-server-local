@@ -500,11 +500,27 @@ def signal_probe_command(nonce):
 
 
 def signal_terminal(argv=None):
+    name = "local-system-ssh-signal-byte" if argv is not None else "local-signal-byte"
+    try:
+        result = _signal_terminal(argv)
+    except Fail as e:
+        print(f"FAIL {name} {e}", flush=True)
+        raise
+    print(f"PASS {name} (default foreground INT, server log INT, probe reaped, terminal restored)", flush=True)
+    return result
+
+
+def _signal_terminal(argv=None):
     nonce = secrets.token_hex(12)
     marker = ("PROBE_READY " + nonce + " pid=").encode()
     before_logs = len(L.lines())
     args = ["-tt"] + (["127.0.0.1"] if argv is None else []) + [signal_probe_command(nonce)]
-    r = on_terminal(args, steps=[(marker, typed(b"\x03", 0.1))], argv=argv)
+    interrupt_byte = b"\x03"
+    def interrupt(master, slave):
+        time.sleep(0.1)
+        os.write(master, interrupt_byte)
+        L.lifecycle.append({"event": "terminal-byte", "hex": interrupt_byte.hex(), "nonce": nonce})
+    r = on_terminal(args, steps=[(marker, interrupt)], argv=argv)
     check(r[0] == 255 and b"PROBE_DEADLINE" not in r[1], f"interrupt: exit {r[0]}, transcript {r[1][-400:]!r}")
     match = re.search(re.escape(marker) + rb"([1-9][0-9]*) default=1 unblocked=1 foreground=1 intr=3\r\n", r[1])
     check(match is not None, "no post-exec default/unblocked/foreground probe readiness")
@@ -518,6 +534,9 @@ def signal_terminal(argv=None):
     else:
         p = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "pid="], capture_output=True, text=True)
         check(not p.stdout.strip(), f"probe PID {pid} remains")
+    L.lifecycle.append({"event": "probe-witness", "pid": pid, "nonce": nonce, "signal": "INT",
+                        "default": True, "unblocked": True, "foreground": True, "reaped": True,
+                        "client_rc": r[0], "server_log": logs[0], "terminal_restored": True})
     return r
 
 
@@ -805,7 +824,7 @@ def main():
     ap.add_argument("--self-test", action="store_true")
     ap.add_argument("--rows", nargs="+")
     a = ap.parse_args()
-    safety = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-local-safety.py")])
+    safety = subprocess.run([sys.executable, "-I", str(ROOT / "tools" / "check-local-safety-live.py")])
     if safety.returncode or a.self_test:
         return safety.returncode
     if not a.bin:
@@ -844,6 +863,7 @@ def main():
                 evidence = ROOT / "target" / "evidence"
                 evidence.mkdir(exist_ok=True)
                 (evidence / "local-lifecycle.jsonl").write_text("".join(json.dumps(e) + "\n" for e in L.lifecycle))
+                (evidence / "local-server.log").write_bytes((WORK / "burrowd.log").read_bytes())
         print(f"check-server-local: {ran} rows, {fails} failed, {len(ROWS)-ran} NOT RUN ({sys.platform})")
         return min(fails, 100)
 
