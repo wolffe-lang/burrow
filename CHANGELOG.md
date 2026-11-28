@@ -1,5 +1,12 @@
 ## Unreleased
 
+- The local terminal tool cleans up recorded children individually after
+  verifying their command lines, reaps the client before releasing its keeper,
+  and runs guarded and real-child lifecycle regressions (burrow#42). Signal
+  witnesses now use byte 0x03 and a default-disposition foreground probe,
+  without remote self-kill or trap commands. Live no-pty TERM termination is
+  no longer witnessed by this tool; its protocol unit checks remain.
+
 - The unit gate requires complete passing checked observations, not just a
   zero compiler exit. Unsupported retries, native substitutions and incomplete
   or malformed reports fail; native and lupin outcomes remain independent
